@@ -44,6 +44,10 @@ class YahooFinanceProvider:
             except Exception: fast={}
             try: income=ticker.quarterly_income_stmt
             except Exception: income=None
+            try:
+                hist=ticker.history(period="5d",auto_adjust=False)
+                quote=_float(hist["Close"].dropna().iloc[-1]) if hist is not None and not hist.empty else None
+            except Exception: quote=None
         except Exception as exc:
             raise YahooFinanceError(f"Yahoo Finance request failed for {s}") from exc
 
@@ -56,11 +60,15 @@ class YahooFinanceProvider:
                 if n is not None:return n
             return None
 
+        quote=quote or _float(fast.get("last_price")) or num("currentPrice","regularMarketPrice")
         revenues=_series_values(income,["Total Revenue"])
         eps_values=_series_values(income,["Diluted EPS","Basic EPS"])
         shares=_float(fast.get("shares")) or num("sharesOutstanding","impliedSharesOutstanding")
         revenue_ttm=sum(revenues[:4]) if len(revenues)>=4 else num("totalRevenue")
         eps_ttm=sum(eps_values[:4]) if len(eps_values)>=4 else num("trailingEps","forwardEps")
+        market_cap=num("marketCap") or (quote*shares if quote and shares else None)
+        pe=num("trailingPE","forwardPE") or (quote/eps_ttm if quote and eps_ttm and eps_ttm>0 else None)
+        ps=num("priceToSalesTrailing12Months") or (market_cap/revenue_ttm if market_cap and revenue_ttm and revenue_ttm>0 else None)
         earnings_growth=None
         if len(eps_values)>=5 and eps_values[4] != 0:
             earnings_growth=(eps_values[0]-eps_values[4])/abs(eps_values[4])
@@ -69,24 +77,28 @@ class YahooFinanceProvider:
         if len(revenues)>=5 and revenues[4] != 0:
             revenue_growth=(revenues[0]-revenues[4])/abs(revenues[4])
         if revenue_growth is None:revenue_growth=num("revenueGrowth")
+        peg=num("pegRatio","trailingPegRatio")
+        if peg is None and pe and earnings_growth and earnings_growth>0:
+            peg=pe/(earnings_growth*100 if earnings_growth<=5 else earnings_growth)
 
         payload = {
             "symbol": s,
-            "pe_ratio": num("trailingPE", "forwardPE"),
+            "pe_ratio": pe,
             "forward_pe": num("forwardPE"),
-            "peg_ratio": num("pegRatio", "trailingPegRatio"),
-            "price_to_sales_ratio": num("priceToSalesTrailing12Months"),
+            "peg_ratio": peg,
+            "price_to_sales_ratio": ps,
             "eps": eps_ttm,
             "revenue_ttm": revenue_ttm,
             "shares_outstanding": shares,
             "quarterly_revenue_growth_yoy": revenue_growth,
             "quarterly_earnings_growth_yoy": earnings_growth,
-            "market_cap": num("marketCap"),
+            "market_cap": market_cap,
             "sector": info.get("sector") or info.get("category"),
             "industry": info.get("industry"),
             "provider": self.name,
             "source_url": f"{SOURCE_ROOT}/{s}",
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
+            "valuation_refresh_version": 2,
         }
         if all(payload.get(k) is None for k in ["pe_ratio", "peg_ratio", "price_to_sales_ratio", "eps", "revenue_ttm", "shares_outstanding", "market_cap"]):
             raise YahooFinanceError(f"Yahoo Finance returned no usable valuation fields for {s}")
