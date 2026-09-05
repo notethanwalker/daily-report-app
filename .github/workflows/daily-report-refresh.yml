@@ -22,7 +22,10 @@ jobs:
           mapfile -t symbols < <(jq -r '.tickers[]' watchlist.json)
           for symbol in "${symbols[@]}"; do
             encoded=$(jq -rn --arg v "$symbol" '$v|@uri')
-            curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${encoded}?verify=true" -o /dev/null || true
+            # Twelve Data already provides the primary history used by the app. Do not
+            # spend Alpha Vantage's small free daily budget re-verifying every ticker;
+            # reserve that budget for valuation fundamentals instead.
+            curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${encoded}?verify=false" -o /dev/null || true
             sleep 9
           done
 
@@ -35,22 +38,21 @@ jobs:
             sleep 9
           done
 
-      - name: Refresh a rotating fundamentals batch
+      - name: Refresh valuation fundamentals
         run: |
           set -u
-          symbols=(AAOI NBIS SNDK AXTI IONQ OKLO SPY QQQ SMH BOTZ GLD)
-          dow=$(date -u +%u)
-          start=$(( (dow-1)*2 ))
-          for offset in 0 1; do
-            idx=$(( (start+offset) % ${#symbols[@]} ))
-            symbol=${symbols[$idx]}
+          # Company fundamentals only. Broad ETFs normally do not have meaningful
+          # P/E, P/S or PEG in Alpha Vantage OVERVIEW and are intentionally skipped.
+          symbols=(AAOI NBIS SNDK AXTI CRBS IONQ OKLO)
+          for symbol in "${symbols[@]}"; do
             curl --fail --silent --show-error --retry 1 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${symbol}/fundamentals" -o /dev/null || true
-            sleep 15
+            # Stay comfortably inside free-provider burst limits.
+            sleep 13
           done
 
       - name: Warm live flow cache
         run: |
-          curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/flow/recent?limit=60" -o /dev/null || true
+          curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/flow/recent?limit=100" -o /dev/null || true
 
       - name: Persist daily report snapshot
         run: |
