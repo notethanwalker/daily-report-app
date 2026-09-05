@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from .database import Base,engine,get_db
-from .models import FlowEvent,MarketSnapshot,ReportSnapshot,SecondaryVerificationCache,WatchlistItem
+from .models import FlowEvent,FundamentalCache,HistoricalDailyBar,MarketSnapshot,ReportSnapshot,SecondaryVerificationCache,WatchlistItem
 from .providers.alpha_vantage import AlphaVantageError,AlphaVantageProvider
 from .providers.frankfurter import FrankfurterProvider
 from .providers.gdelt import GdeltProvider
@@ -15,11 +15,11 @@ from .services.macro_history import build_macro_history
 from .services.report import build_daily_report
 from .services.rotation import SECTORS,build_rotation_snapshot
 from .services.validation import build_secondary_metrics,cross_check_market_snapshot
-app=FastAPI(title="Daily Report API",version="1.2")
+app=FastAPI(title="Daily Report API",version="1.3")
 app.add_middleware(CORSMiddleware,allow_origins=["https://daily-report-app-pearl.vercel.app"],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 Base.metadata.create_all(bind=engine)
 DEFAULT_WATCHLIST=["SPY","QQQ","AAOI","NBIS","SNDK","AXTI","CRBS","IONQ","OKLO","GLD","SMH","EUV","DRAM","BOTZ","VIX"]
-MARKET_CACHE_TTL_SECONDS=900;SECONDARY_CACHE_TTL_SECONDS=86400;ALPHA_VANTAGE_DAILY_BUDGET=20;NEWS_CACHE_TTL_SECONDS=600;CURRENCY_CACHE_TTL_SECONDS=3600;SECURITY_SEARCH_CACHE_TTL_SECONDS=3600
+MARKET_CACHE_TTL_SECONDS=900;SECONDARY_CACHE_TTL_SECONDS=86400;FUNDAMENTAL_CACHE_TTL_SECONDS=604800;ALPHA_VANTAGE_DAILY_BUDGET=20;NEWS_CACHE_TTL_SECONDS=600;CURRENCY_CACHE_TTL_SECONDS=3600;SECURITY_SEARCH_CACHE_TTL_SECONDS=3600
 WORLD_NEWS_TOPIC_QUERIES={"AI & Semiconductors":'("artificial intelligence" OR AI OR semiconductor OR chips OR memory OR "data center" OR Nvidia)',"Rates & Central Banks":'("Federal Reserve" OR Fed OR "central bank" OR "interest rates" OR yields OR ECB OR BOJ)',"Energy & Commodities":'(oil OR crude OR gas OR energy OR gold OR copper OR commodities)',"Trade & Geopolitics":'(tariffs OR trade OR sanctions OR China OR Russia OR exports OR geopolitics)',"Economy & Inflation":'(inflation OR jobs OR employment OR GDP OR economy OR recession OR consumer)'}
 WORLD_NEWS_ALL_QUERY='(economy OR markets OR trade OR tariffs OR sanctions OR semiconductor OR "artificial intelligence" OR energy OR oil OR central bank)'
 _market_cache={};_shared_cache={}
@@ -30,9 +30,12 @@ def _cached_shared(key,ttl,loader):
  if c and time.time()-c[0]<ttl:return {**c[1],"cache":"hit"}
  d=loader();_shared_cache[key]=(time.time(),d);return {**d,"cache":"miss"}
 def _alpha_requests_used_today(db):
- s=datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0);return db.query(SecondaryVerificationCache).filter(SecondaryVerificationCache.provider=="Alpha Vantage",SecondaryVerificationCache.retrieved_at>=s).count()
+ s=datetime.now(timezone.utc).replace(hour=0,minute=0,second=0,microsecond=0)
+ secondary=db.query(SecondaryVerificationCache).filter(SecondaryVerificationCache.provider=="Alpha Vantage",SecondaryVerificationCache.retrieved_at>=s).count()
+ fundamentals=db.query(FundamentalCache).filter(FundamentalCache.provider=="Alpha Vantage",FundamentalCache.retrieved_at>=s).count()
+ return secondary+fundamentals
 def _safe_secondary_error(exc):
- t=str(exc).lower();return "secondary_quota_unavailable" if any(x in t for x in ["rate limit","requests per day","premium","budget"]) else "secondary_provider_unavailable"
+ t=str(exc).lower();return "secondary_quota_unavailable" if any(x in t for x in ["rate limit","requests per day","premium","budget","quota"]) else "secondary_provider_unavailable"
 def get_secondary_metrics(symbol,db):
  symbol=symbol.strip().upper();c=db.get(SecondaryVerificationCache,symbol)
  if c:
@@ -50,6 +53,17 @@ def get_secondary_metrics(symbol,db):
  if c:c.provider="Alpha Vantage";c.payload=p;c.retrieved_at=datetime.now(timezone.utc)
  else:db.add(SecondaryVerificationCache(symbol=symbol,provider="Alpha Vantage",payload=p,retrieved_at=datetime.now(timezone.utc)))
  db.commit();return p
+def get_fundamentals(symbol,db):
+ symbol=symbol.strip().upper();c=db.get(FundamentalCache,symbol)
+ if c:
+  at=c.retrieved_at if c.retrieved_at.tzinfo else c.retrieved_at.replace(tzinfo=timezone.utc)
+  if (datetime.now(timezone.utc)-at).total_seconds()<FUNDAMENTAL_CACHE_TTL_SECONDS:return c.payload
+ if _alpha_requests_used_today(db)>=ALPHA_VANTAGE_DAILY_BUDGET:raise HTTPException(429,"Fundamentals daily provider budget reached")
+ try:p=AlphaVantageProvider().overview(symbol)
+ except Exception as exc:raise HTTPException(502,"Fundamentals unavailable") from exc
+ if c:c.provider="Alpha Vantage";c.payload=p;c.retrieved_at=datetime.now(timezone.utc)
+ else:db.add(FundamentalCache(symbol=symbol,provider="Alpha Vantage",payload=p,retrieved_at=datetime.now(timezone.utc)))
+ db.commit();return p
 def get_market_snapshot(symbol,db,verify=True):
  symbol=symbol.strip().upper();k=f"{symbol}:{verify}";c=_market_cache.get(k)
  if c and time.time()-c[0]<MARKET_CACHE_TTL_SECONDS:return {**c[1],"cache":"hit"}
@@ -58,14 +72,25 @@ def get_market_snapshot(symbol,db,verify=True):
  if verify and os.getenv("ALPHA_VANTAGE_API_KEY"):
   try:s.update(cross_check_market_snapshot(s,get_secondary_metrics(symbol,db)))
   except Exception as exc:s["verification_status"]="primary_only";s["verification"]={"primary_provider":s.get("provider"),"secondary_provider":"Alpha Vantage","error":_safe_secondary_error(exc)}
+ f=db.get(FundamentalCache,symbol)
+ if f:s.update(f.payload)
  _market_cache[k]=(time.time(),s);return {**s,"cache":"miss"}
+def _persist_daily_bar(db,symbol,r):
+ dt=str(r.get("as_of") or "")[:10];price=r.get("price")
+ if not dt or price is None:return
+ row=db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol,HistoricalDailyBar.bar_date==dt).first()
+ if row:row.close=float(price);row.volume=float(r.get("volume") or 0);row.provider=str(r.get("provider") or "Twelve Data");row.source_url=str(r.get("source_url") or "")
+ else:db.add(HistoricalDailyBar(symbol=symbol,bar_date=dt,close=float(price),volume=float(r.get("volume") or 0),provider=str(r.get("provider") or "Twelve Data"),source_url=str(r.get("source_url") or "")))
 def _load_currencies():return _cached_shared("major_currencies",CURRENCY_CACHE_TTL_SECONDS,lambda:FrankfurterProvider().major_currency_snapshot())
 def _load_market_news(limit=15):return _cached_shared(f"market_news:{limit}",NEWS_CACHE_TTL_SECONDS,lambda:GdeltProvider().search('(stocks OR "stock market" OR equities OR Nasdaq OR S&P OR Federal Reserve OR earnings OR inflation)',max_records=limit,timespan="24h"))
 def _latest_market_by_symbol(db,symbols=None):
  target=symbols or [r.symbol for r in db.query(WatchlistItem).all()];out={}
  for symbol in target:
   r=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol).order_by(MarketSnapshot.retrieved_at.desc()).first()
-  if r:out[symbol]={**r.payload,"retrieved_at":r.retrieved_at.isoformat()}
+  if r:
+   p={**r.payload,"retrieved_at":r.retrieved_at.isoformat()};f=db.get(FundamentalCache,symbol)
+   if f:p.update(f.payload)
+   out[symbol]=p
  return out
 def _load_world_news(topic,limit):
  q=WORLD_NEWS_TOPIC_QUERIES.get(topic,WORLD_NEWS_ALL_QUERY);d=GdeltProvider().search(q,max_records=limit,timespan="48h")
@@ -75,12 +100,11 @@ def _load_world_news(topic,limit):
 def root():return {"status":"ok","service":"Daily Report API"}
 @app.get("/api/v1/health")
 def health(db:Session=Depends(get_db)):
- u=_alpha_requests_used_today(db) if os.getenv("ALPHA_VANTAGE_API_KEY") else 0;return {"status":"ok","version":"1.2","providers":{"twelve_data":{"configured":bool(os.getenv("TWELVE_DATA_API_KEY"))},"alpha_vantage":{"configured":bool(os.getenv("ALPHA_VANTAGE_API_KEY")),"daily_budget":20,"used_today":u,"remaining_today":max(20-u,0)},"gdelt":{"configured":True},"frankfurter":{"configured":True},"macroradar":{"configured":True},"flow":{"configured":False}}}
+ u=_alpha_requests_used_today(db) if os.getenv("ALPHA_VANTAGE_API_KEY") else 0;return {"status":"ok","version":"1.3","providers":{"twelve_data":{"configured":bool(os.getenv("TWELVE_DATA_API_KEY"))},"alpha_vantage":{"configured":bool(os.getenv("ALPHA_VANTAGE_API_KEY")),"daily_budget":20,"used_today":u,"remaining_today":max(20-u,0)},"gdelt":{"configured":True},"frankfurter":{"configured":True},"macroradar":{"configured":True},"flow":{"configured":False}}}
 @app.get("/api/v1/watchlist")
 def watchlist(db:Session=Depends(get_db)):
  items=db.query(WatchlistItem).order_by(WatchlistItem.created_at).all()
- if not items:
-  [db.add(WatchlistItem(symbol=s)) for s in DEFAULT_WATCHLIST];db.commit();items=db.query(WatchlistItem).order_by(WatchlistItem.created_at).all()
+ if not items:[db.add(WatchlistItem(symbol=s)) for s in DEFAULT_WATCHLIST];db.commit();items=db.query(WatchlistItem).order_by(WatchlistItem.created_at).all()
  return {"tickers":[i.symbol for i in items]}
 @app.post("/api/v1/watchlist")
 def add_ticker(request:TickerRequest,db:Session=Depends(get_db)):
@@ -99,11 +123,13 @@ def search(q:str=Query(min_length=2,max_length=64)):
  except Exception as exc:raise HTTPException(502,f"Security search unavailable: {exc}") from exc
 @app.get("/api/v1/markets/latest")
 def latest_markets(db:Session=Depends(get_db)):return {"markets":list(_latest_market_by_symbol(db).values())}
+@app.get("/api/v1/markets/{symbol}/fundamentals")
+def fundamentals(symbol:str,db:Session=Depends(get_db)):return get_fundamentals(symbol,db)
 @app.get("/api/v1/markets/{symbol}")
 def market(symbol:str,verify:bool=True,db:Session=Depends(get_db)):
- r=get_market_snapshot(symbol,db,verify)
- if r.get("cache")=="miss":db.add(MarketSnapshot(symbol=(r.get("symbol") or symbol).upper(),as_of=str(r.get("as_of") or ""),provider=str(r.get("provider") or "unknown"),payload={k:v for k,v in r.items() if k!="cache"}));db.commit()
- return r
+ r=get_market_snapshot(symbol,db,verify);sym=(r.get("symbol") or symbol).upper()
+ if r.get("cache")=="miss":db.add(MarketSnapshot(symbol=sym,as_of=str(r.get("as_of") or ""),provider=str(r.get("provider") or "unknown"),payload={k:v for k,v in r.items() if k!="cache"}))
+ _persist_daily_bar(db,sym,r);db.commit();return r
 @app.get("/api/v1/markets/{symbol}/history")
 def history(symbol:str,limit:int=Query(default=20,ge=1,le=100),db:Session=Depends(get_db)):
  rs=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol.strip().upper()).order_by(MarketSnapshot.retrieved_at.desc()).limit(limit).all();return {"symbol":symbol.upper(),"snapshots":[{"id":r.id,"as_of":r.as_of,"provider":r.provider,"retrieved_at":r.retrieved_at.isoformat(),"data":r.payload} for r in rs]}
@@ -148,4 +174,4 @@ def generate_report(db:Session=Depends(get_db)):
 def report_history(limit:int=Query(default=20,ge=1,le=100),db:Session=Depends(get_db)):
  rs=db.query(ReportSnapshot).order_by(ReportSnapshot.created_at.desc()).limit(limit).all();return {"reports":[{"id":r.id,"report_date":r.report_date,"created_at":r.created_at.isoformat(),"data":r.payload} for r in rs]}
 @app.get("/api/v1/report/config")
-def config():return {"sections":["vix","markets","currencies","macro_rotation","macro_history","market_news","world_news","outliers","flow"],"providers":{"primary_market_data":"Twelve Data","secondary_market_data":"Alpha Vantage","world_news":"GDELT + Google News RSS fallback","currencies":"Frankfurter","macro_calendar":"MacroRadar","flow":"not configured"}}
+def config():return {"sections":["vix","markets","currencies","macro_rotation","macro_history","market_news","world_news","outliers","flow"],"providers":{"primary_market_data":"Twelve Data","secondary_market_data":"Alpha Vantage","fundamentals":"Alpha Vantage weekly cache","world_news":"GDELT + Google News RSS fallback","currencies":"Frankfurter","macro_calendar":"MacroRadar","flow":"not configured"}}
