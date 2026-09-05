@@ -1,0 +1,29 @@
+name: Fundamentals Smoke Temp
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fundamentals-smoke-temp.yml'
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify live valuation population
+        run: |
+          python - <<'PY'
+          import json, urllib.request
+          base='https://daily-report-api-ero2.onrender.com/api/v1/markets'
+          symbols=['MU','WEN','AAOI']
+          complete=[]
+          for s in symbols:
+              with urllib.request.urlopen(f'{base}/{s}/fundamentals', timeout=40) as r:
+                  if r.status != 200:
+                      raise SystemExit(f'{s}: HTTP {r.status}')
+                  d=json.load(r)
+              vals={k:d.get(k) for k in ['pe_ratio','price_to_sales_ratio','peg_ratio']}
+              print(s, d.get('provider'), vals)
+              if all(vals[k] is not None for k in vals): complete.append(s)
+          if not complete:
+              raise SystemExit('No tested watchlist ticker populated P/E, P/S, and PEG together')
+          print('PASS complete valuation fields:', ','.join(complete))
+          PY
