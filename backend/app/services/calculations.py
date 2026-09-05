@@ -26,9 +26,7 @@ def _mean(values):
     return sum(values) / len(values) if values else None
 
 
-def build_market_snapshot(raw: dict) -> dict:
-    history = raw["history"]
-    meta = history.get("meta", {})
+def parse_daily_rows(history: dict) -> list[dict]:
     values = history.get("values") or []
     rows = []
     for item in values:
@@ -41,6 +39,43 @@ def build_market_snapshot(raw: dict) -> dict:
             continue
         rows.append({"date": row_date,"close": close,"high": _number(item.get("high")),"low": _number(item.get("low")),"volume": _number(item.get("volume"))})
     rows.sort(key=lambda row: row["date"])
+    return rows
+
+
+def build_williams_r_series(history: dict, period: int = 14, max_points: int = 320) -> dict:
+    rows = parse_daily_rows(history)
+    series = []
+    for i in range(max(period - 1, 0), len(rows)):
+        window = rows[i - period + 1:i + 1]
+        highs = [r["high"] for r in window if r["high"] is not None]
+        lows = [r["low"] for r in window if r["low"] is not None]
+        close = rows[i]["close"]
+        if not highs or not lows:
+            continue
+        high = max(highs)
+        low = min(lows)
+        value = 0.0 if high == low else -100.0 * ((high - close) / (high - low))
+        series.append({"date": rows[i]["date"].isoformat(), "value": round(value, 2)})
+    if len(series) > max_points:
+        step = max(1, len(series) // max_points)
+        sampled = series[::step]
+        if sampled[-1] != series[-1]:
+            sampled.append(series[-1])
+        series = sampled[-max_points:]
+    return {
+        "period": period,
+        "timeframe": "all_time_provider_history",
+        "points": series,
+        "latest": series[-1]["value"] if series else None,
+        "overbought_level": -20,
+        "oversold_level": -80,
+    }
+
+
+def build_market_snapshot(raw: dict) -> dict:
+    history = raw["history"]
+    meta = history.get("meta", {})
+    rows = parse_daily_rows(history)
     if not rows:
         raise ValueError("No daily history returned")
 
