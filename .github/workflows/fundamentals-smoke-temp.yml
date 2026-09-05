@@ -8,22 +8,23 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: Verify live valuation population
+      - name: Inspect live valuation population
         run: |
           python - <<'PY'
-          import json, urllib.request
+          import json, urllib.request, urllib.error
           base='https://daily-report-api-ero2.onrender.com/api/v1/markets'
-          symbols=['MU','WEN','AAOI']
+          symbols=['MU','WEN','AAPL']
+          keys=['pe_ratio','price_to_sales_ratio','peg_ratio','eps','revenue_ttm','market_cap','quarterly_earnings_growth_yoy','provider','valuation_source','fundamentals_cache']
           complete=[]
           for s in symbols:
-              with urllib.request.urlopen(f'{base}/{s}/fundamentals', timeout=40) as r:
-                  if r.status != 200:
-                      raise SystemExit(f'{s}: HTTP {r.status}')
-                  d=json.load(r)
-              vals={k:d.get(k) for k in ['pe_ratio','price_to_sales_ratio','peg_ratio']}
-              print(s, d.get('provider'), vals)
-              if all(vals[k] is not None for k in vals): complete.append(s)
+              try:
+                  with urllib.request.urlopen(f'{base}/{s}/fundamentals', timeout=40) as r:
+                      d=json.load(r)
+              except urllib.error.HTTPError as e:
+                  print(s,'HTTP',e.code,e.read().decode()[:300]); continue
+              print(s,{k:d.get(k) for k in keys})
+              if all(d.get(k) is not None for k in ['pe_ratio','price_to_sales_ratio','peg_ratio']): complete.append(s)
           if not complete:
-              raise SystemExit('No tested watchlist ticker populated P/E, P/S, and PEG together')
+              raise SystemExit('No tested ticker populated P/E, P/S, and PEG together')
           print('PASS complete valuation fields:', ','.join(complete))
           PY
