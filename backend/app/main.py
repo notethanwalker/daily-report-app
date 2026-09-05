@@ -8,12 +8,14 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
 from .models import MarketSnapshot, WatchlistItem
+from .providers.frankfurter import FrankfurterProvider
+from .providers.gdelt import GdeltProvider
 from .providers.twelve_data import TwelveDataError, TwelveDataProvider
 from .services.calculations import build_market_snapshot
 
 app = FastAPI(
     title="Daily Report API",
-    version="0.4"
+    version="0.5"
 )
 
 app.add_middleware(
@@ -35,11 +37,25 @@ DEFAULT_WATCHLIST = [
 ]
 
 MARKET_CACHE_TTL_SECONDS = 900
+NEWS_CACHE_TTL_SECONDS = 600
+CURRENCY_CACHE_TTL_SECONDS = 3600
+
 _market_cache: dict[str, tuple[float, dict]] = {}
+_shared_cache: dict[str, tuple[float, dict]] = {}
 
 
 class TickerRequest(BaseModel):
     symbol: str
+
+
+def _cached_shared(key: str, ttl: int, loader) -> dict:
+    cached = _shared_cache.get(key)
+    if cached and (time.time() - cached[0]) < ttl:
+        return {**cached[1], "cache": "hit"}
+
+    data = loader()
+    _shared_cache[key] = (time.time(), data)
+    return {**data, "cache": "miss"}
 
 
 def get_market_snapshot(symbol: str) -> dict:
@@ -76,11 +92,13 @@ def root():
 def health():
     return {
         "status": "ok",
-        "version": "0.4",
+        "version": "0.5",
         "providers": {
             "twelve_data": {
                 "configured": bool(os.getenv("TWELVE_DATA_API_KEY")),
-            }
+            },
+            "gdelt": {"configured": True},
+            "frankfurter": {"configured": True},
         },
     }
 
@@ -212,6 +230,50 @@ def market_snapshot_history(
     }
 
 
+@app.get("/api/v1/news/world")
+def world_news(limit: int = Query(default=25, ge=1, le=50)):
+    try:
+        return _cached_shared(
+            f"world_news:{limit}",
+            NEWS_CACHE_TTL_SECONDS,
+            lambda: GdeltProvider().search(
+                '(economy OR markets OR trade OR tariffs OR sanctions OR semiconductor OR "artificial intelligence" OR energy OR oil OR central bank)',
+                max_records=limit,
+                timespan="24h",
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"World news unavailable: {exc}") from exc
+
+
+@app.get("/api/v1/news/market")
+def market_news(limit: int = Query(default=15, ge=1, le=30)):
+    try:
+        return _cached_shared(
+            f"market_news:{limit}",
+            NEWS_CACHE_TTL_SECONDS,
+            lambda: GdeltProvider().search(
+                '(stocks OR "stock market" OR equities OR Nasdaq OR S&P OR Federal Reserve OR earnings OR inflation)',
+                max_records=limit,
+                timespan="24h",
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Market news unavailable: {exc}") from exc
+
+
+@app.get("/api/v1/macro/currencies")
+def currencies():
+    try:
+        return _cached_shared(
+            "major_currencies",
+            CURRENCY_CACHE_TTL_SECONDS,
+            lambda: FrankfurterProvider().major_currency_snapshot(),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Currency data unavailable: {exc}") from exc
+
+
 @app.get("/api/v1/report/config")
 def config():
     return {
@@ -237,6 +299,12 @@ def config():
         "providers": {
             "primary_market_data": "Twelve Data",
             "secondary_market_data": None,
+            "world_news": "GDELT",
+            "currencies": "Frankfurter",
         },
-        "market_cache_ttl_seconds": MARKET_CACHE_TTL_SECONDS,
+        "cache_ttl_seconds": {
+            "market": MARKET_CACHE_TTL_SECONDS,
+            "news": NEWS_CACHE_TTL_SECONDS,
+            "currencies": CURRENCY_CACHE_TTL_SECONDS,
+        },
     }
