@@ -24,34 +24,38 @@ def _latest_market_rows(db: Session) -> dict[str, MarketSnapshot]:
 def _market_outlier_score(data: dict[str, Any]) -> float:
     daily = abs(float(data.get("change_percent") or 0.0))
     seven = abs(float(data.get("seven_day_percent") or 0.0))
+    thirty = abs(float(data.get("thirty_day_percent") or 0.0))
     rel_vol = float(data.get("relative_volume") or 1.0)
     ma_gap = max(
         abs(float(data.get("price_vs_ma100_percent") or 0.0)),
         abs(float(data.get("price_vs_ma200_percent") or 0.0)),
     )
-    return round((daily * 4.0) + (seven * 1.5) + (max(rel_vol - 1.0, 0.0) * 8.0) + (ma_gap * 0.35), 2)
+    return round((daily * 4.0) + (seven * 1.5) + (thirty * 0.55) + (max(rel_vol - 1.0, 0.0) * 8.0) + (ma_gap * 0.35), 2)
 
 
 def _outlier_reason(data: dict[str, Any]) -> str:
     reasons: list[str] = []
     daily = data.get("change_percent")
     seven = data.get("seven_day_percent")
+    thirty = data.get("thirty_day_percent")
     rel_vol = data.get("relative_volume")
     vs_100 = data.get("price_vs_ma100_percent")
     vs_200 = data.get("price_vs_ma200_percent")
 
-    if daily is not None and abs(float(daily)) >= 3:
+    if daily is not None and abs(float(daily)) >= 2:
         reasons.append(f"{float(daily):+.1f}% daily move")
-    if seven is not None and abs(float(seven)) >= 6:
+    if seven is not None and abs(float(seven)) >= 4:
         reasons.append(f"{float(seven):+.1f}% over 7 days")
-    if rel_vol is not None and float(rel_vol) >= 1.5:
+    if thirty is not None and abs(float(thirty)) >= 8:
+        reasons.append(f"{float(thirty):+.1f}% over 30 days")
+    if rel_vol is not None and float(rel_vol) >= 1.35:
         reasons.append(f"{float(rel_vol):.1f}x relative volume")
-    if vs_100 is not None and abs(float(vs_100)) >= 10:
+    if vs_100 is not None and abs(float(vs_100)) >= 8:
         reasons.append(f"{float(vs_100):+.1f}% vs 100MA")
-    if vs_200 is not None and abs(float(vs_200)) >= 15:
+    if vs_200 is not None and abs(float(vs_200)) >= 12:
         reasons.append(f"{float(vs_200):+.1f}% vs 200MA")
 
-    return "; ".join(reasons) if reasons else "largest combined move/volume trend deviation"
+    return "; ".join(reasons) if reasons else "largest combined move/volume/trend deviation"
 
 
 def build_daily_report(
@@ -82,13 +86,15 @@ def build_daily_report(
                 "reason": _outlier_reason(item),
                 "change_percent": item.get("change_percent"),
                 "seven_day_percent": item.get("seven_day_percent"),
+                "thirty_day_percent": item.get("thirty_day_percent"),
                 "relative_volume": item.get("relative_volume"),
+                "as_of": item.get("as_of"),
             }
             for item in markets
         ],
         key=lambda item: item["score"],
         reverse=True,
-    )[:5]
+    )[:12]
 
     vix = next((item for item in markets if str(item.get("symbol", "")).upper() in {"VIX", "^VIX"}), None)
     top_news = list((market_news or {}).get("articles") or [])[:3]
