@@ -4,6 +4,22 @@ type Release={version:string;date:string;title:string;summary:string;changes:str
 
 const RELEASES:Release[]=[
  {
+  version:"v1.5",
+  date:"September 5, 2026",
+  title:"Flow, currencies, technicals, and interface polish",
+  summary:"Restored macro FX context, activated live unusual-options flow, improved valuation retrieval, expanded the rotation universe, and added a more polished interaction system.",
+  changes:[
+   "Restored world-currency data to both the Report and Macro tabs with current USD cross-rates and 7-day changes.",
+   "Activated Large Flow using SquawkFlow's free public unusual-options API with backend caching and explicit non-synthetic fallback behavior.",
+   "Changed expanded market rows to retrieve P/E, P/S, and PEG fundamentals on demand and preserve stale cached fundamentals when provider quota is temporarily unavailable.",
+   "Moved the ticker-add/search control to the bottom of the Markets tab.",
+   "Added a 14-day Williams %R graph across all available provider history to each expanded market row.",
+   "Expanded Macro tracking to SPY, QQQ, EUV/Photonics, DRAM/Memory, NCLD/Neocloud, IGV/Software, CIBR/Cybersecurity, ARKX/Space & Defense, NLR/Nuclear, and QTUM/Quantum in addition to the existing sector universe.",
+   "Added animated tab transitions, scroll-triggered card reveals, button/click feedback, and reduced-motion accessibility handling.",
+   "Updated the weekday refresh workflow to populate the expanded macro universe and warm the live flow cache."
+  ]
+ },
+ {
   version:"v1.4",
   date:"September 5, 2026",
   title:"Reliability, validation, and system visibility",
@@ -78,7 +94,7 @@ const RELEASES:Release[]=[
 ];
 
 export default function VersionHistory(){
- return <details className="card" style={{marginTop:16}}>
+ return <details className="card reveal-card" style={{marginTop:16}}>
   <summary style={{cursor:"pointer",fontWeight:700,fontSize:"1.05rem"}}>Version History</summary>
   <p className="muted" style={{marginTop:10}}>Major application releases and development changes, newest first.</p>
   <div style={{display:"grid",gap:12,marginTop:14}}>
