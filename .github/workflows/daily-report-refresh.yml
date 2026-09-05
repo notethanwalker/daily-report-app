@@ -8,35 +8,47 @@ on:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Fetch current watchlist
-        id: watchlist
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --retry 5 --retry-delay 5 \
-            https://daily-report-api-ero2.onrender.com/api/v1/watchlist > watchlist.json
-          cat watchlist.json
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 https://daily-report-api-ero2.onrender.com/api/v1/watchlist > watchlist.json
           jq -e '.tickers | type == "array"' watchlist.json
 
-      - name: Refresh market snapshots within provider limits
+      - name: Refresh watchlist snapshots
         run: |
           set -u
           mapfile -t symbols < <(jq -r '.tickers[]' watchlist.json)
           for symbol in "${symbols[@]}"; do
-            echo "Refreshing ${symbol}"
             encoded=$(jq -rn --arg v "$symbol" '$v|@uri')
-            if ! curl --fail --silent --show-error --retry 2 --retry-delay 5 \
-              "https://daily-report-api-ero2.onrender.com/api/v1/markets/${encoded}?verify=true" \
-              -o "market-${symbol//[^A-Za-z0-9]/_}.json"; then
-              echo "Refresh unavailable for ${symbol}; continuing."
-            fi
+            curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${encoded}?verify=true" -o /dev/null || true
             sleep 9
+          done
+
+      - name: Refresh macro rotation universe
+        run: |
+          set -u
+          symbols=(XLK XLF XLE XLV XLI XLY XLP XLB XLU XLRE XLC SMH BOTZ GLD)
+          for symbol in "${symbols[@]}"; do
+            curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${symbol}?verify=false" -o /dev/null || true
+            sleep 9
+          done
+
+      - name: Refresh a rotating fundamentals batch
+        run: |
+          set -u
+          symbols=(AAOI NBIS SNDK AXTI IONQ OKLO SPY QQQ SMH BOTZ GLD)
+          dow=$(date -u +%u)
+          start=$(( (dow-1)*2 ))
+          for offset in 0 1; do
+            idx=$(( (start+offset) % ${#symbols[@]} ))
+            symbol=${symbols[$idx]}
+            curl --fail --silent --show-error --retry 1 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${symbol}/fundamentals" -o /dev/null || true
+            sleep 15
           done
 
       - name: Persist daily report snapshot
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --retry 5 --retry-delay 5 \
-            -X POST https://daily-report-api-ero2.onrender.com/api/v1/report/generate \
-            | jq '{id, report_date, market_data_count, missing_market_symbols, verification_summary}'
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 -X POST https://daily-report-api-ero2.onrender.com/api/v1/report/generate | jq '{id, report_date, market_data_count, missing_market_symbols, verification_summary}'
