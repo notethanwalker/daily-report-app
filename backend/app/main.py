@@ -15,14 +15,14 @@ from .services.macro_history import build_macro_history
 from .services.report import build_daily_report
 from .services.rotation import SECTORS,build_rotation_snapshot
 from .services.validation import build_secondary_metrics,cross_check_market_snapshot
-app=FastAPI(title="Daily Report API",version="1.3")
+app=FastAPI(title="Daily Report API",version="1.4")
 app.add_middleware(CORSMiddleware,allow_origins=["https://daily-report-app-pearl.vercel.app"],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 Base.metadata.create_all(bind=engine)
 DEFAULT_WATCHLIST=["SPY","QQQ","AAOI","NBIS","SNDK","AXTI","CRBS","IONQ","OKLO","GLD","SMH","EUV","DRAM","BOTZ","VIX"]
-MARKET_CACHE_TTL_SECONDS=900;SECONDARY_CACHE_TTL_SECONDS=86400;FUNDAMENTAL_CACHE_TTL_SECONDS=604800;ALPHA_VANTAGE_DAILY_BUDGET=20;NEWS_CACHE_TTL_SECONDS=600;CURRENCY_CACHE_TTL_SECONDS=3600;SECURITY_SEARCH_CACHE_TTL_SECONDS=3600
+MARKET_CACHE_TTL_SECONDS=900;SECONDARY_CACHE_TTL_SECONDS=86400;FUNDAMENTAL_CACHE_TTL_SECONDS=604800;ALPHA_VANTAGE_DAILY_BUDGET=20;NEWS_CACHE_TTL_SECONDS=600;CURRENCY_CACHE_TTL_SECONDS=3600;SECURITY_SEARCH_CACHE_TTL_SECONDS=3600;SYMBOL_VALIDATION_CACHE_TTL_SECONDS=86400
 WORLD_NEWS_TOPIC_QUERIES={"AI & Semiconductors":'("artificial intelligence" OR AI OR semiconductor OR chips OR memory OR "data center" OR Nvidia)',"Rates & Central Banks":'("Federal Reserve" OR Fed OR "central bank" OR "interest rates" OR yields OR ECB OR BOJ)',"Energy & Commodities":'(oil OR crude OR gas OR energy OR gold OR copper OR commodities)',"Trade & Geopolitics":'(tariffs OR trade OR sanctions OR China OR Russia OR exports OR geopolitics)',"Economy & Inflation":'(inflation OR jobs OR employment OR GDP OR economy OR recession OR consumer)'}
 WORLD_NEWS_ALL_QUERY='(economy OR markets OR trade OR tariffs OR sanctions OR semiconductor OR "artificial intelligence" OR energy OR oil OR central bank)'
-_market_cache={};_shared_cache={}
+_market_cache={};_shared_cache={};_symbol_validation_cache={}
 class TickerRequest(BaseModel):symbol:str
 
 def _cached_shared(key,ttl,loader):
@@ -36,6 +36,30 @@ def _alpha_requests_used_today(db):
  return secondary+fundamentals
 def _safe_secondary_error(exc):
  t=str(exc).lower();return "secondary_quota_unavailable" if any(x in t for x in ["rate limit","requests per day","premium","budget","quota"]) else "secondary_provider_unavailable"
+def _validate_symbol(symbol,db=None,allow_stored=True):
+ s=symbol.strip().upper();cached=_symbol_validation_cache.get(s)
+ if cached and time.time()-cached[0]<SYMBOL_VALIDATION_CACHE_TTL_SECONDS:return cached[1]
+ if allow_stored and db is not None:
+  stored=db.query(MarketSnapshot.id).filter(MarketSnapshot.symbol==s).first()
+  if stored:
+   result={"symbol":s,"valid":True,"method":"stored_market_snapshot"};_symbol_validation_cache[s]=(time.time(),result);return result
+ try:
+  data=TwelveDataProvider().symbol_search(s,outputsize=20)
+ except Exception as exc:
+  return {"symbol":s,"valid":None,"method":"provider_unavailable","error":"Ticker validation provider unavailable"}
+ matches=[r for r in data.get("results",[]) if str(r.get("symbol") or "").upper()==s]
+ result={"symbol":s,"valid":bool(matches),"method":"exact_provider_symbol_search","match":matches[0] if matches else None}
+ _symbol_validation_cache[s]=(time.time(),result);return result
+def _cleanup_watchlist(db):
+ removed=[];unchecked=[];kept=[]
+ for item in db.query(WatchlistItem).order_by(WatchlistItem.created_at).all():
+  result=_validate_symbol(item.symbol,db,allow_stored=True)
+  if result["valid"] is False:
+   removed.append(item.symbol);db.delete(item)
+  elif result["valid"] is None:unchecked.append(item.symbol)
+  else:kept.append(item.symbol)
+ if removed:db.commit()
+ return {"removed":removed,"unchecked":unchecked,"kept":kept}
 def get_secondary_metrics(symbol,db):
  symbol=symbol.strip().upper();c=db.get(SecondaryVerificationCache,symbol)
  if c:
@@ -100,18 +124,22 @@ def _load_world_news(topic,limit):
 def root():return {"status":"ok","service":"Daily Report API"}
 @app.get("/api/v1/health")
 def health(db:Session=Depends(get_db)):
- u=_alpha_requests_used_today(db) if os.getenv("ALPHA_VANTAGE_API_KEY") else 0;return {"status":"ok","version":"1.3","providers":{"twelve_data":{"configured":bool(os.getenv("TWELVE_DATA_API_KEY"))},"alpha_vantage":{"configured":bool(os.getenv("ALPHA_VANTAGE_API_KEY")),"daily_budget":20,"used_today":u,"remaining_today":max(20-u,0)},"gdelt":{"configured":True},"frankfurter":{"configured":True},"macroradar":{"configured":True},"flow":{"configured":False}}}
+ u=_alpha_requests_used_today(db) if os.getenv("ALPHA_VANTAGE_API_KEY") else 0;return {"status":"ok","version":"1.4","providers":{"twelve_data":{"configured":bool(os.getenv("TWELVE_DATA_API_KEY"))},"alpha_vantage":{"configured":bool(os.getenv("ALPHA_VANTAGE_API_KEY")),"daily_budget":20,"used_today":u,"remaining_today":max(20-u,0)},"gdelt":{"configured":True},"frankfurter":{"configured":True},"macroradar":{"configured":True},"ticker_validation":{"configured":bool(os.getenv("TWELVE_DATA_API_KEY"))},"flow":{"configured":False}}}
 @app.get("/api/v1/watchlist")
 def watchlist(db:Session=Depends(get_db)):
  items=db.query(WatchlistItem).order_by(WatchlistItem.created_at).all()
- if not items:[db.add(WatchlistItem(symbol=s)) for s in DEFAULT_WATCHLIST];db.commit();items=db.query(WatchlistItem).order_by(WatchlistItem.created_at).all()
- return {"tickers":[i.symbol for i in items]}
+ if not items:[db.add(WatchlistItem(symbol=s)) for s in DEFAULT_WATCHLIST];db.commit()
+ validation=_cleanup_watchlist(db);items=db.query(WatchlistItem).order_by(WatchlistItem.created_at).all()
+ return {"tickers":[i.symbol for i in items],"validation":validation}
 @app.post("/api/v1/watchlist")
 def add_ticker(request:TickerRequest,db:Session=Depends(get_db)):
  s=request.symbol.strip().upper()
- if not s or len(s)>20 or not all(c.isalnum() or c in ".-^" for c in s):raise HTTPException(400,"Invalid ticker symbol")
+ if not s or len(s)>20 or not all(c.isalnum() or c in ".-^" for c in s):raise HTTPException(400,"Invalid ticker symbol format")
  if db.get(WatchlistItem,s):return {"status":"exists","symbol":s}
- db.add(WatchlistItem(symbol=s));db.commit();return {"status":"added","symbol":s}
+ result=_validate_symbol(s,db,allow_stored=False)
+ if result["valid"] is None:raise HTTPException(503,"Ticker validation is temporarily unavailable. The ticker was not added; retry when the provider is reachable.")
+ if result["valid"] is False:raise HTTPException(400,f"Ticker {s} was not found in the market-data provider and was not added.")
+ db.add(WatchlistItem(symbol=s));db.commit();return {"status":"added","symbol":s,"validation":result}
 @app.delete("/api/v1/watchlist/{symbol}")
 def remove_ticker(symbol:str,db:Session=Depends(get_db)):
  s=symbol.strip().upper();i=db.get(WatchlistItem,s)
@@ -174,4 +202,4 @@ def generate_report(db:Session=Depends(get_db)):
 def report_history(limit:int=Query(default=20,ge=1,le=100),db:Session=Depends(get_db)):
  rs=db.query(ReportSnapshot).order_by(ReportSnapshot.created_at.desc()).limit(limit).all();return {"reports":[{"id":r.id,"report_date":r.report_date,"created_at":r.created_at.isoformat(),"data":r.payload} for r in rs]}
 @app.get("/api/v1/report/config")
-def config():return {"sections":["vix","markets","currencies","macro_rotation","macro_history","market_news","world_news","outliers","flow"],"providers":{"primary_market_data":"Twelve Data","secondary_market_data":"Alpha Vantage","fundamentals":"Alpha Vantage weekly cache","world_news":"GDELT + Google News RSS fallback","currencies":"Frankfurter","macro_calendar":"MacroRadar","flow":"not configured"}}
+def config():return {"sections":["vix","markets","currencies","macro_rotation","macro_history","market_news","world_news","outliers","flow"],"providers":{"primary_market_data":"Twelve Data","secondary_market_data":"Alpha Vantage","fundamentals":"Alpha Vantage weekly cache","world_news":"GDELT + Google News RSS fallback","currencies":"Frankfurter","macro_calendar":"MacroRadar","ticker_validation":"Twelve Data exact symbol search + stored market history","flow":"not configured"}}
