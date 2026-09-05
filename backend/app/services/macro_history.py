@@ -1,10 +1,12 @@
 from collections import defaultdict
+from datetime import date
 from statistics import mean, pstdev
 import time
 
 from sqlalchemy.orm import Session
 
 from ..models import HistoricalDailyBar, WatchlistItem
+from ..providers.macroradar import macro_calendar
 from ..providers.twelve_data import TwelveDataProvider, SOURCE_URL
 from .rotation import SECTORS
 
@@ -34,8 +36,7 @@ def _ret(rows, idx, lookback):
 def _rolling_avg_volume(rows, idx, lookback=20):
     if idx <= 0:
         return None
-    start = max(0, idx - lookback)
-    sample = [r["volume"] for r in rows[start:idx] if r["volume"] is not None]
+    sample = [r["volume"] for r in rows[max(0, idx - lookback):idx] if r["volume"] is not None]
     return mean(sample) if sample else None
 
 
@@ -44,6 +45,15 @@ def _rotation_score(day, week, month, rel_vol):
     if rel_vol and rel_vol > 1:
         score *= min(rel_vol, 2.0)
     return round(score, 3)
+
+
+def _safe_failure(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "rate limit" in text or "credits" in text:
+        return "provider_rate_limited"
+    if "404" in text or "symbol unavailable" in text:
+        return "symbol_unavailable"
+    return "provider_unavailable"
 
 
 def backfill_2026(db: Session, year: int = 2026) -> dict:
@@ -67,11 +77,9 @@ def backfill_2026(db: Session, year: int = 2026) -> dict:
                 dt = str(row.get("datetime") or row.get("date") or "")[:10]
                 if not dt.startswith(f"{year}-"):
                     continue
-                close = row.get("close")
-                volume = row.get("volume")
                 try:
-                    close_f = float(close)
-                    volume_f = float(volume or 0)
+                    close_f = float(row.get("close"))
+                    volume_f = float(row.get("volume") or 0)
                 except (TypeError, ValueError):
                     continue
                 existing = db.query(HistoricalDailyBar).filter(
@@ -95,8 +103,33 @@ def backfill_2026(db: Session, year: int = 2026) -> dict:
             refreshed.append(symbol)
         except Exception as exc:
             db.rollback()
-            failures.append({"symbol": symbol, "reason": str(exc)[:160]})
+            failures.append({"symbol": symbol, "reason": _safe_failure(exc)})
     return {"year": year, "symbols": refreshed, "inserted": inserted, "failures": failures}
+
+
+def _nearby_catalysts(dt: str, events: list[dict], days: int = 2) -> list[dict]:
+    try:
+        target = date.fromisoformat(dt)
+    except ValueError:
+        return []
+    ranked = []
+    for event in events:
+        try:
+            event_day = date.fromisoformat(str(event.get("event_date") or "")[:10])
+        except ValueError:
+            continue
+        distance = abs((event_day - target).days)
+        if distance <= days:
+            ranked.append((distance, event))
+    ranked.sort(key=lambda x: x[0])
+    return [
+        {
+            **event,
+            "distance_days": distance,
+            "relationship": "possible catalyst; timing match only, not proven causation",
+        }
+        for distance, event in ranked[:5]
+    ]
 
 
 def build_macro_history(db: Session, year: int = 2026) -> dict:
@@ -109,6 +142,14 @@ def build_macro_history(db: Session, year: int = 2026) -> dict:
     for r in rows:
         by_symbol[r.symbol].append({"date": r.bar_date, "close": r.close, "volume": r.volume})
 
+    try:
+        calendar = macro_calendar(f"{year}-01-01", f"{year}-12-31")
+        catalyst_events = calendar.get("events", [])
+        catalyst_source = {"provider": calendar.get("provider"), "source_url": calendar.get("source_url")}
+    except Exception:
+        catalyst_events = []
+        catalyst_source = {"provider": "unavailable", "source_url": None}
+
     sector_series = {}
     all_dates = set()
     for symbol, name in SECTORS.items():
@@ -120,7 +161,6 @@ def build_macro_history(db: Session, year: int = 2026) -> dict:
             month = _ret(series, i, 21)
             avg_vol = _rolling_avg_volume(series, i)
             rel_vol = row["volume"] / avg_vol if avg_vol else None
-            score = _rotation_score(day, week, month, rel_vol)
             out.append({
                 "date": row["date"],
                 "symbol": symbol,
@@ -130,7 +170,7 @@ def build_macro_history(db: Session, year: int = 2026) -> dict:
                 "seven_day_percent": week,
                 "thirty_day_percent": month,
                 "relative_volume": rel_vol,
-                "rotation_score": score,
+                "rotation_score": _rotation_score(day, week, month, rel_vol),
             })
             all_dates.add(row["date"])
         sector_series[symbol] = out
@@ -150,6 +190,7 @@ def build_macro_history(db: Session, year: int = 2026) -> dict:
             "leaders": leaders,
             "laggards": laggards,
             "spread": round(spread, 3) if spread is not None else None,
+            "possible_catalysts": _nearby_catalysts(dt, catalyst_events),
         })
 
     outliers = []
@@ -187,14 +228,23 @@ def build_macro_history(db: Session, year: int = 2026) -> dict:
                     "relative_gap_points": round(diff, 2),
                     "z_score": round(z, 2),
                     "direction": "resisted sector move" if (sr * br < 0 or abs(sr) < abs(br) * 0.35) else "amplified sector move",
+                    "possible_catalysts": _nearby_catalysts(dt, catalyst_events),
                 })
     outliers.sort(key=lambda x: abs(x["z_score"]), reverse=True)
+
+    significant = sorted(
+        [x for x in date_snapshots if x.get("spread") is not None],
+        key=lambda x: abs(x["spread"]),
+        reverse=True,
+    )[:30]
 
     return {
         "year": year,
         "data_points": len(rows),
         "sector_series": sector_series,
         "rotation_timeline": date_snapshots,
+        "significant_rotation_days": significant,
         "stock_outliers": outliers[:100],
-        "methodology": "Historical rotation uses 1-day, 5-trading-day and 21-trading-day returns with relative-volume amplification. Stock outliers compare 5-day returns with a mapped sector/theme benchmark and flag large standardized divergences.",
+        "catalyst_source": catalyst_source,
+        "methodology": "Historical rotation uses 1-day, 5-trading-day and 21-trading-day returns with relative-volume amplification. Stock outliers compare 5-day returns with a mapped sector/theme benchmark. Macro-calendar events within two calendar days are shown only as possible catalysts; timing does not establish causation.",
     }
