@@ -8,7 +8,7 @@ on:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Fetch current watchlist
         run: |
@@ -29,7 +29,7 @@ jobs:
       - name: Refresh macro rotation universe
         run: |
           set -u
-          symbols=(XLK XLF XLE XLV XLI XLY XLP XLB XLU XLRE XLC SMH BOTZ GLD)
+          symbols=(SPY QQQ XLK XLF XLE XLV XLI XLY XLP XLB XLU XLRE XLC SMH EUV DRAM NCLD IGV CIBR ARKX NLR QTUM BOTZ GLD)
           for symbol in "${symbols[@]}"; do
             curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${symbol}?verify=false" -o /dev/null || true
             sleep 9
@@ -47,6 +47,10 @@ jobs:
             curl --fail --silent --show-error --retry 1 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${symbol}/fundamentals" -o /dev/null || true
             sleep 15
           done
+
+      - name: Warm live flow cache
+        run: |
+          curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/flow/recent?limit=60" -o /dev/null || true
 
       - name: Persist daily report snapshot
         run: |
