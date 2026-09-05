@@ -28,6 +28,12 @@ SECTOR_HINTS = {
     "Healthcare": ["healthcare", "pharma", "biotech", "drug"],
     "Consumer": ["consumer", "retail", "spending"],
     "Materials": ["materials", "copper", "gold", "mining", "steel"],
+    "Software": ["software", "saas", "cloud"],
+    "Cybersecurity": ["cybersecurity", "cyber", "security software"],
+    "Semiconductors": ["semiconductor", "chip", "memory", "dram"],
+    "Nuclear": ["nuclear", "uranium", "reactor"],
+    "Space / Defense": ["space", "satellite", "defense", "aerospace"],
+    "Quantum": ["quantum"],
 }
 
 
@@ -58,7 +64,7 @@ def _classify(title: str) -> tuple[list[str], list[str], int, str]:
     return topics or ["General"], sectors, score, why
 
 
-def _article(title: str, url: str, domain=None, source_country=None, language=None, published_at=None, image_url=None) -> dict:
+def _article(title: str, url: str, domain=None, source_country=None, language=None, published_at=None, image_url=None, discovery_source=None) -> dict:
     topics, sectors, relevance_score, why_it_matters = _classify(title)
     return {
         "title": title,
@@ -72,20 +78,36 @@ def _article(title: str, url: str, domain=None, source_country=None, language=No
         "sectors": sectors,
         "relevance_score": relevance_score,
         "why_it_matters": why_it_matters,
+        "discovery_source": discovery_source,
     }
 
 
 def _google_query(query: str) -> str:
     lowered = query.lower()
     terms = []
+    quoted = re.findall(r'"([^"]{2,50})"', query)
+    uppercase = re.findall(r"\b[A-Z]{2,6}\b", query)
+    for term in quoted[:6]:
+        terms.append(f'"{term}"')
+    for term in uppercase[:6]:
+        if term not in {"OR", "AND"}:
+            terms.append(term)
     for term in [
         "economy", "markets", "trade", "tariffs", "sanctions", "semiconductor",
         "artificial intelligence", "energy", "oil", "central bank", "stocks",
-        "earnings", "inflation", "federal reserve", "nasdaq"
+        "earnings", "inflation", "federal reserve", "nasdaq", "software", "cybersecurity",
+        "nuclear", "uranium", "quantum", "space", "defense", "memory", "cloud"
     ]:
         if term in lowered:
             terms.append(f'"{term}"' if " " in term else term)
-    return " OR ".join(terms[:10]) or "global markets economy"
+    deduped = []
+    seen = set()
+    for term in terms:
+        k = term.lower()
+        if k not in seen:
+            seen.add(k)
+            deduped.append(term)
+    return " OR ".join(deduped[:14]) or "global markets economy"
 
 
 def _google_news_fallback(query: str, max_records: int) -> list[dict]:
@@ -120,11 +142,30 @@ def _google_news_fallback(query: str, max_records: int) -> list[dict]:
                 domain=domain,
                 language="English",
                 published_at=(item.findtext("pubDate") or "").strip() or None,
+                discovery_source="Google News RSS",
             )
         )
         if len(articles) >= max_records:
             break
     return articles
+
+
+def _dedupe_articles(articles: list[dict], max_records: int) -> list[dict]:
+    out = []
+    seen_urls = set()
+    seen_titles = set()
+    for article in articles:
+        url = article.get("url")
+        title = article.get("title") or ""
+        normalized = _normalize_title(title)
+        if not url or not normalized or url in seen_urls or normalized in seen_titles:
+            continue
+        seen_urls.add(url)
+        seen_titles.add(normalized)
+        out.append(article)
+        if len(out) >= max_records:
+            break
+    return out
 
 
 class GdeltProvider:
@@ -181,6 +222,7 @@ class GdeltProvider:
                             language=item.get("language"),
                             published_at=item.get("seendate"),
                             image_url=item.get("socialimage"),
+                            discovery_source="GDELT",
                         )
                     )
                     if len(articles) >= max_records:
@@ -198,4 +240,24 @@ class GdeltProvider:
             "query": query,
             "fallback_reason": fallback_reason,
             "articles": articles,
+        }
+
+    def search_broad(self, query: str, max_records: int = 40, timespan: str = "7d") -> dict:
+        primary = self.search(query, max_records=max(12, max_records // 2), timespan=timespan)
+        try:
+            google = _google_news_fallback(query, max_records=max(12, max_records // 2))
+        except Exception:
+            google = []
+        merged = _dedupe_articles(list(primary.get("articles") or []) + google, max_records)
+        domains = sorted({str(a.get("domain")) for a in merged if a.get("domain")})
+        return {
+            "provider": "GDELT + Google News RSS",
+            "source_url": SOURCE_URL,
+            "retrieved_at": datetime.now(timezone.utc).isoformat(),
+            "query": query,
+            "timespan": timespan,
+            "articles": merged,
+            "source_domains": domains,
+            "source_count": len(domains),
+            "primary_fallback_reason": primary.get("fallback_reason"),
         }
