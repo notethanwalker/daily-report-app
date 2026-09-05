@@ -1,4 +1,81 @@
 "use client";
-import{useMemo,useState}from"react";
-const initial=["SPY","QQQ","AAOI","NBIS","SNDK","AXTI","CRBS","IONQ","OKLO","GLD","SMH","EUV","DRAM","BOTZ","VIX"];const tabs=["Report","Markets","World News","Large Flow","Macro","Settings"];
-export default function Home(){const[tab,setTab]=useState("Report");const[tickers,setTickers]=useState(initial);const[q,setQ]=useState("");const filtered=useMemo(()=>tickers.filter(t=>t.includes(q.toUpperCase())),[tickers,q]);const add=()=>{let t=q.trim().toUpperCase();if(t&&!tickers.includes(t))setTickers([...tickers,t]);setQ("");};return <main className="container"><div className="row"><div><h1>Daily Report</h1><div className="muted">Market intelligence</div></div><div className="muted">v0.1</div></div><nav className="nav">{tabs.map(t=><button className={tab===t?"active":""} onClick={()=>setTab(t)} key={t}>{t}</button>)}</nav>{tab==="Report"&&<div className="grid">{["VIX","Markets","Currencies & Macro","Market News","World News","Outliers","Large Flow"].map(x=><div className="card" key={x}><h3>{x}</h3><p className="muted">Live verified data will populate this section.</p></div>)}</div>}{tab==="Markets"&&<div className="card"><h2>Watchlist</h2><input className="search" value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>e.key==="Enter"&&add()} placeholder="Search or enter ticker…"/><div className="grid">{filtered.map(t=><div className="card" key={t}><div className="row"><strong>{t}</strong><button className="btn" onClick={()=>setTickers(tickers.filter(x=>x!==t))}>Remove</button></div><p className="muted">Price · 1D · 7D · 100MA · 200MA · fundamentals</p></div>)}</div></div>}{tab==="World News"&&<div className="grid"><div className="card"><h2>Recent World Events</h2><p className="muted">Recent articles will be grouped into evolving events.</p></div><div className="card"><h2>Timeline</h2><p className="muted">Events retain timestamps and original source links.</p></div></div>}{tab==="Large Flow"&&<div className="grid"><div className="card"><h2>Large Stock Flow</h2><p className="muted">Outliers in large single-stock buy/sell transactions.</p></div><div className="card"><h2>Options Flow</h2><p className="muted">Outliers in premium, contracts, volume/OI and inferred direction.</p></div></div>}{tab==="Macro"&&<div className="grid">{["USD","EUR","GBP","JPY","CNY","CHF","CAD","AUD","DXY","2Y Treasury","10Y Treasury","Gold","Oil"].map(x=><div className="card" key={x}><strong>{x}</strong><p className="muted">Live data pending.</p></div>)}</div>}{tab==="Settings"&&<div className="grid">{["Watchlist","Report sections","Technical indicators","News topics","Flow thresholds","Data sources"].map(x=><div className="card" key={x}><h3>{x}</h3><p className="muted">Remote configuration.</p></div>)}</div>}</main>}
+
+import { useEffect, useState } from "react";
+
+const API =
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  "https://daily-report-api-ero2.onrender.com";
+
+export default function Home() {
+  const [tickers, setTickers] = useState<string[]>([]);
+  const [status, setStatus] = useState("Connecting to backend...");
+  const [newTicker, setNewTicker] = useState("");
+
+  useEffect(() => {
+    async function loadWatchlist() {
+      try {
+        const response = await fetch(`${API}/api/v1/watchlist`);
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        setTickers(data.tickers || []);
+        setStatus("Backend connected");
+      } catch (error) {
+        console.error(error);
+        setStatus("Backend connection failed");
+      }
+    }
+
+    loadWatchlist();
+  }, []);
+
+  function addTicker() {
+    const symbol = newTicker.trim().toUpperCase();
+
+    if (symbol && !tickers.includes(symbol)) {
+      setTickers([...tickers, symbol]);
+    }
+
+    setNewTicker("");
+  }
+
+  function removeTicker(symbol: string) {
+    setTickers(tickers.filter((ticker) => ticker !== symbol));
+  }
+
+  return (
+    <main>
+      <h1>Daily Report</h1>
+      <p>{status}</p>
+
+      <section>
+        <h2>Watchlist</h2>
+
+        <div>
+          <input
+            value={newTicker}
+            onChange={(e) => setNewTicker(e.target.value)}
+            placeholder="Ticker"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") addTicker();
+            }}
+          />
+
+          <button onClick={addTicker}>Add</button>
+        </div>
+
+        <div>
+          {tickers.map((ticker) => (
+            <div key={ticker}>
+              <strong>{ticker}</strong>{" "}
+              <button onClick={() => removeTicker(ticker)}>Remove</button>
+            </div>
+          ))}
+        </div>
+      </section>
+    </main>
+  );
+}
