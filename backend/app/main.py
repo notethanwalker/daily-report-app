@@ -8,14 +8,16 @@ from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
 from .models import MarketSnapshot, WatchlistItem
+from .providers.alpha_vantage import AlphaVantageError, AlphaVantageProvider
 from .providers.frankfurter import FrankfurterProvider
 from .providers.gdelt import GdeltProvider
 from .providers.twelve_data import TwelveDataError, TwelveDataProvider
 from .services.calculations import build_market_snapshot
+from .services.validation import build_secondary_metrics, cross_check_market_snapshot
 
 app = FastAPI(
     title="Daily Report API",
-    version="0.5"
+    version="0.6"
 )
 
 app.add_middleware(
@@ -37,10 +39,12 @@ DEFAULT_WATCHLIST = [
 ]
 
 MARKET_CACHE_TTL_SECONDS = 900
+SECONDARY_CACHE_TTL_SECONDS = 86400
 NEWS_CACHE_TTL_SECONDS = 600
 CURRENCY_CACHE_TTL_SECONDS = 3600
 
 _market_cache: dict[str, tuple[float, dict]] = {}
+_secondary_cache: dict[str, tuple[float, dict]] = {}
 _shared_cache: dict[str, tuple[float, dict]] = {}
 
 
@@ -58,7 +62,19 @@ def _cached_shared(key: str, ttl: int, loader) -> dict:
     return {**data, "cache": "miss"}
 
 
-def get_market_snapshot(symbol: str) -> dict:
+def get_secondary_metrics(symbol: str) -> dict:
+    cached = _secondary_cache.get(symbol)
+    if cached and (time.time() - cached[0]) < SECONDARY_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    provider = AlphaVantageProvider()
+    raw = provider.daily_history(symbol)
+    metrics = build_secondary_metrics(raw)
+    _secondary_cache[symbol] = (time.time(), metrics)
+    return metrics
+
+
+def get_market_snapshot(symbol: str, verify: bool = True) -> dict:
     symbol = symbol.strip().upper()
     if not symbol:
         raise HTTPException(status_code=400, detail="Ticker symbol is required")
@@ -76,6 +92,25 @@ def get_market_snapshot(symbol: str) -> dict:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Market data unavailable for {symbol}: {exc}") from exc
 
+    if verify and os.getenv("ALPHA_VANTAGE_API_KEY"):
+        try:
+            secondary = get_secondary_metrics(symbol)
+            snapshot.update(cross_check_market_snapshot(snapshot, secondary))
+        except (AlphaVantageError, ValueError, httpx.HTTPError if False else AlphaVantageError) as exc:
+            snapshot["verification_status"] = "primary_only"
+            snapshot["verification"] = {
+                "primary_provider": snapshot.get("provider"),
+                "secondary_provider": "Alpha Vantage",
+                "error": str(exc),
+            }
+        except Exception as exc:
+            snapshot["verification_status"] = "primary_only"
+            snapshot["verification"] = {
+                "primary_provider": snapshot.get("provider"),
+                "secondary_provider": "Alpha Vantage",
+                "error": str(exc),
+            }
+
     _market_cache[symbol] = (time.time(), snapshot)
     return {**snapshot, "cache": "miss"}
 
@@ -92,10 +127,13 @@ def root():
 def health():
     return {
         "status": "ok",
-        "version": "0.5",
+        "version": "0.6",
         "providers": {
             "twelve_data": {
                 "configured": bool(os.getenv("TWELVE_DATA_API_KEY")),
+            },
+            "alpha_vantage": {
+                "configured": bool(os.getenv("ALPHA_VANTAGE_API_KEY")),
             },
             "gdelt": {"configured": True},
             "frankfurter": {"configured": True},
@@ -175,6 +213,7 @@ def remove_ticker(
     db.delete(item)
     db.commit()
     _market_cache.pop(symbol, None)
+    _secondary_cache.pop(symbol, None)
 
     return {
         "status": "removed",
@@ -183,8 +222,12 @@ def remove_ticker(
 
 
 @app.get("/api/v1/markets/{symbol}")
-def market_snapshot(symbol: str, db: Session = Depends(get_db)):
-    result = get_market_snapshot(symbol)
+def market_snapshot(
+    symbol: str,
+    verify: bool = True,
+    db: Session = Depends(get_db),
+):
+    result = get_market_snapshot(symbol, verify=verify)
 
     if result.get("cache") == "miss":
         db.add(
@@ -298,12 +341,13 @@ def config():
         },
         "providers": {
             "primary_market_data": "Twelve Data",
-            "secondary_market_data": None,
+            "secondary_market_data": "Alpha Vantage",
             "world_news": "GDELT",
             "currencies": "Frankfurter",
         },
         "cache_ttl_seconds": {
             "market": MARKET_CACHE_TTL_SECONDS,
+            "secondary_market": SECONDARY_CACHE_TTL_SECONDS,
             "news": NEWS_CACHE_TTL_SECONDS,
             "currencies": CURRENCY_CACHE_TTL_SECONDS,
         },
