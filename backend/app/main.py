@@ -11,7 +11,7 @@ from .providers.frankfurter import FrankfurterProvider
 from .providers.gdelt import GdeltProvider
 from .providers.twelve_data import TwelveDataProvider
 from .services.calculations import build_market_snapshot
-from .services.macro_history import backfill_2026,build_macro_history
+from .services.macro_history import build_macro_history
 from .services.report import build_daily_report
 from .services.rotation import SECTORS,build_rotation_snapshot
 from .services.validation import build_secondary_metrics,cross_check_market_snapshot
@@ -75,7 +75,7 @@ def _load_world_news(topic,limit):
 def root():return {"status":"ok","service":"Daily Report API"}
 @app.get("/api/v1/health")
 def health(db:Session=Depends(get_db)):
- u=_alpha_requests_used_today(db) if os.getenv("ALPHA_VANTAGE_API_KEY") else 0;return {"status":"ok","version":"1.2","providers":{"twelve_data":{"configured":bool(os.getenv("TWELVE_DATA_API_KEY"))},"alpha_vantage":{"configured":bool(os.getenv("ALPHA_VANTAGE_API_KEY")),"daily_budget":20,"used_today":u,"remaining_today":max(20-u,0)},"gdelt":{"configured":True},"frankfurter":{"configured":True},"flow":{"configured":False}}}
+ u=_alpha_requests_used_today(db) if os.getenv("ALPHA_VANTAGE_API_KEY") else 0;return {"status":"ok","version":"1.2","providers":{"twelve_data":{"configured":bool(os.getenv("TWELVE_DATA_API_KEY"))},"alpha_vantage":{"configured":bool(os.getenv("ALPHA_VANTAGE_API_KEY")),"daily_budget":20,"used_today":u,"remaining_today":max(20-u,0)},"gdelt":{"configured":True},"frankfurter":{"configured":True},"macroradar":{"configured":True},"flow":{"configured":False}}}
 @app.get("/api/v1/watchlist")
 def watchlist(db:Session=Depends(get_db)):
  items=db.query(WatchlistItem).order_by(WatchlistItem.created_at).all()
@@ -126,10 +126,6 @@ def rotation(db:Session=Depends(get_db)):
  try:n=_load_market_news(20).get("articles",[])
  except Exception:n=[]
  return build_rotation_snapshot(m,c,n)
-@app.post("/api/v1/macro/backfill")
-def macro_backfill(year:int=2026,db:Session=Depends(get_db)):
- try:return backfill_2026(db,year)
- except Exception as exc:raise HTTPException(502,f"Macro history backfill failed: {exc}") from exc
 @app.get("/api/v1/macro/history")
 def macro_history(year:int=2026,db:Session=Depends(get_db)):return build_macro_history(db,year)
 @app.get("/api/v1/flow/recent")
@@ -152,4 +148,4 @@ def generate_report(db:Session=Depends(get_db)):
 def report_history(limit:int=Query(default=20,ge=1,le=100),db:Session=Depends(get_db)):
  rs=db.query(ReportSnapshot).order_by(ReportSnapshot.created_at.desc()).limit(limit).all();return {"reports":[{"id":r.id,"report_date":r.report_date,"created_at":r.created_at.isoformat(),"data":r.payload} for r in rs]}
 @app.get("/api/v1/report/config")
-def config():return {"sections":["vix","markets","currencies","macro_rotation","macro_history","market_news","world_news","outliers","flow"],"providers":{"primary_market_data":"Twelve Data","secondary_market_data":"Alpha Vantage","world_news":"GDELT + Google News RSS fallback","currencies":"Frankfurter","flow":"not configured"}}
+def config():return {"sections":["vix","markets","currencies","macro_rotation","macro_history","market_news","world_news","outliers","flow"],"providers":{"primary_market_data":"Twelve Data","secondary_market_data":"Alpha Vantage","world_news":"GDELT + Google News RSS fallback","currencies":"Frankfurter","macro_calendar":"MacroRadar","flow":"not configured"}}
