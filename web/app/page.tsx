@@ -33,6 +33,21 @@ type MarketSnapshot = {
   data_note?: string;
 };
 
+type NewsArticle = {
+  title: string;
+  url: string;
+  domain?: string | null;
+  source_country?: string | null;
+  language?: string | null;
+  published_at?: string | null;
+};
+
+type CurrencyRate = {
+  pair: string;
+  rate: number | null;
+  seven_day_percent: number | null;
+};
+
 function money(value: number | null) {
   return value == null ? "—" : `$${value.toFixed(2)}`;
 }
@@ -54,6 +69,10 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState("Report");
   const [marketData, setMarketData] = useState<Record<string, MarketSnapshot>>({});
   const [marketErrors, setMarketErrors] = useState<Record<string, string>>({});
+  const [news, setNews] = useState<NewsArticle[]>([]);
+  const [newsStatus, setNewsStatus] = useState("Not loaded");
+  const [currencies, setCurrencies] = useState<CurrencyRate[]>([]);
+  const [currencyStatus, setCurrencyStatus] = useState("Not loaded");
 
   async function loadWatchlist() {
     try {
@@ -78,9 +97,7 @@ export default function Home() {
     setMarketErrors((current) => ({ ...current, [symbol]: "" }));
 
     try {
-      const response = await fetch(`${API}/api/v1/markets/${encodeURIComponent(symbol)}`, {
-        cache: "no-store",
-      });
+      const response = await fetch(`${API}/api/v1/markets/${encodeURIComponent(symbol)}`, { cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.detail || `HTTP ${response.status}`);
       setMarketData((current) => ({ ...current, [symbol]: data }));
@@ -89,6 +106,32 @@ export default function Home() {
       setMarketErrors((current) => ({ ...current, [symbol]: message }));
     } finally {
       setBusySymbol(null);
+    }
+  }
+
+  async function loadWorldNews() {
+    setNewsStatus("Loading...");
+    try {
+      const response = await fetch(`${API}/api/v1/news/world?limit=30`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || `HTTP ${response.status}`);
+      setNews(data.articles || []);
+      setNewsStatus(`${data.articles?.length || 0} articles · ${data.provider}`);
+    } catch (error) {
+      setNewsStatus(error instanceof Error ? error.message : "News unavailable");
+    }
+  }
+
+  async function loadCurrencies() {
+    setCurrencyStatus("Loading...");
+    try {
+      const response = await fetch(`${API}/api/v1/macro/currencies`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || `HTTP ${response.status}`);
+      setCurrencies(data.rates || []);
+      setCurrencyStatus(`As of ${data.as_of || "—"} · ${data.provider}`);
+    } catch (error) {
+      setCurrencyStatus(error instanceof Error ? error.message : "Currency data unavailable");
     }
   }
 
@@ -124,9 +167,7 @@ export default function Home() {
     setStatus(`Removing ${symbol}...`);
 
     try {
-      const response = await fetch(`${API}/api/v1/watchlist/${encodeURIComponent(symbol)}`, {
-        method: "DELETE",
-      });
+      const response = await fetch(`${API}/api/v1/watchlist/${encodeURIComponent(symbol)}`, { method: "DELETE" });
       if (!response.ok) {
         const detail = await response.json().catch(() => null);
         throw new Error(detail?.detail || `HTTP ${response.status}`);
@@ -166,9 +207,7 @@ export default function Home() {
       {activeTab === "Report" && (
         <section className="card">
           <h2>Daily Report</h2>
-          <p className="muted">
-            The primary market-data pipeline is now connected. Full report generation will be added after secondary verification and news/macro providers are connected.
-          </p>
+          <p className="muted">Primary market data, world news and currency pipelines are connected. Secondary market-data verification and large-flow data are still pending.</p>
         </section>
       )}
 
@@ -178,16 +217,7 @@ export default function Home() {
             <h2>Watchlist</h2>
             <p className="muted">Load symbols individually while the app is on the Twelve Data free tier to stay within provider rate limits.</p>
             <div className="ticker-add-row">
-              <input
-                className="search"
-                value={newTicker}
-                onChange={(e) => setNewTicker(e.target.value.toUpperCase())}
-                placeholder="Add ticker, e.g. MU"
-                maxLength={20}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") addTicker();
-                }}
-              />
+              <input className="search" value={newTicker} onChange={(e) => setNewTicker(e.target.value.toUpperCase())} placeholder="Add ticker, e.g. MU" maxLength={20} onKeyDown={(e) => { if (e.key === "Enter") addTicker(); }} />
               <button className="btn" onClick={addTicker} disabled={!newTicker.trim() || !!busySymbol}>Add</button>
             </div>
           </div>
@@ -200,30 +230,13 @@ export default function Home() {
                 <article className="card ticker-card" key={ticker}>
                   <div className="row">
                     <strong className="ticker-symbol">{ticker}</strong>
-                    <button className="btn danger" onClick={() => removeTicker(ticker)} disabled={!!busySymbol}>
-                      {busySymbol === ticker ? "Working..." : "Remove"}
-                    </button>
+                    <button className="btn danger" onClick={() => removeTicker(ticker)} disabled={!!busySymbol}>{busySymbol === ticker ? "Working..." : "Remove"}</button>
                   </div>
-
-                  {!data && !error && (
-                    <button className="btn load-market" onClick={() => loadMarketData(ticker)} disabled={!!busySymbol}>
-                      {busySymbol === ticker ? "Loading..." : "Load market data"}
-                    </button>
-                  )}
-
-                  {error && (
-                    <div className="market-error">
-                      <p>{error}</p>
-                      <button className="btn" onClick={() => loadMarketData(ticker)} disabled={!!busySymbol}>Retry</button>
-                    </div>
-                  )}
-
+                  {!data && !error && <button className="btn load-market" onClick={() => loadMarketData(ticker)} disabled={!!busySymbol}>{busySymbol === ticker ? "Loading..." : "Load market data"}</button>}
+                  {error && <div className="market-error"><p>{error}</p><button className="btn" onClick={() => loadMarketData(ticker)} disabled={!!busySymbol}>Retry</button></div>}
                   {data && (
                     <div className="market-metrics">
-                      <div className="price-line">
-                        <strong>{money(data.price)}</strong>
-                        <span className={(data.change_percent ?? 0) >= 0 ? "positive" : "negative"}>{percent(data.change_percent)}</span>
-                      </div>
+                      <div className="price-line"><strong>{money(data.price)}</strong><span className={(data.change_percent ?? 0) >= 0 ? "positive" : "negative"}>{percent(data.change_percent)}</span></div>
                       <div className="metric-grid">
                         <span>7D <strong>{percent(data.seven_day_percent)}</strong></span>
                         <span>30D <strong>{percent(data.thirty_day_percent)}</strong></span>
@@ -235,10 +248,7 @@ export default function Home() {
                         <span>52W Low <strong>{money(data.low_52_week)}</strong></span>
                         <span>Volume <strong>{compact(data.volume)}</strong></span>
                       </div>
-                      <p className="source-line">
-                        As of {data.as_of || "—"} · {data.verification_status.replaceAll("_", " ")} ·{" "}
-                        <a href={data.source_url} target="_blank" rel="noreferrer">{data.provider}</a>
-                      </p>
+                      <p className="source-line">As of {data.as_of || "—"} · {data.verification_status.replaceAll("_", " ")} · <a href={data.source_url} target="_blank" rel="noreferrer">{data.provider}</a></p>
                     </div>
                   )}
                 </article>
@@ -248,9 +258,37 @@ export default function Home() {
         </section>
       )}
 
-      {activeTab === "World News" && <section className="card"><h2>World News</h2><p className="muted">Relevant global market events will be clustered, sourced and timestamped here.</p></section>}
-      {activeTab === "Large Flow" && <section className="card"><h2>Large Flow</h2><p className="muted">Large stock prints and unusual options activity will appear here once a flow provider is connected.</p></section>}
-      {activeTab === "Macro" && <section className="card"><h2>Macro</h2><p className="muted">VIX, currencies, rates, commodities and macro outliers will appear here.</p></section>}
+      {activeTab === "World News" && (
+        <section>
+          <div className="card row"><div><h2>World News</h2><p className="muted">{newsStatus}</p></div><button className="btn" onClick={loadWorldNews}>Refresh</button></div>
+          <div className="news-list">
+            {news.map((article) => (
+              <a className="card news-card" href={article.url} target="_blank" rel="noreferrer" key={article.url}>
+                <strong>{article.title}</strong>
+                <p className="source-line">{article.domain || "Source"}{article.source_country ? ` · ${article.source_country}` : ""}{article.published_at ? ` · ${article.published_at}` : ""}</p>
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {activeTab === "Large Flow" && <section className="card"><h2>Large Flow</h2><p className="muted">Large stock prints and unusual options activity require a dedicated flow-data provider.</p></section>}
+
+      {activeTab === "Macro" && (
+        <section>
+          <div className="card row"><div><h2>Major Currencies</h2><p className="muted">{currencyStatus}</p></div><button className="btn" onClick={loadCurrencies}>Refresh</button></div>
+          <div className="grid">
+            {currencies.map((item) => (
+              <article className="card currency-card" key={item.pair}>
+                <strong>{item.pair}</strong>
+                <div className="price-line"><span>{item.rate == null ? "—" : item.rate.toFixed(4)}</span><span className={(item.seven_day_percent ?? 0) >= 0 ? "positive" : "negative"}>{percent(item.seven_day_percent)}</span></div>
+                <p className="muted">7-day USD cross-rate change</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
       {activeTab === "Settings" && <section className="card"><h2>Settings</h2><p className="muted">Report sections, thresholds, alerts and provider status will be configurable here.</p></section>}
     </main>
   );
