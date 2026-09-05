@@ -71,12 +71,14 @@ def _latest_market_payload(db,symbol):
 
 def _enrich_fundamental_ratios(payload,market_payload=None):
  p={**(payload or {})};market_payload=market_payload or {}
- price=market_payload.get("price");eps=p.get("eps");market_cap=p.get("market_cap");revenue=p.get("revenue_ttm")
+ price=market_payload.get("price");eps=p.get("eps");market_cap=p.get("market_cap");revenue=p.get("revenue_ttm");shares=p.get("shares_outstanding")
  provider=p.get("provider") or "fundamentals provider"
+ if market_cap is None and isinstance(price,(int,float)) and isinstance(shares,(int,float)) and shares>0:
+  market_cap=round(price*shares,2);p["market_cap"]=market_cap;p["market_cap_method"]=f"derived from stored price × {provider} shares outstanding"
  if p.get("pe_ratio") is None and isinstance(price,(int,float)) and isinstance(eps,(int,float)) and eps>0:
-  p["pe_ratio"]=round(price/eps,4);p["pe_ratio_method"]=f"derived from stored price / {provider} EPS"
+  p["pe_ratio"]=round(price/eps,4);p["pe_ratio_method"]=f"derived from stored price / {provider} trailing EPS"
  if p.get("price_to_sales_ratio") is None and isinstance(market_cap,(int,float)) and isinstance(revenue,(int,float)) and revenue>0:
-  p["price_to_sales_ratio"]=round(market_cap/revenue,4);p["price_to_sales_method"]=f"derived from {provider} market cap / revenue TTM"
+  p["price_to_sales_ratio"]=round(market_cap/revenue,4);p["price_to_sales_method"]=f"derived from market cap / {provider} revenue TTM"
  growth=p.get("quarterly_earnings_growth_yoy");pe=p.get("pe_ratio")
  if p.get("peg_ratio") is None and isinstance(pe,(int,float)) and pe>0 and isinstance(growth,(int,float)) and growth>0:
   growth_pct=growth*100 if growth<=5 else growth
@@ -107,7 +109,9 @@ def get_fundamentals(symbol,db):
  symbol=symbol.strip().upper();c=db.get(FundamentalCache,symbol);market_payload=_latest_market_payload(db,symbol)
  if c:
   at=c.retrieved_at if c.retrieved_at.tzinfo else c.retrieved_at.replace(tzinfo=timezone.utc);cached=_enrich_fundamental_ratios(c.payload,market_payload)
-  if (datetime.now(timezone.utc)-at).total_seconds()<FUNDAMENTAL_CACHE_TTL_SECONDS:return {**cached,"fundamentals_cache":"fresh"}
+  cache_current=(datetime.now(timezone.utc)-at).total_seconds()<FUNDAMENTAL_CACHE_TTL_SECONDS
+  cache_version=int(c.payload.get("valuation_refresh_version") or 0)
+  if cache_current and (cache_version>=2 or all(cached.get(k) is not None for k in ["pe_ratio","price_to_sales_ratio","peg_ratio"])):return {**cached,"fundamentals_cache":"fresh"}
  p=None;errors=[]
  if os.getenv("ALPHA_VANTAGE_API_KEY") and _alpha_requests_used_today(db)<ALPHA_VANTAGE_DAILY_BUDGET:
   try:p=AlphaVantageProvider().overview(symbol)
@@ -118,7 +122,7 @@ def get_fundamentals(symbol,db):
  if p is None:
   if c:return {**_enrich_fundamental_ratios(c.payload,market_payload),"fundamentals_cache":"stale","fundamentals_errors":errors}
   raise HTTPException(502,"Fundamentals unavailable from configured providers")
- p=_enrich_fundamental_ratios(p,market_payload);provider=str(p.get("provider") or "Fundamentals")
+ p["valuation_refresh_version"]=2;p=_enrich_fundamental_ratios(p,market_payload);provider=str(p.get("provider") or "Fundamentals")
  if c:c.provider=provider;c.payload=p;c.retrieved_at=datetime.now(timezone.utc)
  else:db.add(FundamentalCache(symbol=symbol,provider=provider,payload=p,retrieved_at=datetime.now(timezone.utc)))
  db.commit();return {**p,"fundamentals_cache":"fresh","fundamentals_errors":errors}
