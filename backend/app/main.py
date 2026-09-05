@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
-from .models import MarketSnapshot, ReportSnapshot, SecondaryVerificationCache, WatchlistItem
+from .models import FlowEvent, MarketSnapshot, ReportSnapshot, SecondaryVerificationCache, WatchlistItem
 from .providers.alpha_vantage import AlphaVantageError, AlphaVantageProvider
 from .providers.frankfurter import FrankfurterProvider
 from .providers.gdelt import GdeltProvider
@@ -19,7 +19,7 @@ from .services.validation import build_secondary_metrics, cross_check_market_sna
 
 app = FastAPI(
     title="Daily Report API",
-    version="0.9"
+    version="1.0"
 )
 
 app.add_middleware(
@@ -205,7 +205,7 @@ def health(db: Session = Depends(get_db)):
     used_today = _alpha_requests_used_today(db) if os.getenv("ALPHA_VANTAGE_API_KEY") else 0
     return {
         "status": "ok",
-        "version": "0.9",
+        "version": "1.0",
         "providers": {
             "twelve_data": {
                 "configured": bool(os.getenv("TWELVE_DATA_API_KEY")),
@@ -218,6 +218,7 @@ def health(db: Session = Depends(get_db)):
             },
             "gdelt": {"configured": True},
             "frankfurter": {"configured": True},
+            "flow": {"configured": False},
         },
     }
 
@@ -401,6 +402,40 @@ def currencies():
         raise HTTPException(status_code=502, detail=f"Currency data unavailable: {exc}") from exc
 
 
+@app.get("/api/v1/flow/recent")
+def recent_flow(
+    limit: int = Query(default=50, ge=1, le=200),
+    symbol: str | None = Query(default=None, max_length=20),
+    event_type: str | None = Query(default=None, max_length=32),
+    db: Session = Depends(get_db),
+):
+    query = db.query(FlowEvent)
+    if symbol:
+        query = query.filter(FlowEvent.symbol == symbol.strip().upper())
+    if event_type:
+        query = query.filter(FlowEvent.event_type == event_type.strip().lower())
+
+    rows = query.order_by(FlowEvent.occurred_at.desc()).limit(limit).all()
+    return {
+        "provider_configured": False,
+        "events": [
+            {
+                "id": row.id,
+                "event_type": row.event_type,
+                "symbol": row.symbol,
+                "provider": row.provider,
+                "outlier_score": row.outlier_score,
+                "source_url": row.source_url,
+                "occurred_at": row.occurred_at.isoformat(),
+                "retrieved_at": row.retrieved_at.isoformat(),
+                "data": row.payload,
+            }
+            for row in rows
+        ],
+        "note": "Flow storage and API are ready; ingestion is disabled until a dedicated flow provider is connected.",
+    }
+
+
 @app.get("/api/v1/report/current")
 def current_report(db: Session = Depends(get_db)):
     try:
@@ -491,6 +526,7 @@ def config():
             "secondary_market_data": "Alpha Vantage",
             "world_news": "GDELT",
             "currencies": "Frankfurter",
+            "large_flow": None,
         },
         "verification": {
             "secondary_cache_ttl_seconds": SECONDARY_CACHE_TTL_SECONDS,
