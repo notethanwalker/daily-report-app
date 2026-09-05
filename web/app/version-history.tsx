@@ -7,16 +7,17 @@ const RELEASES:Release[]=[
   version:"v1.4",
   date:"September 5, 2026",
   title:"Reliability, validation, and system visibility",
-  summary:"Strengthened ticker handling, market-data failure reporting, desktop layout, and backend/API observability.",
+  summary:"Strengthened ticker handling, market-data failure reporting, desktop layout, backend/API observability, and controlled production releases.",
   changes:[
    "Added exact ticker validation before new symbols can be added to the watchlist.",
    "Added startup watchlist validation and automatic removal only when a ticker is confirmed invalid by the market-data provider.",
    "Added a 24-hour ticker-validation cache to reduce provider usage.",
-   "Added persistent per-ticker market-data error rows with specific failure messages and Retry controls.",
+   "Added persistent per-ticker market-data error rows with specific failure messages, clearer visual treatment, and Retry controls.",
    "Added responsive desktop layouts that use substantially more native screen width while preserving the mobile PWA layout.",
    "Added Settings backend/API monitoring with provider status, route status, HTTP response state, and latency.",
    "Fixed the Settings status monitor TypeScript production-build failure.",
-   "Disabled automatic Vercel Git deployments so production releases can be deployed deliberately and conserve free-tier build capacity."
+   "Disabled automatic Vercel Git deployments so production releases can be deployed deliberately and conserve free-tier build capacity.",
+   "Removed the per-push report smoke workflow so ordinary code commits no longer wait on Render or create report snapshots as a side effect."
   ]
  },
  {
@@ -81,7 +82,7 @@ export default function VersionHistory(){
   <summary style={{cursor:"pointer",fontWeight:700,fontSize:"1.05rem"}}>Version History</summary>
   <p className="muted" style={{marginTop:10}}>Major application releases and development changes, newest first.</p>
   <div style={{display:"grid",gap:12,marginTop:14}}>
-   {RELEASES.map(release=><article key={release.version} style={{borderTop:"1px solid var(--border)",paddingTop:14}}>
+   {RELEASES.map(release=><article key={release.version} style={{borderTop:"1px solid #1c2730",paddingTop:14}}>
     <div className="row"><div><strong>{release.version} · {release.title}</strong><p className="muted">{release.date}</p></div></div>
     <p>{release.summary}</p>
     <ul>{release.changes.map(change=><li key={change}>{change}</li>)}</ul>
