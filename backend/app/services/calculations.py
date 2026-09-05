@@ -31,8 +31,8 @@ def _mean(values):
 
 
 def build_market_snapshot(raw: dict) -> dict:
-    quote = raw["quote"]
     history = raw["history"]
+    meta = history.get("meta", {})
     values = history.get("values") or []
 
     rows = []
@@ -60,12 +60,10 @@ def build_market_snapshot(raw: dict) -> dict:
     if not rows:
         raise ValueError("No daily history returned")
 
-    current = _number(quote.get("close")) or rows[-1]["close"]
-    previous_close = _number(quote.get("previous_close"))
-    if previous_close is None and len(rows) >= 2:
-        previous_close = rows[-2]["close"]
-
+    current = rows[-1]["close"]
+    previous_close = rows[-2]["close"] if len(rows) >= 2 else None
     today = rows[-1]["date"]
+
     close_7d = _nearest_close_on_or_before(rows, today - timedelta(days=7))
     close_30d = _nearest_close_on_or_before(rows, today - timedelta(days=30))
     close_ytd = _nearest_close_on_or_before(rows, date(today.year - 1, 12, 31))
@@ -81,16 +79,15 @@ def build_market_snapshot(raw: dict) -> dict:
     highs = [row["high"] for row in year_rows if row["high"] is not None]
     lows = [row["low"] for row in year_rows if row["low"] is not None]
 
-    current_volume = _number(quote.get("volume"))
-    if current_volume is None:
-        current_volume = rows[-1]["volume"]
-    average_volume = _mean([row["volume"] for row in rows[-20:] if row["volume"] is not None])
+    current_volume = rows[-1]["volume"]
+    prior_volumes = [row["volume"] for row in rows[-21:-1] if row["volume"] is not None]
+    average_volume = _mean(prior_volumes)
 
     return {
-        "symbol": quote.get("symbol") or history.get("meta", {}).get("symbol"),
-        "name": quote.get("name"),
-        "exchange": quote.get("exchange"),
-        "currency": quote.get("currency"),
+        "symbol": meta.get("symbol"),
+        "name": None,
+        "exchange": meta.get("exchange"),
+        "currency": meta.get("currency"),
         "price": current,
         "previous_close": previous_close,
         "change": None if previous_close is None else current - previous_close,
@@ -107,10 +104,11 @@ def build_market_snapshot(raw: dict) -> dict:
         "volume": current_volume,
         "average_volume_20d": average_volume,
         "relative_volume": None if average_volume in (None, 0) or current_volume is None else current_volume / average_volume,
-        "market_open": quote.get("is_market_open"),
-        "as_of": quote.get("datetime") or rows[-1]["date"].isoformat(),
+        "market_open": None,
+        "as_of": rows[-1]["date"].isoformat(),
         "provider": raw["provider"],
         "source_url": raw["source_url"],
         "retrieved_at": raw["retrieved_at"],
         "verification_status": "primary_only",
+        "data_note": "Daily time-series data; intraday real-time quote not yet enabled.",
     }
