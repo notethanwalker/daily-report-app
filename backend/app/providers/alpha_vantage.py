@@ -43,4 +43,21 @@ class AlphaVantageProvider:
                 v=data.get(key)
                 return None if v in (None,"","None","-") else float(v)
             except (TypeError,ValueError): return None
-        return {"symbol":symbol.upper(),"pe_ratio":num("PERatio"),"forward_pe":num("ForwardPE"),"peg_ratio":num("PEGRatio"),"price_to_sales_ratio":num("PriceToSalesRatioTTM"),"eps":num("EPS"),"revenue_ttm":num("RevenueTTM"),"quarterly_revenue_growth_yoy":num("QuarterlyRevenueGrowthYOY"),"market_cap":num("MarketCapitalization"),"provider":self.name,"source_url":SOURCE_URL,"retrieved_at":datetime.now(timezone.utc).isoformat()}
+        return {
+            "symbol":symbol.upper(),
+            "name":data.get("Name"),
+            "sector":data.get("Sector"),
+            "industry":data.get("Industry"),
+            "pe_ratio":num("PERatio"),
+            "forward_pe":num("ForwardPE"),
+            "peg_ratio":num("PEGRatio"),
+            "price_to_sales_ratio":num("PriceToSalesRatioTTM"),
+            "eps":num("EPS"),
+            "revenue_ttm":num("RevenueTTM"),
+            "quarterly_revenue_growth_yoy":num("QuarterlyRevenueGrowthYOY"),
+            "quarterly_earnings_growth_yoy":num("QuarterlyEarningsGrowthYOY"),
+            "market_cap":num("MarketCapitalization"),
+            "provider":self.name,
+            "source_url":SOURCE_URL,
+            "retrieved_at":datetime.now(timezone.utc).isoformat()
+        }
