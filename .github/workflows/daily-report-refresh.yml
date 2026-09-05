@@ -1,0 +1,42 @@
+name: Daily Report Refresh
+
+on:
+  schedule:
+    - cron: "30 22 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Fetch current watchlist
+        id: watchlist
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 \
+            https://daily-report-api-ero2.onrender.com/api/v1/watchlist > watchlist.json
+          cat watchlist.json
+          jq -e '.tickers | type == "array"' watchlist.json
+
+      - name: Refresh market snapshots within provider limits
+        run: |
+          set -u
+          mapfile -t symbols < <(jq -r '.tickers[]' watchlist.json)
+          for symbol in "${symbols[@]}"; do
+            echo "Refreshing ${symbol}"
+            encoded=$(jq -rn --arg v "$symbol" '$v|@uri')
+            if ! curl --fail --silent --show-error --retry 2 --retry-delay 5 \
+              "https://daily-report-api-ero2.onrender.com/api/v1/markets/${encoded}?verify=true" \
+              -o "market-${symbol//[^A-Za-z0-9]/_}.json"; then
+              echo "Refresh unavailable for ${symbol}; continuing."
+            fi
+            sleep 9
+          done
+
+      - name: Persist daily report snapshot
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 \
+            -X POST https://daily-report-api-ero2.onrender.com/api/v1/report/generate \
+            | jq '{id, report_date, market_data_count, missing_market_symbols, verification_summary}'
