@@ -8,23 +8,23 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect live valuation population
+      - name: Install yfinance
+        run: pip install -q yfinance
+      - name: Inspect Yahoo fields
         run: |
           python - <<'PY'
-          import json, urllib.request, urllib.error
-          base='https://daily-report-api-ero2.onrender.com/api/v1/markets'
-          symbols=['MU','WEN','AAPL']
-          keys=['pe_ratio','price_to_sales_ratio','peg_ratio','eps','revenue_ttm','market_cap','quarterly_earnings_growth_yoy','provider','valuation_source','fundamentals_cache']
-          complete=[]
-          for s in symbols:
+          import yfinance as yf
+          for s in ['AAPL','MU','WEN']:
+              t=yf.Ticker(s)
+              print('\n',s)
               try:
-                  with urllib.request.urlopen(f'{base}/{s}/fundamentals', timeout=40) as r:
-                      d=json.load(r)
-              except urllib.error.HTTPError as e:
-                  print(s,'HTTP',e.code,e.read().decode()[:300]); continue
-              print(s,{k:d.get(k) for k in keys})
-              if all(d.get(k) is not None for k in ['pe_ratio','price_to_sales_ratio','peg_ratio']): complete.append(s)
-          if not complete:
-              raise SystemExit('No tested ticker populated P/E, P/S, and PEG together')
-          print('PASS complete valuation fields:', ','.join(complete))
+                  f=dict(t.fast_info)
+                  print('fast', {k:f.get(k) for k in ['last_price','market_cap','shares','year_high','year_low']})
+              except Exception as e: print('fast error',repr(e))
+              try:
+                  q=t.quarterly_income_stmt
+                  print('quarterly rows',list(q.index)[:30])
+                  for row in ['Total Revenue','Diluted EPS','Basic EPS','Net Income','Diluted Average Shares']:
+                      if row in q.index: print(row,list(q.loc[row].dropna().head(5).items()))
+              except Exception as e: print('quarterly error',repr(e))
           PY
