@@ -1,5 +1,6 @@
 from collections import defaultdict
 from statistics import mean, pstdev
+import time
 
 from sqlalchemy.orm import Session
 
@@ -55,40 +56,47 @@ def backfill_2026(db: Session, year: int = 2026) -> dict:
     provider = TwelveDataProvider()
     inserted = 0
     refreshed = []
-    for symbol in symbols:
-        raw = provider.daily_history(symbol, outputsize=260)
-        values = raw.get("values") or raw.get("data") or []
-        for row in values:
-            dt = str(row.get("datetime") or row.get("date") or "")[:10]
-            if not dt.startswith(f"{year}-"):
-                continue
-            close = row.get("close")
-            volume = row.get("volume")
-            try:
-                close_f = float(close)
-                volume_f = float(volume or 0)
-            except (TypeError, ValueError):
-                continue
-            existing = db.query(HistoricalDailyBar).filter(
-                HistoricalDailyBar.symbol == symbol,
-                HistoricalDailyBar.bar_date == dt,
-            ).first()
-            if existing:
-                existing.close = close_f
-                existing.volume = volume_f
-            else:
-                db.add(HistoricalDailyBar(
-                    symbol=symbol,
-                    bar_date=dt,
-                    close=close_f,
-                    volume=volume_f,
-                    provider="Twelve Data",
-                    source_url=SOURCE_URL,
-                ))
-                inserted += 1
-        db.commit()
-        refreshed.append(symbol)
-    return {"year": year, "symbols": refreshed, "inserted": inserted}
+    failures = []
+    for idx, symbol in enumerate(symbols):
+        if idx:
+            time.sleep(8.2)
+        try:
+            raw = provider.daily_history(symbol, outputsize=260)
+            values = raw.get("values") or raw.get("data") or []
+            for row in values:
+                dt = str(row.get("datetime") or row.get("date") or "")[:10]
+                if not dt.startswith(f"{year}-"):
+                    continue
+                close = row.get("close")
+                volume = row.get("volume")
+                try:
+                    close_f = float(close)
+                    volume_f = float(volume or 0)
+                except (TypeError, ValueError):
+                    continue
+                existing = db.query(HistoricalDailyBar).filter(
+                    HistoricalDailyBar.symbol == symbol,
+                    HistoricalDailyBar.bar_date == dt,
+                ).first()
+                if existing:
+                    existing.close = close_f
+                    existing.volume = volume_f
+                else:
+                    db.add(HistoricalDailyBar(
+                        symbol=symbol,
+                        bar_date=dt,
+                        close=close_f,
+                        volume=volume_f,
+                        provider="Twelve Data",
+                        source_url=SOURCE_URL,
+                    ))
+                    inserted += 1
+            db.commit()
+            refreshed.append(symbol)
+        except Exception as exc:
+            db.rollback()
+            failures.append({"symbol": symbol, "reason": str(exc)[:160]})
+    return {"year": year, "symbols": refreshed, "inserted": inserted, "failures": failures}
 
 
 def build_macro_history(db: Session, year: int = 2026) -> dict:
