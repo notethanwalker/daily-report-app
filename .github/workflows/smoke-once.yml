@@ -17,7 +17,7 @@ jobs:
           set -euo pipefail
           HEALTH=$(curl --fail --silent --show-error --retry 5 --retry-delay 5 https://daily-report-api-ero2.onrender.com/api/v1/health)
           echo "$HEALTH"
-          echo "$HEALTH" | jq -e '.status == "ok" and .providers.twelve_data.configured == true'
+          echo "$HEALTH" | jq -e '.status == "ok" and .providers.twelve_data.configured == true and .providers.gdelt.configured == true and .providers.frankfurter.configured == true'
 
       - name: Check Twelve Data market pipeline
         run: |
@@ -25,3 +25,17 @@ jobs:
           MARKET=$(curl --fail --silent --show-error --retry 3 --retry-delay 10 https://daily-report-api-ero2.onrender.com/api/v1/markets/SPY)
           echo "$MARKET"
           echo "$MARKET" | jq -e '.symbol == "SPY" and (.price | type == "number") and .provider == "Twelve Data"'
+
+      - name: Check currency pipeline
+        run: |
+          set -euo pipefail
+          FX=$(curl --fail --silent --show-error --retry 3 --retry-delay 5 https://daily-report-api-ero2.onrender.com/api/v1/macro/currencies)
+          echo "$FX"
+          echo "$FX" | jq -e '.provider == "Frankfurter" and (.rates | length) >= 5'
+
+      - name: Check world news pipeline
+        run: |
+          set -euo pipefail
+          NEWS=$(curl --fail --silent --show-error --retry 3 --retry-delay 5 'https://daily-report-api-ero2.onrender.com/api/v1/news/world?limit=5')
+          echo "$NEWS"
+          echo "$NEWS" | jq -e '.provider == "GDELT" and (.articles | type == "array")'
