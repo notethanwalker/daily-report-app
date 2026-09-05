@@ -1,5 +1,6 @@
 "use client";
 import {useCallback,useEffect,useState} from "react";
+import VersionHistory from "./version-history";
 
 const API=process.env.NEXT_PUBLIC_API_BASE_URL||"https://daily-report-api-ero2.onrender.com";
 
@@ -102,5 +103,6 @@ export default function BackendStatus(){
   <div className="status-summary-grid"><article className="card stat-card"><span>API version</span><strong>{version}</strong></article><article className="card stat-card"><span>Healthy</span><strong className="positive">{counts.ok}</strong></article><article className="card stat-card"><span>Issues</span><strong className={counts.error?"negative":"positive"}>{counts.error}</strong></article><article className="card stat-card"><span>Last check</span><strong className="status-time">{lastChecked}</strong></article></div>
   <div className="card"><h2>Providers</h2><div className="provider-status-grid">{Object.entries(providers).map(([name,p]:any)=>{const configured=p?.configured!==false;const remaining=p?.remaining_today;return <div className="provider-status" key={name}><span className={`health-dot ${configured?"ok":"warn"}`}/><div><strong>{name.replaceAll("_"," ")}</strong><p>{configured?"Available/configured":"Not configured"}{remaining!=null?` · ${remaining} requests remaining today`:""}</p></div></div>})}{!Object.keys(providers).length&&<p className="muted">Provider health has not loaded yet.</p>}</div></div>
   <div className="card"><h2>API routes</h2><div className="api-status-table-wrap"><table className="api-status-table"><thead><tr><th>Status</th><th>Route</th><th>Method</th><th>Latency</th><th>Detail</th></tr></thead><tbody>{ENDPOINTS.map(e=>{const r=results[e.name]||{state:"checking"};return <tr key={e.name}><td><span className={`health-pill ${r.state}`}>{r.state==="ok"?"OK":r.state==="error"?"Issue":r.state==="warn"?"Passive":"Checking"}</span></td><td><strong>{e.name}</strong><code>{e.path}</code></td><td>{e.method}</td><td>{r.latency!=null?`${r.latency} ms`:"—"}</td><td className={r.state==="error"?"negative":"muted"}>{r.message||"Checking…"}</td></tr>})}</tbody></table></div></div>
+  <VersionHistory/>
  </section>;
 }
