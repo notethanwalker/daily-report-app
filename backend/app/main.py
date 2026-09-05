@@ -11,13 +11,14 @@ from .providers.frankfurter import FrankfurterProvider
 from .providers.gdelt import GdeltProvider
 from .providers.squawkflow import SquawkFlowProvider
 from .providers.twelve_data import TwelveDataProvider
+from .providers.yahoo_finance import YahooFinanceProvider
 from .services.calculations import build_market_snapshot,build_williams_r_series
 from .services.macro_history import build_macro_history
 from .services.report import build_daily_report
 from .services.rotation import SECTORS,build_rotation_snapshot
 from .services.validation import build_secondary_metrics,cross_check_market_snapshot
 
-app=FastAPI(title="Daily Report API",version="1.7")
+app=FastAPI(title="Daily Report API",version="1.8")
 app.add_middleware(CORSMiddleware,allow_origins=["https://daily-report-app-pearl.vercel.app"],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 Base.metadata.create_all(bind=engine)
 DEFAULT_WATCHLIST=["SPY","QQQ","AAOI","NBIS","SNDK","AXTI","CRBS","IONQ","OKLO","GLD","SMH","EUV","DRAM","BOTZ","VIX"]
@@ -71,16 +72,17 @@ def _latest_market_payload(db,symbol):
 def _enrich_fundamental_ratios(payload,market_payload=None):
  p={**(payload or {})};market_payload=market_payload or {}
  price=market_payload.get("price");eps=p.get("eps");market_cap=p.get("market_cap");revenue=p.get("revenue_ttm")
+ provider=p.get("provider") or "fundamentals provider"
  if p.get("pe_ratio") is None and isinstance(price,(int,float)) and isinstance(eps,(int,float)) and eps>0:
-  p["pe_ratio"]=round(price/eps,4);p["pe_ratio_method"]="derived from stored price / Alpha Vantage EPS"
+  p["pe_ratio"]=round(price/eps,4);p["pe_ratio_method"]=f"derived from stored price / {provider} EPS"
  if p.get("price_to_sales_ratio") is None and isinstance(market_cap,(int,float)) and isinstance(revenue,(int,float)) and revenue>0:
-  p["price_to_sales_ratio"]=round(market_cap/revenue,4);p["price_to_sales_method"]="derived from Alpha Vantage market cap / revenue TTM"
+  p["price_to_sales_ratio"]=round(market_cap/revenue,4);p["price_to_sales_method"]=f"derived from {provider} market cap / revenue TTM"
  growth=p.get("quarterly_earnings_growth_yoy");pe=p.get("pe_ratio")
  if p.get("peg_ratio") is None and isinstance(pe,(int,float)) and pe>0 and isinstance(growth,(int,float)) and growth>0:
   growth_pct=growth*100 if growth<=5 else growth
   if growth_pct>0:
-   p["peg_ratio"]=round(pe/growth_pct,4);p["peg_ratio_method"]="derived from P/E / Alpha Vantage quarterly earnings growth; estimate"
- p["valuation_source"]="Alpha Vantage OVERVIEW with stored-price derivation fallback"
+   p["peg_ratio"]=round(pe/growth_pct,4);p["peg_ratio_method"]=f"derived from P/E / {provider} quarterly earnings growth; estimate"
+ p["valuation_source"]=f"{provider} fundamentals with stored-price derivation fallback"
  return p
 
 def get_secondary_metrics(symbol,db):
@@ -106,16 +108,20 @@ def get_fundamentals(symbol,db):
  if c:
   at=c.retrieved_at if c.retrieved_at.tzinfo else c.retrieved_at.replace(tzinfo=timezone.utc);cached=_enrich_fundamental_ratios(c.payload,market_payload)
   if (datetime.now(timezone.utc)-at).total_seconds()<FUNDAMENTAL_CACHE_TTL_SECONDS:return {**cached,"fundamentals_cache":"fresh"}
- if _alpha_requests_used_today(db)>=ALPHA_VANTAGE_DAILY_BUDGET:
-  if c:return {**_enrich_fundamental_ratios(c.payload,market_payload),"fundamentals_cache":"stale"}
-  raise HTTPException(429,"Fundamentals daily provider budget reached")
- try:p=_enrich_fundamental_ratios(AlphaVantageProvider().overview(symbol),market_payload)
- except Exception as exc:
-  if c:return {**_enrich_fundamental_ratios(c.payload,market_payload),"fundamentals_cache":"stale"}
-  raise HTTPException(502,"Fundamentals unavailable") from exc
- if c:c.provider="Alpha Vantage";c.payload=p;c.retrieved_at=datetime.now(timezone.utc)
- else:db.add(FundamentalCache(symbol=symbol,provider="Alpha Vantage",payload=p,retrieved_at=datetime.now(timezone.utc)))
- db.commit();return {**p,"fundamentals_cache":"fresh"}
+ p=None;errors=[]
+ if os.getenv("ALPHA_VANTAGE_API_KEY") and _alpha_requests_used_today(db)<ALPHA_VANTAGE_DAILY_BUDGET:
+  try:p=AlphaVantageProvider().overview(symbol)
+  except Exception as exc:errors.append(f"Alpha Vantage: {exc}")
+ if p is None:
+  try:p=YahooFinanceProvider().overview(symbol)
+  except Exception as exc:errors.append(f"Yahoo Finance: {exc}")
+ if p is None:
+  if c:return {**_enrich_fundamental_ratios(c.payload,market_payload),"fundamentals_cache":"stale","fundamentals_errors":errors}
+  raise HTTPException(502,"Fundamentals unavailable from configured providers")
+ p=_enrich_fundamental_ratios(p,market_payload);provider=str(p.get("provider") or "Fundamentals")
+ if c:c.provider=provider;c.payload=p;c.retrieved_at=datetime.now(timezone.utc)
+ else:db.add(FundamentalCache(symbol=symbol,provider=provider,payload=p,retrieved_at=datetime.now(timezone.utc)))
+ db.commit();return {**p,"fundamentals_cache":"fresh","fundamentals_errors":errors}
 
 def get_market_snapshot(symbol,db,verify=True):
  symbol=symbol.strip().upper();k=f"{symbol}:{verify}";c=_market_cache.get(k)
@@ -205,7 +211,7 @@ def _macro_backfill_worker(symbols):
 def root():return {"status":"ok","service":"Daily Report API"}
 @app.get("/api/v1/health")
 def health(db:Session=Depends(get_db)):
- u=_alpha_requests_used_today(db) if os.getenv("ALPHA_VANTAGE_API_KEY") else 0;return {"status":"ok","version":"1.7","providers":{"twelve_data":{"configured":bool(os.getenv("TWELVE_DATA_API_KEY"))},"alpha_vantage":{"configured":bool(os.getenv("ALPHA_VANTAGE_API_KEY")),"daily_budget":20,"used_today":u,"remaining_today":max(20-u,0)},"gdelt":{"configured":True},"frankfurter":{"configured":True},"macroradar":{"configured":True},"ticker_validation":{"configured":bool(os.getenv("TWELVE_DATA_API_KEY"))},"flow":{"configured":True,"provider":"SquawkFlow public unusual-options API","anonymous_limit":"60 requests/hour/IP"}}}
+ u=_alpha_requests_used_today(db) if os.getenv("ALPHA_VANTAGE_API_KEY") else 0;return {"status":"ok","version":"1.8","providers":{"twelve_data":{"configured":bool(os.getenv("TWELVE_DATA_API_KEY"))},"alpha_vantage":{"configured":bool(os.getenv("ALPHA_VANTAGE_API_KEY")),"daily_budget":20,"used_today":u,"remaining_today":max(20-u,0)},"yahoo_finance":{"configured":True,"purpose":"fundamentals fallback"},"gdelt":{"configured":True},"frankfurter":{"configured":True},"macroradar":{"configured":True},"ticker_validation":{"configured":bool(os.getenv("TWELVE_DATA_API_KEY"))},"flow":{"configured":True,"provider":"SquawkFlow public unusual-options API","anonymous_limit":"60 requests/hour/IP"}}}
 @app.get("/api/v1/watchlist")
 def watchlist(db:Session=Depends(get_db)):
  items=db.query(WatchlistItem).order_by(WatchlistItem.created_at).all()
@@ -289,4 +295,4 @@ def generate_report(db:Session=Depends(get_db)):
 def report_history(limit:int=Query(default=20,ge=1,le=100),db:Session=Depends(get_db)):
  rs=db.query(ReportSnapshot).order_by(ReportSnapshot.created_at.desc()).limit(limit).all();return {"reports":[{"id":r.id,"report_date":r.report_date,"created_at":r.created_at.isoformat(),"data":r.payload} for r in rs]}
 @app.get("/api/v1/report/config")
-def config():return {"sections":["vix","markets","currencies","macro_rotation","macro_history","market_news","world_news","outliers","flow"],"providers":{"primary_market_data":"Twelve Data","secondary_market_data":"Alpha Vantage","fundamentals":"Alpha Vantage OVERVIEW cached for 7 days, with derived P/E/P/S/PEG fallback and stale-cache fallback","world_news":"GDELT + Google News RSS fallback","currencies":"Frankfurter","macro_calendar":"MacroRadar","ticker_validation":"Twelve Data exact symbol search + stored market history","flow":"SquawkFlow public unusual-options API enriched from cached market fundamentals"}}
+def config():return {"sections":["vix","markets","currencies","macro_rotation","macro_history","market_news","world_news","outliers","flow"],"providers":{"primary_market_data":"Twelve Data","secondary_market_data":"Alpha Vantage","fundamentals":"Alpha Vantage OVERVIEW with Yahoo Finance fallback, cached for 7 days, plus derived P/E/P/S/PEG when inputs exist","world_news":"GDELT + Google News RSS fallback","currencies":"Frankfurter","macro_calendar":"MacroRadar","ticker_validation":"Twelve Data exact symbol search + stored market history","flow":"SquawkFlow public unusual-options API enriched from cached market fundamentals"}}
