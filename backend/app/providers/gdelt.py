@@ -233,6 +233,15 @@ class GdeltProvider:
                 source_url = "https://news.google.com/"
                 fallback_reason = "gdelt_rate_limited_or_unavailable"
 
+        if provider == "GDELT" and max_records >= 20:
+            try:
+                google = _google_news_fallback(query, max(10, max_records // 2))
+                articles = _dedupe_articles(articles + google, max_records)
+                provider = "GDELT + Google News RSS"
+            except Exception:
+                pass
+
+        domains = sorted({str(a.get("domain")) for a in articles if a.get("domain")})
         return {
             "provider": provider,
             "source_url": source_url,
@@ -240,6 +249,8 @@ class GdeltProvider:
             "query": query,
             "fallback_reason": fallback_reason,
             "articles": articles,
+            "source_domains": domains,
+            "source_count": len(domains),
         }
 
     def search_broad(self, query: str, max_records: int = 40, timespan: str = "7d") -> dict:
