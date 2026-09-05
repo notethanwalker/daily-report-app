@@ -50,3 +50,17 @@ class SecondaryVerificationCache(Base):
         index=True,
         nullable=False,
     )
+
+
+class ReportSnapshot(Base):
+    __tablename__ = "report_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    report_date: Mapped[str] = mapped_column(String(16), index=True, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        index=True,
+        nullable=False,
+    )
