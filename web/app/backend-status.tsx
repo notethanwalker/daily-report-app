@@ -1,5 +1,6 @@
 "use client";
 import {useCallback,useEffect,useState} from "react";
+import VersionHistory from "./version-history";
 
 const API=process.env.NEXT_PUBLIC_API_BASE_URL||"https://daily-report-api-ero2.onrender.com";
 
@@ -52,56 +53,28 @@ export default function BackendStatus(){
  const refresh=useCallback(async()=>{
   setChecking(true);
   const initial:Record<string,ProbeResult>={};
-  ENDPOINTS.forEach(e=>{
-   initial[e.name]={state:e.probe===false?"warn":"checking",message:e.note};
-  });
+  ENDPOINTS.forEach(e=>{initial[e.name]={state:e.probe===false?"warn":"checking",message:e.note}});
   setResults(initial);
-
   const probes=ENDPOINTS.filter(e=>e.probe!==false);
   await Promise.all(probes.map(async e=>{
    try{
     const r=await timedFetch(e.path);
-    setResults(current=>({
-     ...current,
-     [e.name]:r.ok
-      ?{state:"ok",status:r.status,latency:r.latency,message:"Responding normally"}
-      :{state:"error",status:r.status,latency:r.latency,message:`HTTP ${r.status}`}
-    }));
+    setResults(current=>({...current,[e.name]:r.ok?{state:"ok",status:r.status,latency:r.latency,message:"Responding normally"}:{state:"error",status:r.status,latency:r.latency,message:`HTTP ${r.status}`}}));
    }catch(err:any){
-    setResults(current=>({
-     ...current,
-     [e.name]:{
-      state:"error",
-      message:err?.name==="AbortError"?"Timed out after 12 seconds":err?.message||"Request failed"
-     }
-    }));
+    setResults(current=>({...current,[e.name]:{state:"error",message:err?.name==="AbortError"?"Timed out after 12 seconds":err?.message||"Request failed"}}));
    }
   }));
-
-  try{
-   const r=await fetch(`${API}/api/v1/health`,{cache:"no-store"});
-   if(r.ok){
-    const d=await r.json();
-    setProviders(d.providers||{});
-    setVersion(d.version||"—");
-   }
-  }catch{}
-
-  setLastChecked(new Date().toLocaleTimeString());
-  setChecking(false);
+  try{const r=await fetch(`${API}/api/v1/health`,{cache:"no-store"});if(r.ok){const d=await r.json();setProviders(d.providers||{});setVersion(d.version||"—")}}catch{}
+  setLastChecked(new Date().toLocaleTimeString());setChecking(false);
  },[]);
 
  useEffect(()=>{refresh()},[refresh]);
+ const counts=Object.values(results).reduce((a,r)=>{a[r.state]=(a[r.state]||0)+1;return a},{ok:0,warn:0,error:0,checking:0} as Record<string,number>);
 
- const counts=Object.values(results).reduce((a,r)=>{
-  a[r.state]=(a[r.state]||0)+1;
-  return a;
- },{ok:0,warn:0,error:0,checking:0} as Record<string,number>);
-
- return <section className="settings-status">
+ return <><section className="settings-status">
   <div className="card section-head reveal-card"><div><span className="eyebrow">System monitor</span><h2>Backend API Status</h2><p className="muted">Checks safe read endpoints directly. Provider-budgeted and destructive routes are monitored without consuming quota or changing data.</p></div><button className="btn" disabled={checking} onClick={refresh}>{checking?"Checking…":"Run checks"}</button></div>
   <div className="status-summary-grid"><article className="card stat-card reveal-card"><span>API version</span><strong>{version}</strong></article><article className="card stat-card reveal-card"><span>Healthy</span><strong className="positive">{counts.ok}</strong></article><article className="card stat-card reveal-card"><span>Issues</span><strong className={counts.error?"negative":"positive"}>{counts.error}</strong></article><article className="card stat-card reveal-card"><span>Last check</span><strong className="status-time">{lastChecked}</strong></article></div>
   <div className="card reveal-card"><h2>Providers</h2><div className="provider-status-grid">{Object.entries(providers).map(([name,p]:any)=>{const configured=p?.configured!==false;const remaining=p?.remaining_today;return <div className="provider-status" key={name}><span className={`health-dot ${configured?"ok":"warn"}`}/><div><strong>{name.replaceAll("_"," ")}</strong><p>{configured?"Available/configured":"Not configured"}{remaining!=null?` · ${remaining} requests remaining today`:""}</p></div></div>})}{!Object.keys(providers).length&&<p className="muted">Provider health has not loaded yet.</p>}</div></div>
   <div className="card reveal-card"><h2>API routes</h2><div className="api-status-table-wrap"><table className="api-status-table"><thead><tr><th>Status</th><th>Route</th><th>Method</th><th>Latency</th><th>Detail</th></tr></thead><tbody>{ENDPOINTS.map(e=>{const r=results[e.name]||{state:"checking"};return <tr key={e.name}><td><span className={`health-pill ${r.state}`}>{r.state==="ok"?"OK":r.state==="error"?"Issue":r.state==="warn"?"Passive":"Checking"}</span></td><td><strong>{e.name}</strong><code>{e.path}</code></td><td>{e.method}</td><td>{r.latency!=null?`${r.latency} ms`:"—"}</td><td className={r.state==="error"?"negative":"muted"}>{r.message||"Checking…"}</td></tr>})}</tbody></table></div></div>
- </section>;
+ </section><VersionHistory/></>;
 }
