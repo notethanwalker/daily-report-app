@@ -1,19 +1,19 @@
 import os
 import time
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
-from .models import WatchlistItem
+from .models import MarketSnapshot, WatchlistItem
 from .providers.twelve_data import TwelveDataError, TwelveDataProvider
 from .services.calculations import build_market_snapshot
 
 app = FastAPI(
     title="Daily Report API",
-    version="0.3"
+    version="0.4"
 )
 
 app.add_middleware(
@@ -34,7 +34,7 @@ DEFAULT_WATCHLIST = [
     "SMH", "EUV", "DRAM", "BOTZ", "VIX"
 ]
 
-MARKET_CACHE_TTL_SECONDS = 300
+MARKET_CACHE_TTL_SECONDS = 900
 _market_cache: dict[str, tuple[float, dict]] = {}
 
 
@@ -42,13 +42,13 @@ class TickerRequest(BaseModel):
     symbol: str
 
 
-def get_market_snapshot(symbol: str, force: bool = False) -> dict:
+def get_market_snapshot(symbol: str) -> dict:
     symbol = symbol.strip().upper()
     if not symbol:
         raise HTTPException(status_code=400, detail="Ticker symbol is required")
 
     cached = _market_cache.get(symbol)
-    if cached and not force and (time.time() - cached[0]) < MARKET_CACHE_TTL_SECONDS:
+    if cached and (time.time() - cached[0]) < MARKET_CACHE_TTL_SECONDS:
         return {**cached[1], "cache": "hit"}
 
     try:
@@ -76,7 +76,7 @@ def root():
 def health():
     return {
         "status": "ok",
-        "version": "0.3",
+        "version": "0.4",
         "providers": {
             "twelve_data": {
                 "configured": bool(os.getenv("TWELVE_DATA_API_KEY")),
@@ -165,8 +165,51 @@ def remove_ticker(
 
 
 @app.get("/api/v1/markets/{symbol}")
-def market_snapshot(symbol: str, force: bool = False):
-    return get_market_snapshot(symbol, force=force)
+def market_snapshot(symbol: str, db: Session = Depends(get_db)):
+    result = get_market_snapshot(symbol)
+
+    if result.get("cache") == "miss":
+        db.add(
+            MarketSnapshot(
+                symbol=(result.get("symbol") or symbol).upper(),
+                as_of=str(result.get("as_of") or ""),
+                provider=str(result.get("provider") or "unknown"),
+                payload={key: value for key, value in result.items() if key != "cache"},
+            )
+        )
+        db.commit()
+
+    return result
+
+
+@app.get("/api/v1/markets/{symbol}/history")
+def market_snapshot_history(
+    symbol: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    symbol = symbol.strip().upper()
+    rows = (
+        db.query(MarketSnapshot)
+        .filter(MarketSnapshot.symbol == symbol)
+        .order_by(MarketSnapshot.retrieved_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "symbol": symbol,
+        "snapshots": [
+            {
+                "id": row.id,
+                "as_of": row.as_of,
+                "provider": row.provider,
+                "retrieved_at": row.retrieved_at.isoformat(),
+                "data": row.payload,
+            }
+            for row in rows
+        ],
+    }
 
 
 @app.get("/api/v1/report/config")
