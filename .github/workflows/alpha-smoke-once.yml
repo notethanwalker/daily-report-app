@@ -1,0 +1,27 @@
+name: Alpha Vantage Verification Smoke Test
+
+on:
+  push:
+    paths:
+      - .github/workflows/alpha-smoke-once.yml
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Render deploy
+        run: sleep 75
+
+      - name: Check Alpha Vantage configuration
+        run: |
+          set -euo pipefail
+          HEALTH=$(curl --fail --silent --show-error --retry 5 --retry-delay 5 https://daily-report-api-ero2.onrender.com/api/v1/health)
+          echo "$HEALTH"
+          echo "$HEALTH" | jq -e '.status == "ok" and .providers.alpha_vantage.configured == true'
+
+      - name: Check cross-provider SPY verification
+        run: |
+          set -euo pipefail
+          MARKET=$(curl --fail --silent --show-error --retry 3 --retry-delay 10 'https://daily-report-api-ero2.onrender.com/api/v1/markets/SPY?verify=true')
+          echo "$MARKET"
+          echo "$MARKET" | jq -e '.symbol == "SPY" and .verification.secondary_provider == "Alpha Vantage" and (.verification.verified_fields | length) >= 3 and (.verification.discrepancy_fields | length) == 0'
