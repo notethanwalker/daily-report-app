@@ -26,13 +26,10 @@ class TwelveDataProvider:
             response.raise_for_status()
             data = response.json()
 
-        if data.get("status") == "error" or "code" in data and "message" in data:
+        if data.get("status") == "error" or ("code" in data and "message" in data):
             raise TwelveDataError(data.get("message", "Twelve Data request failed"))
 
         return data
-
-    def quote(self, symbol: str) -> dict:
-        return self._get("/quote", {"symbol": symbol})
 
     def daily_history(self, symbol: str, outputsize: int = 260) -> dict:
         return self._get(
@@ -47,7 +44,6 @@ class TwelveDataProvider:
 
     def market_snapshot_raw(self, symbol: str) -> dict:
         return {
-            "quote": self.quote(symbol),
             "history": self.daily_history(symbol),
             "provider": self.name,
             "source_url": SOURCE_URL,
