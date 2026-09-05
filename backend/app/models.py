@@ -35,3 +35,18 @@ class MarketSnapshot(Base):
         index=True,
         nullable=False,
     )
+
+
+class SecondaryVerificationCache(Base):
+    __tablename__ = "secondary_verification_cache"
+
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    retrieved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        index=True,
+        nullable=False,
+    )
