@@ -21,13 +21,27 @@ class TwelveDataProvider:
 
     def _get(self, path: str, params: dict) -> dict:
         request_params = {**params, "apikey": self.api_key}
-        with httpx.Client(timeout=20.0) as client:
-            response = client.get(f"{BASE_URL}{path}", params=request_params)
-            response.raise_for_status()
-            data = response.json()
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                response = client.get(f"{BASE_URL}{path}", params=request_params)
+                if response.status_code >= 400:
+                    raise TwelveDataError(f"Twelve Data HTTP {response.status_code}")
+                data = response.json()
+        except TwelveDataError:
+            raise
+        except httpx.HTTPError as exc:
+            raise TwelveDataError("Twelve Data network error") from exc
+        except ValueError as exc:
+            raise TwelveDataError("Twelve Data returned invalid JSON") from exc
 
         if data.get("status") == "error" or ("code" in data and "message" in data):
-            raise TwelveDataError(data.get("message", "Twelve Data request failed"))
+            message = str(data.get("message") or "Twelve Data request failed")
+            lowered = message.lower()
+            if "rate limit" in lowered or "credits" in lowered:
+                raise TwelveDataError("Twelve Data rate limit reached")
+            if "not found" in lowered or "symbol" in lowered:
+                raise TwelveDataError("Twelve Data symbol unavailable")
+            raise TwelveDataError("Twelve Data request failed")
 
         return data
 
