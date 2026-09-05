@@ -1,5 +1,6 @@
 "use client";
 import SentimentMeters from "./sentiment-meters";
+import styles from "./report-additions.module.css";
 
 type Market={symbol:string;price:number|null;change_percent:number|null;seven_day_percent:number|null;thirty_day_percent:number|null;relative_volume:number|null};
 type Rotation={leaders:any[];laggards:any[];sectors:any[]};
@@ -20,7 +21,7 @@ export default function HomeDashboard({market,rotation,onOpenMarkets,onOpenMacro
   <div className="card home-dashboard-card reveal-card"><div className="section-head"><div><span className="eyebrow">Live overview</span><h2>Market Dashboard</h2></div><button className="text-btn" onClick={onOpenMarkets}>All markets →</button></div>
    <div className="dashboard-table"><div className="dashboard-row dashboard-head"><span>Ticker</span><span>Price</span><span>Day</span><span>7D</span></div>{rows.map(r=><div className="dashboard-row" key={r.symbol}><strong>{r.symbol}</strong><span>{money(r.price)}</span><span className={(r.change_percent||0)>=0?"positive":"negative"}>{pct(r.change_percent)}</span><span className={(r.seven_day_percent||0)>=0?"positive":"negative"}>{pct(r.seven_day_percent)}</span></div>)}</div>
   </div>
-  <div className="sentiment-cluster">
+  <div className={styles.sentimentCluster}>
    <div className="card sentiment-card reveal-card"><div className="section-head"><div><span className="eyebrow">App composite</span><h2>Market Sentiment</h2></div><strong className="sentiment-label">{mood}</strong></div><div className="sentiment-body"><div className="sentiment-ring" style={{"--score":`${score*3.6}deg`} as React.CSSProperties}><div><strong>{score}</strong><span>/100</span></div></div><div className="sentiment-factors"><div><span>Breadth</span><strong>{equityRows.length?`${adv}/${equityRows.length} up`:"—"}</strong></div><div><span>SPY</span><strong className={spy>=0?"positive":"negative"}>{pct(spy)}</strong></div><div><span>QQQ</span><strong className={qqq>=0?"positive":"negative"}>{pct(qqq)}</strong></div><div><span>VIX</span><strong className={vix<=0?"positive":"negative"}>{pct(vix)}</strong></div></div></div><p className="muted small-note">App-derived score from market breadth, SPY/QQQ direction and VIX change. It is not an external sentiment index.</p></div>
    <SentimentMeters/>
   </div>
