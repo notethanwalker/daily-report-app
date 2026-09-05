@@ -42,6 +42,34 @@ class TwelveDataProvider:
             },
         )
 
+    def symbol_search(self, query: str, outputsize: int = 8) -> dict:
+        data = self._get(
+            "/symbol_search",
+            {
+                "symbol": query,
+                "outputsize": outputsize,
+            },
+        )
+        rows = data.get("data") or []
+        return {
+            "query": query,
+            "provider": self.name,
+            "source_url": SOURCE_URL,
+            "results": [
+                {
+                    "symbol": row.get("symbol"),
+                    "name": row.get("instrument_name") or row.get("name"),
+                    "exchange": row.get("exchange"),
+                    "country": row.get("country"),
+                    "currency": row.get("currency"),
+                    "type": row.get("instrument_type") or row.get("type"),
+                }
+                for row in rows
+                if row.get("symbol")
+            ],
+            "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        }
+
     def market_snapshot_raw(self, symbol: str) -> dict:
         return {
             "history": self.daily_history(symbol),
