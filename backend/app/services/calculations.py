@@ -42,6 +42,21 @@ def parse_daily_rows(history: dict) -> list[dict]:
     return rows
 
 
+def _williams_from_rows(rows: list[dict], period: int = 14) -> float | None:
+    if len(rows) < period:
+        return None
+    window = rows[-period:]
+    highs = [r["high"] for r in window if r["high"] is not None]
+    lows = [r["low"] for r in window if r["low"] is not None]
+    if not highs or not lows:
+        return None
+    high = max(highs)
+    low = min(lows)
+    close = rows[-1]["close"]
+    value = 0.0 if high == low else -100.0 * ((high - close) / (high - low))
+    return round(value, 2)
+
+
 def build_williams_r_series(history: dict, period: int = 14, max_points: int = 320) -> dict:
     rows = parse_daily_rows(history)
     series = []
@@ -109,7 +124,8 @@ def build_market_snapshot(raw: dict) -> dict:
         "change_percent": _pct_change(current, previous_close),"seven_day_percent": _pct_change(current, close_7d),"thirty_day_percent": _pct_change(current, close_30d),"ytd_percent": _pct_change(current, close_ytd),
         "high_52_week": max(highs_52) if highs_52 else None,"low_52_week": min(lows_52) if lows_52 else None,"all_time_high": all_time_high,"price_vs_ath_percent": _pct_change(current, all_time_high),
         "ma50": ma50,"ma100": ma100,"ma200": ma200,"price_vs_ma50_percent": _pct_change(current, ma50),"price_vs_ma100_percent": _pct_change(current, ma100),"price_vs_ma200_percent": _pct_change(current, ma200),
+        "williams_r_14": _williams_from_rows(rows, 14),
         "volume": current_volume,"average_volume_20d": average_volume,"relative_volume": None if average_volume in (None, 0) or current_volume is None else current_volume / average_volume,
         "market_open": None,"as_of": rows[-1]["date"].isoformat(),"provider": raw["provider"],"source_url": raw["source_url"],"retrieved_at": raw["retrieved_at"],"verification_status": "primary_only",
-        "data_note": "Daily time-series data; all-time high is based on provider history returned for the symbol."
+        "data_note": "Daily time-series data; all-time high is based on provider history returned for the symbol. Williams %R is calculated from the same daily-history pull to avoid a second provider request."
     }
