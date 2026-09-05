@@ -23,6 +23,14 @@ app.add_middleware(CORSMiddleware, allow_origins=["https://daily-report-app-pear
 Base.metadata.create_all(bind=engine)
 DEFAULT_WATCHLIST=["SPY","QQQ","AAOI","NBIS","SNDK","AXTI","CRBS","IONQ","OKLO","GLD","SMH","EUV","DRAM","BOTZ","VIX"]
 MARKET_CACHE_TTL_SECONDS=900; SECONDARY_CACHE_TTL_SECONDS=86400; ALPHA_VANTAGE_DAILY_BUDGET=20; NEWS_CACHE_TTL_SECONDS=600; CURRENCY_CACHE_TTL_SECONDS=3600; SECURITY_SEARCH_CACHE_TTL_SECONDS=3600
+WORLD_NEWS_TOPIC_QUERIES={
+    "AI & Semiconductors": '("artificial intelligence" OR AI OR semiconductor OR chips OR memory OR "data center" OR Nvidia)',
+    "Rates & Central Banks": '("Federal Reserve" OR Fed OR "central bank" OR "interest rates" OR yields OR ECB OR BOJ)',
+    "Energy & Commodities": '(oil OR crude OR gas OR energy OR gold OR copper OR commodities)',
+    "Trade & Geopolitics": '(tariffs OR trade OR sanctions OR China OR Russia OR Iran OR exports OR geopolitics)',
+    "Economy & Inflation": '(inflation OR jobs OR employment OR GDP OR economy OR recession OR consumer)',
+}
+WORLD_NEWS_ALL_QUERY='(economy OR markets OR trade OR tariffs OR sanctions OR semiconductor OR "artificial intelligence" OR energy OR oil OR central bank)'
 _market_cache={}; _shared_cache={}
 class TickerRequest(BaseModel): symbol:str
 
@@ -77,6 +85,14 @@ def _latest_market_by_symbol(db,symbols=None):
         if row:result[symbol]={**row.payload,"retrieved_at":row.retrieved_at.isoformat()}
     return result
 
+def _load_world_news(topic,limit):
+    query=WORLD_NEWS_TOPIC_QUERIES.get(topic,WORLD_NEWS_ALL_QUERY)
+    data=GdeltProvider().search(query,max_records=limit,timespan="48h")
+    if topic in WORLD_NEWS_TOPIC_QUERIES:
+        data["articles"]=[article for article in data.get("articles",[]) if topic in (article.get("topics") or [])]
+    data["selected_topic"]=topic or "All"
+    return data
+
 @app.get("/")
 def root():return {"status":"ok","service":"Daily Report API"}
 @app.get("/api/v1/health")
@@ -117,9 +133,8 @@ def history(symbol:str,limit:int=Query(default=20,ge=1,le=100),db:Session=Depend
     rows=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol.strip().upper()).order_by(MarketSnapshot.retrieved_at.desc()).limit(limit).all();return {"symbol":symbol.upper(),"snapshots":[{"id":r.id,"as_of":r.as_of,"provider":r.provider,"retrieved_at":r.retrieved_at.isoformat(),"data":r.payload} for r in rows]}
 @app.get("/api/v1/news/world")
 def world_news(limit:int=Query(default=25,ge=1,le=50),topic:str|None=None):
-    q='(economy OR markets OR trade OR tariffs OR sanctions OR semiconductor OR "artificial intelligence" OR energy OR oil OR central bank)'
-    if topic:q=f'({q}) AND "{topic[:40]}"'
-    try:return _cached_shared(f"world:{limit}:{topic}",NEWS_CACHE_TTL_SECONDS,lambda:GdeltProvider().search(q,max_records=limit,timespan="48h"))
+    selected=topic if topic in WORLD_NEWS_TOPIC_QUERIES else None
+    try:return _cached_shared(f"world:{limit}:{selected or 'all'}",NEWS_CACHE_TTL_SECONDS,lambda:_load_world_news(selected,limit))
     except Exception as exc:raise HTTPException(502,f"World news unavailable: {exc}") from exc
 @app.get("/api/v1/news/market")
 def market_news(limit:int=Query(default=15,ge=1,le=30)):
