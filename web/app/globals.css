@@ -20,22 +20,33 @@ input {
   font: inherit;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 a {
   color: inherit;
   text-decoration: none;
 }
 
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
 .container {
   max-width: 1100px;
   margin: auto;
-  padding: 16px;
+  padding: 20px 16px 48px;
 }
 
 .nav {
   display: flex;
   gap: 8px;
   overflow-x: auto;
-  margin: 12px 0;
+  margin: 18px 0;
   padding-bottom: 4px;
 }
 
@@ -47,10 +58,12 @@ a {
   border-radius: 12px;
   padding: 10px 14px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .nav button.active {
   background: #303640;
+  border-color: #4a5360;
 }
 
 .grid {
@@ -64,6 +77,7 @@ a {
   border: 1px solid #252b34;
   border-radius: 16px;
   padding: 16px;
+  margin-bottom: 12px;
 }
 
 .muted {
@@ -77,7 +91,6 @@ a {
   border: 1px solid #303640;
   border-radius: 12px;
   color: white;
-  margin: 12px 0;
 }
 
 .row {
@@ -87,12 +100,54 @@ a {
   gap: 10px;
 }
 
+.ticker-add-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+
+.ticker-grid {
+  margin-top: 12px;
+}
+
+.ticker-card {
+  margin-bottom: 0;
+}
+
+.ticker-symbol {
+  font-size: 20px;
+  letter-spacing: 0.02em;
+}
+
+.status {
+  color: #d4a72c;
+  font-size: 13px;
+  text-align: right;
+}
+
+.status.ok {
+  color: #56d364;
+}
+
+.btn.danger {
+  padding: 7px 10px;
+  font-size: 13px;
+}
+
 @media (max-width: 600px) {
   .container {
-    padding: 12px;
+    padding: 14px 12px 40px;
   }
 
   h1 {
     font-size: 26px;
+  }
+
+  .container > .row {
+    align-items: flex-start;
+  }
+
+  .status {
+    max-width: 130px;
   }
 }
