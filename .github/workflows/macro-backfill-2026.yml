@@ -7,10 +7,10 @@ on:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Wait for backend deploy
-        run: sleep 90
+        run: sleep 60
       - name: Backfill 2026 macro history
         run: |
-          curl --fail --show-error --silent --max-time 420 -X POST "https://daily-report-api-ero2.onrender.com/api/v1/macro/backfill?year=2026" | python -m json.tool
+          curl --fail --show-error --silent --max-time 600 -X POST "https://daily-report-api-ero2.onrender.com/api/v1/macro/backfill?year=2026" | python -m json.tool
