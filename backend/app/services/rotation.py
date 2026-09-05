@@ -1,4 +1,6 @@
 SECTORS = {
+    "SPY": "S&P 500",
+    "QQQ": "Nasdaq 100",
     "XLK": "Technology",
     "XLF": "Financials",
     "XLE": "Energy",
@@ -11,6 +13,14 @@ SECTORS = {
     "XLRE": "Real Estate",
     "XLC": "Communication Services",
     "SMH": "Semiconductors",
+    "EUV": "Photonics",
+    "DRAM": "Memory",
+    "NCLD": "Neocloud",
+    "IGV": "Software",
+    "CIBR": "Cybersecurity",
+    "ARKX": "Space / Defense",
+    "NLR": "Nuclear",
+    "QTUM": "Quantum",
     "BOTZ": "Robotics & AI",
     "GLD": "Gold",
 }
@@ -46,8 +56,8 @@ def build_rotation_snapshot(market_by_symbol: dict[str, dict], currencies: dict 
         })
 
     rows.sort(key=lambda row: row["rotation_score"], reverse=True)
-    leaders = rows[:4]
-    laggards = list(reversed(rows[-4:])) if rows else []
+    leaders = rows[:5]
+    laggards = list(reversed(rows[-5:])) if rows else []
     spread = None
     if leaders and laggards:
         spread = round(leaders[0]["rotation_score"] - laggards[0]["rotation_score"], 2)
