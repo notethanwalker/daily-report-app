@@ -8,23 +8,57 @@ const API =
 
 const TABS = ["Report", "Markets", "World News", "Large Flow", "Macro", "Settings"];
 
+type MarketSnapshot = {
+  symbol: string;
+  price: number | null;
+  previous_close: number | null;
+  change: number | null;
+  change_percent: number | null;
+  seven_day_percent: number | null;
+  thirty_day_percent: number | null;
+  ytd_percent: number | null;
+  high_52_week: number | null;
+  low_52_week: number | null;
+  ma100: number | null;
+  ma200: number | null;
+  price_vs_ma100_percent: number | null;
+  price_vs_ma200_percent: number | null;
+  volume: number | null;
+  average_volume_20d: number | null;
+  relative_volume: number | null;
+  as_of: string | null;
+  provider: string;
+  source_url: string;
+  verification_status: string;
+  data_note?: string;
+};
+
+function money(value: number | null) {
+  return value == null ? "—" : `$${value.toFixed(2)}`;
+}
+
+function percent(value: number | null) {
+  return value == null ? "—" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
+function compact(value: number | null) {
+  if (value == null) return "—";
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
 export default function Home() {
   const [tickers, setTickers] = useState<string[]>([]);
   const [status, setStatus] = useState("Connecting to backend...");
   const [newTicker, setNewTicker] = useState("");
   const [busySymbol, setBusySymbol] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("Report");
+  const [marketData, setMarketData] = useState<Record<string, MarketSnapshot>>({});
+  const [marketErrors, setMarketErrors] = useState<Record<string, string>>({});
 
   async function loadWatchlist() {
     try {
-      const response = await fetch(`${API}/api/v1/watchlist`, {
-        cache: "no-store",
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
+      const response = await fetch(`${API}/api/v1/watchlist`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       setTickers(data.tickers || []);
       setStatus("Backend connected");
@@ -38,28 +72,42 @@ export default function Home() {
     loadWatchlist();
   }, []);
 
+  async function loadMarketData(symbol: string) {
+    if (busySymbol) return;
+    setBusySymbol(symbol);
+    setMarketErrors((current) => ({ ...current, [symbol]: "" }));
+
+    try {
+      const response = await fetch(`${API}/api/v1/markets/${encodeURIComponent(symbol)}`, {
+        cache: "no-store",
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || `HTTP ${response.status}`);
+      setMarketData((current) => ({ ...current, [symbol]: data }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Market data unavailable";
+      setMarketErrors((current) => ({ ...current, [symbol]: message }));
+    } finally {
+      setBusySymbol(null);
+    }
+  }
+
   async function addTicker() {
     const symbol = newTicker.trim().toUpperCase();
-
     if (!symbol || busySymbol) return;
-
     setBusySymbol(symbol);
     setStatus(`Adding ${symbol}...`);
 
     try {
       const response = await fetch(`${API}/api/v1/watchlist`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol }),
       });
-
       if (!response.ok) {
         const detail = await response.json().catch(() => null);
         throw new Error(detail?.detail || `HTTP ${response.status}`);
       }
-
       setNewTicker("");
       await loadWatchlist();
     } catch (error) {
@@ -72,21 +120,22 @@ export default function Home() {
 
   async function removeTicker(symbol: string) {
     if (busySymbol) return;
-
     setBusySymbol(symbol);
     setStatus(`Removing ${symbol}...`);
 
     try {
-      const response = await fetch(
-        `${API}/api/v1/watchlist/${encodeURIComponent(symbol)}`,
-        { method: "DELETE" }
-      );
-
+      const response = await fetch(`${API}/api/v1/watchlist/${encodeURIComponent(symbol)}`, {
+        method: "DELETE",
+      });
       if (!response.ok) {
         const detail = await response.json().catch(() => null);
         throw new Error(detail?.detail || `HTTP ${response.status}`);
       }
-
+      setMarketData((current) => {
+        const next = { ...current };
+        delete next[symbol];
+        return next;
+      });
       await loadWatchlist();
     } catch (error) {
       console.error(error);
@@ -103,18 +152,12 @@ export default function Home() {
           <h1>Daily Report</h1>
           <p className="muted">Market intelligence dashboard</p>
         </div>
-        <span className={`status ${status === "Backend connected" ? "ok" : ""}`}>
-          {status}
-        </span>
+        <span className={`status ${status === "Backend connected" ? "ok" : ""}`}>{status}</span>
       </div>
 
       <nav className="nav" aria-label="Primary">
         {TABS.map((tab) => (
-          <button
-            key={tab}
-            className={activeTab === tab ? "active" : ""}
-            onClick={() => setActiveTab(tab)}
-          >
+          <button key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}>
             {tab}
           </button>
         ))}
@@ -124,7 +167,7 @@ export default function Home() {
         <section className="card">
           <h2>Daily Report</h2>
           <p className="muted">
-            Live verified market data, news, macro and flow analysis will populate here as providers are connected.
+            The primary market-data pipeline is now connected. Full report generation will be added after secondary verification and news/macro providers are connected.
           </p>
         </section>
       )}
@@ -133,6 +176,7 @@ export default function Home() {
         <section>
           <div className="card">
             <h2>Watchlist</h2>
+            <p className="muted">Load symbols individually while the app is on the Twelve Data free tier to stay within provider rate limits.</p>
             <div className="ticker-add-row">
               <input
                 className="search"
@@ -144,59 +188,70 @@ export default function Home() {
                   if (e.key === "Enter") addTicker();
                 }}
               />
-              <button className="btn" onClick={addTicker} disabled={!newTicker.trim() || !!busySymbol}>
-                Add
-              </button>
+              <button className="btn" onClick={addTicker} disabled={!newTicker.trim() || !!busySymbol}>Add</button>
             </div>
           </div>
 
           <div className="grid ticker-grid">
-            {tickers.map((ticker) => (
-              <article className="card ticker-card" key={ticker}>
-                <div className="row">
-                  <strong className="ticker-symbol">{ticker}</strong>
-                  <button
-                    className="btn danger"
-                    onClick={() => removeTicker(ticker)}
-                    disabled={!!busySymbol}
-                  >
-                    {busySymbol === ticker ? "Working..." : "Remove"}
-                  </button>
-                </div>
-                <p className="muted">Market data pending provider connection.</p>
-              </article>
-            ))}
+            {tickers.map((ticker) => {
+              const data = marketData[ticker];
+              const error = marketErrors[ticker];
+              return (
+                <article className="card ticker-card" key={ticker}>
+                  <div className="row">
+                    <strong className="ticker-symbol">{ticker}</strong>
+                    <button className="btn danger" onClick={() => removeTicker(ticker)} disabled={!!busySymbol}>
+                      {busySymbol === ticker ? "Working..." : "Remove"}
+                    </button>
+                  </div>
+
+                  {!data && !error && (
+                    <button className="btn load-market" onClick={() => loadMarketData(ticker)} disabled={!!busySymbol}>
+                      {busySymbol === ticker ? "Loading..." : "Load market data"}
+                    </button>
+                  )}
+
+                  {error && (
+                    <div className="market-error">
+                      <p>{error}</p>
+                      <button className="btn" onClick={() => loadMarketData(ticker)} disabled={!!busySymbol}>Retry</button>
+                    </div>
+                  )}
+
+                  {data && (
+                    <div className="market-metrics">
+                      <div className="price-line">
+                        <strong>{money(data.price)}</strong>
+                        <span className={(data.change_percent ?? 0) >= 0 ? "positive" : "negative"}>{percent(data.change_percent)}</span>
+                      </div>
+                      <div className="metric-grid">
+                        <span>7D <strong>{percent(data.seven_day_percent)}</strong></span>
+                        <span>30D <strong>{percent(data.thirty_day_percent)}</strong></span>
+                        <span>YTD <strong>{percent(data.ytd_percent)}</strong></span>
+                        <span>100MA <strong>{money(data.ma100)}</strong></span>
+                        <span>200MA <strong>{money(data.ma200)}</strong></span>
+                        <span>Rel Vol <strong>{data.relative_volume == null ? "—" : `${data.relative_volume.toFixed(2)}x`}</strong></span>
+                        <span>52W High <strong>{money(data.high_52_week)}</strong></span>
+                        <span>52W Low <strong>{money(data.low_52_week)}</strong></span>
+                        <span>Volume <strong>{compact(data.volume)}</strong></span>
+                      </div>
+                      <p className="source-line">
+                        As of {data.as_of || "—"} · {data.verification_status.replaceAll("_", " ")} ·{" "}
+                        <a href={data.source_url} target="_blank" rel="noreferrer">{data.provider}</a>
+                      </p>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
           </div>
         </section>
       )}
 
-      {activeTab === "World News" && (
-        <section className="card">
-          <h2>World News</h2>
-          <p className="muted">Relevant global market events will be clustered, sourced and timestamped here.</p>
-        </section>
-      )}
-
-      {activeTab === "Large Flow" && (
-        <section className="card">
-          <h2>Large Flow</h2>
-          <p className="muted">Large stock prints and unusual options activity will appear here once a flow provider is connected.</p>
-        </section>
-      )}
-
-      {activeTab === "Macro" && (
-        <section className="card">
-          <h2>Macro</h2>
-          <p className="muted">VIX, currencies, rates, commodities and macro outliers will appear here.</p>
-        </section>
-      )}
-
-      {activeTab === "Settings" && (
-        <section className="card">
-          <h2>Settings</h2>
-          <p className="muted">Report sections, thresholds, alerts and provider status will be configurable here.</p>
-        </section>
-      )}
+      {activeTab === "World News" && <section className="card"><h2>World News</h2><p className="muted">Relevant global market events will be clustered, sourced and timestamped here.</p></section>}
+      {activeTab === "Large Flow" && <section className="card"><h2>Large Flow</h2><p className="muted">Large stock prints and unusual options activity will appear here once a flow provider is connected.</p></section>}
+      {activeTab === "Macro" && <section className="card"><h2>Macro</h2><p className="muted">VIX, currencies, rates, commodities and macro outliers will appear here.</p></section>}
+      {activeTab === "Settings" && <section className="card"><h2>Settings</h2><p className="muted">Report sections, thresholds, alerts and provider status will be configurable here.</p></section>}
     </main>
   );
 }
