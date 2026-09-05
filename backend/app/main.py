@@ -8,17 +8,18 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
-from .models import MarketSnapshot, SecondaryVerificationCache, WatchlistItem
+from .models import MarketSnapshot, ReportSnapshot, SecondaryVerificationCache, WatchlistItem
 from .providers.alpha_vantage import AlphaVantageError, AlphaVantageProvider
 from .providers.frankfurter import FrankfurterProvider
 from .providers.gdelt import GdeltProvider
 from .providers.twelve_data import TwelveDataError, TwelveDataProvider
 from .services.calculations import build_market_snapshot
+from .services.report import build_daily_report
 from .services.validation import build_secondary_metrics, cross_check_market_snapshot
 
 app = FastAPI(
     title="Daily Report API",
-    version="0.8"
+    version="0.9"
 )
 
 app.add_middleware(
@@ -171,6 +172,26 @@ def get_market_snapshot(symbol: str, db: Session, verify: bool = True) -> dict:
     return {**snapshot, "cache": "miss"}
 
 
+def _load_currencies() -> dict:
+    return _cached_shared(
+        "major_currencies",
+        CURRENCY_CACHE_TTL_SECONDS,
+        lambda: FrankfurterProvider().major_currency_snapshot(),
+    )
+
+
+def _load_market_news(limit: int = 15) -> dict:
+    return _cached_shared(
+        f"market_news:{limit}",
+        NEWS_CACHE_TTL_SECONDS,
+        lambda: GdeltProvider().search(
+            '(stocks OR "stock market" OR equities OR Nasdaq OR S&P OR Federal Reserve OR earnings OR inflation)',
+            max_records=limit,
+            timespan="24h",
+        ),
+    )
+
+
 @app.get("/")
 def root():
     return {
@@ -184,7 +205,7 @@ def health(db: Session = Depends(get_db)):
     used_today = _alpha_requests_used_today(db) if os.getenv("ALPHA_VANTAGE_API_KEY") else 0
     return {
         "status": "ok",
-        "version": "0.8",
+        "version": "0.9",
         "providers": {
             "twelve_data": {
                 "configured": bool(os.getenv("TWELVE_DATA_API_KEY")),
@@ -367,15 +388,7 @@ def world_news(limit: int = Query(default=25, ge=1, le=50)):
 @app.get("/api/v1/news/market")
 def market_news(limit: int = Query(default=15, ge=1, le=30)):
     try:
-        return _cached_shared(
-            f"market_news:{limit}",
-            NEWS_CACHE_TTL_SECONDS,
-            lambda: GdeltProvider().search(
-                '(stocks OR "stock market" OR equities OR Nasdaq OR S&P OR Federal Reserve OR earnings OR inflation)',
-                max_records=limit,
-                timespan="24h",
-            ),
-        )
+        return _load_market_news(limit)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Market news unavailable: {exc}") from exc
 
@@ -383,13 +396,72 @@ def market_news(limit: int = Query(default=15, ge=1, le=30)):
 @app.get("/api/v1/macro/currencies")
 def currencies():
     try:
-        return _cached_shared(
-            "major_currencies",
-            CURRENCY_CACHE_TTL_SECONDS,
-            lambda: FrankfurterProvider().major_currency_snapshot(),
-        )
+        return _load_currencies()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Currency data unavailable: {exc}") from exc
+
+
+@app.get("/api/v1/report/current")
+def current_report(db: Session = Depends(get_db)):
+    try:
+        currencies_data = _load_currencies()
+    except Exception:
+        currencies_data = {"rates": [], "provider": "unavailable"}
+
+    try:
+        news_data = _load_market_news(15)
+    except Exception:
+        news_data = {"articles": [], "provider": "unavailable"}
+
+    return build_daily_report(db, currencies=currencies_data, market_news=news_data)
+
+
+@app.post("/api/v1/report/generate")
+def generate_report(db: Session = Depends(get_db)):
+    try:
+        currencies_data = _load_currencies()
+    except Exception:
+        currencies_data = {"rates": [], "provider": "unavailable"}
+
+    try:
+        news_data = _load_market_news(15)
+    except Exception:
+        news_data = {"articles": [], "provider": "unavailable"}
+
+    report = build_daily_report(db, currencies=currencies_data, market_news=news_data)
+    row = ReportSnapshot(report_date=report["report_date"], payload=report)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    return {
+        "id": row.id,
+        **report,
+    }
+
+
+@app.get("/api/v1/report/history")
+def report_history(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(ReportSnapshot)
+        .order_by(ReportSnapshot.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "reports": [
+            {
+                "id": row.id,
+                "report_date": row.report_date,
+                "created_at": row.created_at.isoformat(),
+                "data": row.payload,
+            }
+            for row in rows
+        ]
+    }
 
 
 @app.get("/api/v1/report/config")
