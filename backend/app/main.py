@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
-from .models import MarketSnapshot, WatchlistItem
+from .models import MarketSnapshot, SecondaryVerificationCache, WatchlistItem
 from .providers.alpha_vantage import AlphaVantageError, AlphaVantageProvider
 from .providers.frankfurter import FrankfurterProvider
 from .providers.gdelt import GdeltProvider
@@ -17,7 +18,7 @@ from .services.validation import build_secondary_metrics, cross_check_market_sna
 
 app = FastAPI(
     title="Daily Report API",
-    version="0.6"
+    version="0.7"
 )
 
 app.add_middleware(
@@ -40,11 +41,11 @@ DEFAULT_WATCHLIST = [
 
 MARKET_CACHE_TTL_SECONDS = 900
 SECONDARY_CACHE_TTL_SECONDS = 86400
+ALPHA_VANTAGE_DAILY_BUDGET = 20
 NEWS_CACHE_TTL_SECONDS = 600
 CURRENCY_CACHE_TTL_SECONDS = 3600
 
 _market_cache: dict[str, tuple[float, dict]] = {}
-_secondary_cache: dict[str, tuple[float, dict]] = {}
 _shared_cache: dict[str, tuple[float, dict]] = {}
 
 
@@ -62,19 +63,81 @@ def _cached_shared(key: str, ttl: int, loader) -> dict:
     return {**data, "cache": "miss"}
 
 
-def get_secondary_metrics(symbol: str) -> dict:
-    cached = _secondary_cache.get(symbol)
-    if cached and (time.time() - cached[0]) < SECONDARY_CACHE_TTL_SECONDS:
-        return cached[1]
+def _secondary_cache_age_seconds(row: SecondaryVerificationCache) -> float:
+    retrieved_at = row.retrieved_at
+    if retrieved_at.tzinfo is None:
+        retrieved_at = retrieved_at.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - retrieved_at).total_seconds()
 
-    provider = AlphaVantageProvider()
-    raw = provider.daily_history(symbol)
-    metrics = build_secondary_metrics(raw)
-    _secondary_cache[symbol] = (time.time(), metrics)
+
+def _alpha_requests_used_today(db: Session) -> int:
+    day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    return (
+        db.query(SecondaryVerificationCache)
+        .filter(
+            SecondaryVerificationCache.provider == "Alpha Vantage",
+            SecondaryVerificationCache.retrieved_at >= day_start,
+        )
+        .count()
+    )
+
+
+def get_secondary_metrics(symbol: str, db: Session) -> dict:
+    symbol = symbol.strip().upper()
+    cached = db.get(SecondaryVerificationCache, symbol)
+
+    if cached and _secondary_cache_age_seconds(cached) < SECONDARY_CACHE_TTL_SECONDS:
+        if cached.payload.get("error"):
+            raise AlphaVantageError(cached.payload["error"])
+        return cached.payload
+
+    used_today = _alpha_requests_used_today(db)
+    if used_today >= ALPHA_VANTAGE_DAILY_BUDGET:
+        raise AlphaVantageError(
+            f"Daily secondary-verification budget reached ({used_today}/{ALPHA_VANTAGE_DAILY_BUDGET}); "
+            "using primary market data until the next UTC day."
+        )
+
+    try:
+        raw = AlphaVantageProvider().daily_history(symbol)
+        metrics = build_secondary_metrics(raw)
+        payload = metrics
+    except Exception as exc:
+        payload = {"error": str(exc)}
+        if cached:
+            cached.provider = "Alpha Vantage"
+            cached.payload = payload
+            cached.retrieved_at = datetime.now(timezone.utc)
+        else:
+            db.add(
+                SecondaryVerificationCache(
+                    symbol=symbol,
+                    provider="Alpha Vantage",
+                    payload=payload,
+                    retrieved_at=datetime.now(timezone.utc),
+                )
+            )
+        db.commit()
+        raise
+
+    if cached:
+        cached.provider = "Alpha Vantage"
+        cached.payload = payload
+        cached.retrieved_at = datetime.now(timezone.utc)
+    else:
+        db.add(
+            SecondaryVerificationCache(
+                symbol=symbol,
+                provider="Alpha Vantage",
+                payload=payload,
+                retrieved_at=datetime.now(timezone.utc),
+            )
+        )
+    db.commit()
     return metrics
 
 
-def get_market_snapshot(symbol: str, verify: bool = True) -> dict:
+def get_market_snapshot(symbol: str, db: Session, verify: bool = True) -> dict:
     symbol = symbol.strip().upper()
     if not symbol:
         raise HTTPException(status_code=400, detail="Ticker symbol is required")
@@ -84,8 +147,7 @@ def get_market_snapshot(symbol: str, verify: bool = True) -> dict:
         return {**cached[1], "cache": "hit"}
 
     try:
-        provider = TwelveDataProvider()
-        raw = provider.market_snapshot_raw(symbol)
+        raw = TwelveDataProvider().market_snapshot_raw(symbol)
         snapshot = build_market_snapshot(raw)
     except TwelveDataError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -94,15 +156,8 @@ def get_market_snapshot(symbol: str, verify: bool = True) -> dict:
 
     if verify and os.getenv("ALPHA_VANTAGE_API_KEY"):
         try:
-            secondary = get_secondary_metrics(symbol)
+            secondary = get_secondary_metrics(symbol, db)
             snapshot.update(cross_check_market_snapshot(snapshot, secondary))
-        except (AlphaVantageError, ValueError, httpx.HTTPError if False else AlphaVantageError) as exc:
-            snapshot["verification_status"] = "primary_only"
-            snapshot["verification"] = {
-                "primary_provider": snapshot.get("provider"),
-                "secondary_provider": "Alpha Vantage",
-                "error": str(exc),
-            }
         except Exception as exc:
             snapshot["verification_status"] = "primary_only"
             snapshot["verification"] = {
@@ -124,16 +179,20 @@ def root():
 
 
 @app.get("/api/v1/health")
-def health():
+def health(db: Session = Depends(get_db)):
+    used_today = _alpha_requests_used_today(db) if os.getenv("ALPHA_VANTAGE_API_KEY") else 0
     return {
         "status": "ok",
-        "version": "0.6",
+        "version": "0.7",
         "providers": {
             "twelve_data": {
                 "configured": bool(os.getenv("TWELVE_DATA_API_KEY")),
             },
             "alpha_vantage": {
                 "configured": bool(os.getenv("ALPHA_VANTAGE_API_KEY")),
+                "daily_budget": ALPHA_VANTAGE_DAILY_BUDGET,
+                "used_today": used_today,
+                "remaining_today": max(ALPHA_VANTAGE_DAILY_BUDGET - used_today, 0),
             },
             "gdelt": {"configured": True},
             "frankfurter": {"configured": True},
@@ -213,7 +272,6 @@ def remove_ticker(
     db.delete(item)
     db.commit()
     _market_cache.pop(symbol, None)
-    _secondary_cache.pop(symbol, None)
 
     return {
         "status": "removed",
@@ -227,7 +285,7 @@ def market_snapshot(
     verify: bool = True,
     db: Session = Depends(get_db),
 ):
-    result = get_market_snapshot(symbol, verify=verify)
+    result = get_market_snapshot(symbol, db=db, verify=verify)
 
     if result.get("cache") == "miss":
         db.add(
@@ -345,9 +403,13 @@ def config():
             "world_news": "GDELT",
             "currencies": "Frankfurter",
         },
+        "verification": {
+            "secondary_cache_ttl_seconds": SECONDARY_CACHE_TTL_SECONDS,
+            "alpha_vantage_daily_budget": ALPHA_VANTAGE_DAILY_BUDGET,
+            "strategy": "One secondary request per symbol per 24h, persisted across deploys; hard cap leaves provider headroom.",
+        },
         "cache_ttl_seconds": {
             "market": MARKET_CACHE_TTL_SECONDS,
-            "secondary_market": SECONDARY_CACHE_TTL_SECONDS,
             "news": NEWS_CACHE_TTL_SECONDS,
             "currencies": CURRENCY_CACHE_TTL_SECONDS,
         },
