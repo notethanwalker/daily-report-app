@@ -52,7 +52,7 @@ class SquawkFlowProvider:
             "meta": payload.get("meta") or {},
             "usage": payload.get("usage") or {},
             "events": normalized,
-            "note": "Public unusual-options observations. Repeated observations of the same contract print are deduplicated. Significance and direction are separate; calls are not automatically bullish and puts are not automatically bearish.",
+            "note": "Public unusual-options observations. Repeated observations of the same contract print are deduplicated. Market-cap context is included when supplied by the source. Significance and direction are separate.",
         }
 
     @staticmethod
@@ -82,9 +82,6 @@ class SquawkFlowProvider:
             if event_id not in (None, ""):
                 key = ("id", str(event_id))
             else:
-                # SquawkFlow can surface the same underlying observation more than once
-                # with different observation timestamps. Exclude timestamp from the
-                # identity but keep fields that distinguish the actual option print.
                 key = (
                     "print",
                     event.get("symbol"),
@@ -103,8 +100,6 @@ class SquawkFlowProvider:
                 by_key[key] = event
                 order.append(key)
                 continue
-            # Purchase time should represent the earliest source timestamp for the
-            # repeated observation rather than a later cache/observation timestamp.
             if self._time_value(event.get("occurred_at")) < self._time_value(existing.get("occurred_at")):
                 by_key[key] = event
         return [by_key[key] for key in order]
@@ -126,6 +121,7 @@ class SquawkFlowProvider:
         vol_oi = self._first(row, "volume_oi_ratio", "vol_oi", "volume_to_oi", "vol_oi_ratio")
         direction = self._first(row, "direction", "sentiment", "bias")
         event_id = self._first(row, "id", "event_id", "trade_id", "flow_id", "uuid")
+        market_cap = self._first(row, "market_cap", "marketCap", "market_capitalization", "underlying_market_cap", "underlyingMarketCap")
 
         return {
             "event_id": event_id,
@@ -146,6 +142,7 @@ class SquawkFlowProvider:
                 "volume_oi_ratio": self._number(vol_oi),
                 "aggression": aggression,
                 "direction": direction,
+                "market_cap": self._number(market_cap),
                 "raw": row,
             },
         }
