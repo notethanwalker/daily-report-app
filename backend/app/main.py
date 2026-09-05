@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +18,7 @@ from .services.validation import build_secondary_metrics, cross_check_market_sna
 
 app = FastAPI(
     title="Daily Report API",
-    version="0.7"
+    version="0.8"
 )
 
 app.add_middleware(
@@ -44,6 +44,7 @@ SECONDARY_CACHE_TTL_SECONDS = 86400
 ALPHA_VANTAGE_DAILY_BUDGET = 20
 NEWS_CACHE_TTL_SECONDS = 600
 CURRENCY_CACHE_TTL_SECONDS = 3600
+SECURITY_SEARCH_CACHE_TTL_SECONDS = 3600
 
 _market_cache: dict[str, tuple[float, dict]] = {}
 _shared_cache: dict[str, tuple[float, dict]] = {}
@@ -183,7 +184,7 @@ def health(db: Session = Depends(get_db)):
     used_today = _alpha_requests_used_today(db) if os.getenv("ALPHA_VANTAGE_API_KEY") else 0
     return {
         "status": "ok",
-        "version": "0.7",
+        "version": "0.8",
         "providers": {
             "twelve_data": {
                 "configured": bool(os.getenv("TWELVE_DATA_API_KEY")),
@@ -219,6 +220,22 @@ def get_watchlist(db: Session = Depends(get_db)):
     return {
         "tickers": [item.symbol for item in items]
     }
+
+
+@app.get("/api/v1/securities/search")
+def security_search(q: str = Query(min_length=2, max_length=64)):
+    query = q.strip()
+    if len(query) < 2:
+        raise HTTPException(status_code=400, detail="Search query must be at least 2 characters")
+
+    try:
+        return _cached_shared(
+            f"security_search:{query.lower()}",
+            SECURITY_SEARCH_CACHE_TTL_SECONDS,
+            lambda: TwelveDataProvider().symbol_search(query, outputsize=8),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Security search unavailable: {exc}") from exc
 
 
 @app.post("/api/v1/watchlist")
@@ -412,5 +429,6 @@ def config():
             "market": MARKET_CACHE_TTL_SECONDS,
             "news": NEWS_CACHE_TTL_SECONDS,
             "currencies": CURRENCY_CACHE_TTL_SECONDS,
+            "security_search": SECURITY_SEARCH_CACHE_TTL_SECONDS,
         },
     }
