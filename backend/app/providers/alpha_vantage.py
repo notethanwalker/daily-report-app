@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 
 import httpx
 
+from .yahoo_finance import YahooFinanceProvider
+
 BASE_URL = "https://www.alphavantage.co/query"
 SOURCE_URL = "https://www.alphavantage.co/documentation/"
 
@@ -36,28 +38,37 @@ class AlphaVantageProvider:
         if not rows: raise AlphaVantageError(f"No usable Alpha Vantage rows returned for {symbol}")
         return {"symbol":symbol.upper(),"rows":rows,"provider":self.name,"source_url":SOURCE_URL,"retrieved_at":datetime.now(timezone.utc).isoformat()}
     def overview(self,symbol:str)->dict:
-        data=self._get({"function":"OVERVIEW","symbol":symbol})
-        if not data or not data.get("Symbol"): raise AlphaVantageError("No company overview available")
-        def num(key):
+        try:
+            data=self._get({"function":"OVERVIEW","symbol":symbol})
+            if not data or not data.get("Symbol"): raise AlphaVantageError("No company overview available")
+            def num(key):
+                try:
+                    v=data.get(key)
+                    return None if v in (None,"","None","-") else float(v)
+                except (TypeError,ValueError): return None
+            return {
+                "symbol":symbol.upper(),
+                "name":data.get("Name"),
+                "sector":data.get("Sector"),
+                "industry":data.get("Industry"),
+                "pe_ratio":num("PERatio"),
+                "forward_pe":num("ForwardPE"),
+                "peg_ratio":num("PEGRatio"),
+                "price_to_sales_ratio":num("PriceToSalesRatioTTM"),
+                "eps":num("EPS"),
+                "revenue_ttm":num("RevenueTTM"),
+                "quarterly_revenue_growth_yoy":num("QuarterlyRevenueGrowthYOY"),
+                "quarterly_earnings_growth_yoy":num("QuarterlyEarningsGrowthYOY"),
+                "market_cap":num("MarketCapitalization"),
+                "provider":self.name,
+                "source_url":SOURCE_URL,
+                "retrieved_at":datetime.now(timezone.utc).isoformat()
+            }
+        except Exception as alpha_exc:
             try:
-                v=data.get(key)
-                return None if v in (None,"","None","-") else float(v)
-            except (TypeError,ValueError): return None
-        return {
-            "symbol":symbol.upper(),
-            "name":data.get("Name"),
-            "sector":data.get("Sector"),
-            "industry":data.get("Industry"),
-            "pe_ratio":num("PERatio"),
-            "forward_pe":num("ForwardPE"),
-            "peg_ratio":num("PEGRatio"),
-            "price_to_sales_ratio":num("PriceToSalesRatioTTM"),
-            "eps":num("EPS"),
-            "revenue_ttm":num("RevenueTTM"),
-            "quarterly_revenue_growth_yoy":num("QuarterlyRevenueGrowthYOY"),
-            "quarterly_earnings_growth_yoy":num("QuarterlyEarningsGrowthYOY"),
-            "market_cap":num("MarketCapitalization"),
-            "provider":self.name,
-            "source_url":SOURCE_URL,
-            "retrieved_at":datetime.now(timezone.utc).isoformat()
-        }
+                payload=YahooFinanceProvider().overview(symbol)
+                payload["fallback_reason"]="Alpha Vantage OVERVIEW unavailable"
+                payload["fallback_from"]="Alpha Vantage"
+                return payload
+            except Exception as yahoo_exc:
+                raise AlphaVantageError(f"Fundamentals unavailable from Alpha Vantage and Yahoo Finance for {symbol}") from yahoo_exc
