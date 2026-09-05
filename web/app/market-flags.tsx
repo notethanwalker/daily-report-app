@@ -6,12 +6,13 @@ type RotationRow={symbol:string;name:string;rotation_score:number;seven_day_perc
 type Tier="core"|"extended";
 type Flag={label:string;value:string;tier:Tier};
 
+const EXCLUDED=new Set(["QQQ","SPY","SCHD"]);
 const pct=(v:number|null|undefined)=>v==null?"—":`${v>=0?"+":""}${v.toFixed(1)}%`;
 const ratio=(v:number|null|undefined)=>v==null?"—":v.toFixed(2);
 const money=(v:number|null|undefined)=>v==null?"—":v>=1_000_000?`$${(v/1_000_000).toFixed(2)}M`:v>=1_000?`$${(v/1_000).toFixed(0)}K`:`$${v.toFixed(0)}`;
 
 const THEMES:Record<string,string[]>={
- AAOI:["EUV","SMH"],NBIS:["NCLD","QQQ"],SNDK:["DRAM","SMH"],AXTI:["EUV","SMH"],CRBS:["XBI","XLV"],IONQ:["QTUM"],OKLO:["NLR"],GLD:["GLD"],SMH:["SMH"],BOTZ:["BOTZ"],SPY:["SPY"],QQQ:["QQQ"],
+ AAOI:["EUV","SMH"],NBIS:["NCLD","QQQ"],SNDK:["DRAM","SMH"],AXTI:["EUV","SMH"],CRBS:["XBI","XLV"],IONQ:["QTUM"],OKLO:["NLR"],GLD:["GLD"],SMH:["SMH"],BOTZ:["BOTZ"],
 };
 const SECTOR_ETF:Record<string,string>={Technology:"XLK",Financials:"XLF",Energy:"XLE",Healthcare:"XLV",Industrials:"XLI",Materials:"XLB",Utilities:"XLU","Real Estate":"XLRE","Communication Services":"XLC","Consumer Discretionary":"XLY","Consumer Staples":"XLP"};
 
@@ -24,7 +25,7 @@ function addTiered(flags:Flag[],conditionCore:boolean,conditionExtended:boolean,
 
 function buildFlags(tickers:string[],market:Record<string,Market>,rotation:any,events:FlowEvent[],kind:"buy"|"sell"){
  const sectors:RotationRow[]=rotation?.sectors||[];
- return tickers.map(symbol=>{const m=market[symbol];if(!m)return null;const flags:Flag[]=[];const rel=relatedSector(symbol,m,sectors);const bull=bestFlow(events,symbol,"bull",m.market_cap),bear=bestFlow(events,symbol,"bear",m.market_cap);
+ return tickers.filter(symbol=>!EXCLUDED.has(symbol)).map(symbol=>{const m=market[symbol];if(!m)return null;const flags:Flag[]=[];const rel=relatedSector(symbol,m,sectors);const bull=bestFlow(events,symbol,"bull",m.market_cap),bear=bestFlow(events,symbol,"bear",m.market_cap);
   if(kind==="buy"){
    if(m.price_vs_ma100_percent!=null)addTiered(flags,Math.abs(m.price_vs_ma100_percent)<=10,Math.abs(m.price_vs_ma100_percent)<=15,"Near 100MA",pct(m.price_vs_ma100_percent));
    if(m.price_vs_ma200_percent!=null)addTiered(flags,Math.abs(m.price_vs_ma200_percent)<=10,Math.abs(m.price_vs_ma200_percent)<=15,"Near 200MA",pct(m.price_vs_ma200_percent));
@@ -39,7 +40,7 @@ function buildFlags(tickers:string[],market:Record<string,Market>,rotation:any,e
    if(m.williams_r_14!=null)addTiered(flags,m.williams_r_14>=-20,m.williams_r_14>=-35,"High Williams %R",m.williams_r_14.toFixed(1));
    if(m.price_to_sales_ratio!=null)addTiered(flags,m.price_to_sales_ratio>=10,m.price_to_sales_ratio>=7,"High P/S",ratio(m.price_to_sales_ratio));
    if(m.pe_ratio!=null&&m.pe_ratio>0)addTiered(flags,m.pe_ratio>=40,m.pe_ratio>=30,"High P/E",ratio(m.pe_ratio));
-   if(rel)addTiered(flags,rel.rotation_score>=1,rel.rotation_score>=0.25,`Related sector strength · ${rel.symbol}`,`${rel.rotation_score>=0?"+":""}${rel.rotation_score.toFixed(2)}`);
+   if(rel)addTiered(flags,rel.rotation_score<=-1,rel.rotation_score<=-0.25,`Sector weakness · ${rel.symbol}`,`${rel.rotation_score>=0?"+":""}${rel.rotation_score.toFixed(2)}`);
    const st=flowTier(bear);if(bear&&st)flags.push({label:"Large bearish flow",value:`${money(bear.premium)}${bear.relative?` · ${(bear.relative*10000).toFixed(2)} bps`:""}`,tier:st});
   }
   const core=flags.filter(f=>f.tier==="core").length,extended=flags.length-core;
@@ -47,10 +48,10 @@ function buildFlags(tickers:string[],market:Record<string,Market>,rotation:any,e
 }
 
 function FlagGrid({title,tone,rows}:{title:string;tone:"buy"|"sell";rows:{symbol:string;flags:Flag[];core:number;extended:number}[]}){
- return <div className={`card reveal-card flag-card ${tone}`}><div className="section-head"><div><span className="eyebrow">Signal checklist</span><h2>{title}</h2></div><span className="reason-count">{rows.length} tickers</span></div><div className="flag-tier-legend"><span className="flag-legend-core">Current cutoff</span><span className="flag-legend-extended">Extended cutoff</span></div><div className="flag-grid-head"><span>Ticker</span><span>Matched flags</span><span>Count</span></div><div className="flag-grid-body">{rows.length?rows.map(r=><div className="flag-grid-row" key={r.symbol}><strong>{r.symbol}</strong><div className="flag-chip-wrap">{r.flags.map(f=><span className={`flag-chip ${f.tier}`} key={`${r.symbol}-${f.label}`}><b>{f.label}</b><i>{f.value}</i></span>)}</div><strong title={`${r.core} current-cutoff · ${r.extended} extended`}>{r.flags.length}<small className="flag-count-detail">{r.core}C/{r.extended}E</small></strong></div>):<p className="muted flag-empty">No tracked ticker currently meets either cutoff tier.</p>}</div></div>;
+ return <div className={`card reveal-card flag-card ${tone}`}><div className="section-head"><div><span className="eyebrow">Signal checklist</span><h2>{title}</h2></div><span className="reason-count">{rows.length} tickers</span></div><div className="flag-tier-legend"><span className="flag-legend-core">Strong flag</span><span className="flag-legend-extended">Weak flag</span></div><div className="flag-grid-head"><span>Ticker</span><span>Matched flags</span><span>Count</span></div><div className="flag-grid-body">{rows.length?rows.map(r=><div className="flag-grid-row" key={r.symbol}><strong>{r.symbol}</strong><div className="flag-chip-wrap">{r.flags.map(f=><span className={`flag-chip ${f.tier}`} key={`${r.symbol}-${f.label}`}><b>{f.label}</b><i>{f.value}</i></span>)}</div><strong title={`${r.core} strong · ${r.extended} weak`}>{r.flags.length}<small className="flag-count-detail">{r.core}S/{r.extended}W</small></strong></div>):<p className="muted flag-empty">No tracked ticker currently meets either flag tier.</p>}</div></div>;
 }
 
 export default function MarketFlags({tickers,market,rotation,flowEvents}:{tickers:string[];market:Record<string,Market>;rotation:any;flowEvents:FlowEvent[]}){
  const buys=buildFlags(tickers,market,rotation,flowEvents,"buy"),sells=buildFlags(tickers,market,rotation,flowEvents,"sell");
- return <section className="market-flags-section"><div className="card reveal-card flags-method"><span className="eyebrow">Cross-tab intelligence</span><h2>Buy / Sell Flags</h2><p className="muted"><strong>Current cutoffs</strong> are the original thresholds and appear darker. <strong>Extended cutoffs</strong> broaden the screen and appear lighter. Buy extended tier: MA proximity ±15%, Williams ≤ -65, P/S ≤ 5, P/E ≤ 30, PEG ≤ 2.0, sector score ≥ +0.25, or bullish flow ≥ $100K / 0.5 bp. Sell extended tier: within 15% of ATH, Williams ≥ -35, P/S ≥ 7, P/E ≥ 30, sector score ≥ +0.25, or bearish flow ≥ $100K / 0.5 bp. Current flow cutoff remains $250K / 1 bp. Flags are screening conditions, not trade recommendations.</p></div><div className="flags-layout"><FlagGrid title="Buy Flags" tone="buy" rows={buys}/><FlagGrid title="Sell Flags" tone="sell" rows={sells}/></div></section>;
+ return <section className="market-flags-section"><div className="card reveal-card flags-method"><span className="eyebrow">Cross-tab intelligence</span><h2>Buy / Sell Flags</h2><p className="muted"><strong>Strong flags</strong> use the original tighter thresholds and appear darker. <strong>Weak flags</strong> use the broader screening thresholds and appear lighter. QQQ, SPY and SCHD are excluded from both grids. Buy weak tier: MA proximity ±15%, Williams ≤ -65, P/S ≤ 5, P/E ≤ 30, PEG ≤ 2.0, sector score ≥ +0.25, or bullish flow ≥ $100K / 0.5 bp. Sell weak tier: within 15% of ATH, Williams ≥ -35, P/S ≥ 7, P/E ≥ 30, sector score ≤ -0.25, or bearish flow ≥ $100K / 0.5 bp. Strong sector weakness is ≤ -1.00. Flags are screening conditions, not trade recommendations.</p></div><div className="flags-layout"><FlagGrid title="Buy Flags" tone="buy" rows={buys}/><FlagGrid title="Sell Flags" tone="sell" rows={sells}/></div></section>;
 }
