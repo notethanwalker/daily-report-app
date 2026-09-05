@@ -4,6 +4,23 @@ type Release={version:string;date:string;title:string;summary:string;changes:str
 
 const RELEASES:Release[]=[
  {
+  version:"v1.6",
+  date:"September 5, 2026",
+  title:"Macro drilldowns, relative flow, and report intelligence",
+  summary:"Expanded macro tracking and explanations, improved relative flow analysis, broadened report intelligence, and refined the professional interaction layer.",
+  changes:[
+   "Promoted ITA, PAVE, KRE, XBI, IYT, URA, COPX, and XME from suggested macro ETFs into the actively tracked Sector Performance universe and weekday refresh workflow.",
+   "Rebuilt Macro Leadership and Weakness as data grids with 1D, 7D, 30D, relative-volume, and clearly labeled rotation-score statistics.",
+   "Moved matched news catalysts and technical-analysis explanations directly underneath each ranked macro ticker with ticker-level expansion.",
+   "Added nested summary/detail expansion for individual news and technical explanations, including evidence, confidence, source metadata, and source links.",
+   "Expanded per-ticker macro catalyst matching and technical reasoning across the full displayed leadership/weakness sets.",
+   "Added Large Flow BUY/SELL + CALL/PUT labels with green call-buy/put-sell and red call-sell/put-buy directional heuristics.",
+   "Moved Large Flow expiration directly beside strike and added relative Flow/Market-Cap sorting when source market-cap data is available.",
+   "Expanded Report sentiment with external market-sentiment meters and increased sortable 1D/7D/30D notable outliers.",
+   "Strengthened tab, card, hover, reveal, and click animations while preserving reduced-motion accessibility."
+  ]
+ },
+ {
   version:"v1.5",
   date:"September 5, 2026",
   title:"Flow, currencies, technicals, and interface polish",
