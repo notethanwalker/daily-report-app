@@ -64,6 +64,31 @@ type SecuritySearchResult = {
   type?: string | null;
 };
 
+type ReportOutlier = {
+  symbol: string;
+  score: number;
+  reason: string;
+  change_percent: number | null;
+  seven_day_percent: number | null;
+  relative_volume: number | null;
+};
+
+type DailyReport = {
+  id?: number;
+  generated_at: string;
+  report_date: string;
+  watchlist_count: number;
+  market_data_count: number;
+  missing_market_symbols: string[];
+  vix: MarketSnapshot | null;
+  markets: MarketSnapshot[];
+  currencies: { rates?: CurrencyRate[]; provider?: string; as_of?: string };
+  top_market_news: NewsArticle[];
+  outliers: ReportOutlier[];
+  verification_summary: { verified: number; primary_only: number };
+  notes: string[];
+};
+
 function money(value: number | null) {
   return value == null ? "—" : `$${value.toFixed(2)}`;
 }
@@ -91,6 +116,8 @@ export default function Home() {
   const [currencyStatus, setCurrencyStatus] = useState("Not loaded");
   const [searchResults, setSearchResults] = useState<SecuritySearchResult[]>([]);
   const [searchStatus, setSearchStatus] = useState("");
+  const [report, setReport] = useState<DailyReport | null>(null);
+  const [reportStatus, setReportStatus] = useState("Loading report...");
 
   async function loadWatchlist() {
     try {
@@ -105,8 +132,38 @@ export default function Home() {
     }
   }
 
+  async function loadReport() {
+    setReportStatus("Loading report...");
+    try {
+      const response = await fetch(`${API}/api/v1/report/current`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || `HTTP ${response.status}`);
+      setReport(data);
+      setReportStatus(`Generated ${new Date(data.generated_at).toLocaleString()}`);
+    } catch (error) {
+      setReportStatus(error instanceof Error ? error.message : "Report unavailable");
+    }
+  }
+
+  async function generateReport() {
+    setReportStatus("Saving report snapshot...");
+    try {
+      const response = await fetch(`${API}/api/v1/report/generate`, {
+        method: "POST",
+        cache: "no-store",
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.detail || `HTTP ${response.status}`);
+      setReport(data);
+      setReportStatus(`Saved report #${data.id} · ${new Date(data.generated_at).toLocaleString()}`);
+    } catch (error) {
+      setReportStatus(error instanceof Error ? error.message : "Could not save report");
+    }
+  }
+
   useEffect(() => {
     loadWatchlist();
+    loadReport();
   }, []);
 
   useEffect(() => {
@@ -144,6 +201,7 @@ export default function Home() {
       const data = await response.json();
       if (!response.ok) throw new Error(data?.detail || `HTTP ${response.status}`);
       setMarketData((current) => ({ ...current, [symbol]: data }));
+      await loadReport();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Market data unavailable";
       setMarketErrors((current) => ({ ...current, [symbol]: message }));
@@ -197,6 +255,7 @@ export default function Home() {
       setNewTicker("");
       setSearchResults([]);
       await loadWatchlist();
+      await loadReport();
     } catch (error) {
       console.error(error);
       setStatus(`Could not add ${symbol}`);
@@ -222,6 +281,7 @@ export default function Home() {
         return next;
       });
       await loadWatchlist();
+      await loadReport();
     } catch (error) {
       console.error(error);
       setStatus(`Could not remove ${symbol}`);
@@ -249,9 +309,105 @@ export default function Home() {
       </nav>
 
       {activeTab === "Report" && (
-        <section className="card">
-          <h2>Daily Report</h2>
-          <p className="muted">Primary market data, cross-provider verification, world news and currency pipelines are connected. Large-flow data remains pending.</p>
+        <section>
+          <div className="card row">
+            <div>
+              <h2>Daily Report</h2>
+              <p className="muted">{reportStatus}</p>
+            </div>
+            <div className="report-actions">
+              <button className="btn" onClick={loadReport}>Refresh view</button>
+              <button className="btn" onClick={generateReport}>Save snapshot</button>
+            </div>
+          </div>
+
+          {report && (
+            <>
+              <div className="report-summary-grid">
+                <article className="card stat-card"><span>Watchlist</span><strong>{report.watchlist_count}</strong></article>
+                <article className="card stat-card"><span>Market data loaded</span><strong>{report.market_data_count}</strong></article>
+                <article className="card stat-card"><span>2-source verified</span><strong>{report.verification_summary.verified}</strong></article>
+                <article className="card stat-card"><span>Primary only</span><strong>{report.verification_summary.primary_only}</strong></article>
+              </div>
+
+              {report.missing_market_symbols.length > 0 && (
+                <div className="card report-warning">
+                  <strong>Market data not loaded yet</strong>
+                  <p className="muted">Load these symbols from the Markets tab to populate them without burning requests all at once.</p>
+                  <div className="symbol-chips">{report.missing_market_symbols.map((symbol) => <span key={symbol}>{symbol}</span>)}</div>
+                </div>
+              )}
+
+              {report.vix && (
+                <article className="card report-vix">
+                  <div><span className="eyebrow">VIX</span><strong>{report.vix.price?.toFixed(2) ?? "—"}</strong></div>
+                  <div><span>Daily</span><strong className={(report.vix.change_percent ?? 0) >= 0 ? "positive" : "negative"}>{percent(report.vix.change_percent)}</strong></div>
+                  <div><span>7D</span><strong>{percent(report.vix.seven_day_percent)}</strong></div>
+                </article>
+              )}
+
+              <div className="card">
+                <h2>Markets</h2>
+                <div className="report-table-wrap">
+                  <table className="report-table">
+                    <thead><tr><th>Symbol</th><th>Price</th><th>Day</th><th>7D</th><th>100MA</th><th>200MA</th><th>Rel Vol</th><th>Verify</th></tr></thead>
+                    <tbody>
+                      {report.markets.map((item) => (
+                        <tr key={item.symbol}>
+                          <td><strong>{item.symbol}</strong></td>
+                          <td>{money(item.price)}</td>
+                          <td className={(item.change_percent ?? 0) >= 0 ? "positive" : "negative"}>{percent(item.change_percent)}</td>
+                          <td>{percent(item.seven_day_percent)}</td>
+                          <td>{money(item.ma100)}</td>
+                          <td>{money(item.ma200)}</td>
+                          <td>{item.relative_volume == null ? "—" : `${item.relative_volume.toFixed(2)}x`}</td>
+                          <td>{item.verification_status === "verified" ? "2-source" : "primary"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="grid report-columns">
+                <section className="card">
+                  <h2>Notable Outliers</h2>
+                  <div className="outlier-list">
+                    {report.outliers.map((item) => (
+                      <div className="outlier-row" key={item.symbol}>
+                        <div><strong>{item.symbol}</strong><p>{item.reason}</p></div>
+                        <span>{item.score.toFixed(1)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="card">
+                  <h2>Major Currencies</h2>
+                  <div className="outlier-list">
+                    {(report.currencies.rates || []).map((item) => (
+                      <div className="outlier-row" key={item.pair}>
+                        <div><strong>{item.pair}</strong><p>{item.rate == null ? "—" : item.rate.toFixed(4)}</p></div>
+                        <span className={(item.seven_day_percent ?? 0) >= 0 ? "positive" : "negative"}>{percent(item.seven_day_percent)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </div>
+
+              <section className="card">
+                <h2>Top Market News</h2>
+                <div className="news-list compact-news">
+                  {report.top_market_news.map((article) => (
+                    <a className="news-card-inline" href={article.url} target="_blank" rel="noreferrer" key={article.url}>
+                      <strong>{article.title}</strong>
+                      <span>{article.domain || "Source"}{article.published_at ? ` · ${article.published_at}` : ""}</span>
+                    </a>
+                  ))}
+                </div>
+              </section>
+            </>
+          )}
         </section>
       )}
 
