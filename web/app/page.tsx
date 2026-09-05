@@ -30,6 +30,13 @@ type MarketSnapshot = {
   provider: string;
   source_url: string;
   verification_status: string;
+  verification?: {
+    primary_provider?: string;
+    secondary_provider?: string;
+    verified_fields?: string[];
+    discrepancy_fields?: string[];
+    error?: string;
+  };
   data_note?: string;
 };
 
@@ -46,6 +53,15 @@ type CurrencyRate = {
   pair: string;
   rate: number | null;
   seven_day_percent: number | null;
+};
+
+type SecuritySearchResult = {
+  symbol: string;
+  name?: string | null;
+  exchange?: string | null;
+  country?: string | null;
+  currency?: string | null;
+  type?: string | null;
 };
 
 function money(value: number | null) {
@@ -73,6 +89,8 @@ export default function Home() {
   const [newsStatus, setNewsStatus] = useState("Not loaded");
   const [currencies, setCurrencies] = useState<CurrencyRate[]>([]);
   const [currencyStatus, setCurrencyStatus] = useState("Not loaded");
+  const [searchResults, setSearchResults] = useState<SecuritySearchResult[]>([]);
+  const [searchStatus, setSearchStatus] = useState("");
 
   async function loadWatchlist() {
     try {
@@ -90,6 +108,31 @@ export default function Home() {
   useEffect(() => {
     loadWatchlist();
   }, []);
+
+  useEffect(() => {
+    const query = newTicker.trim();
+    if (query.length < 2) {
+      setSearchResults([]);
+      setSearchStatus("");
+      return;
+    }
+
+    const timer = window.setTimeout(async () => {
+      setSearchStatus("Searching...");
+      try {
+        const response = await fetch(`${API}/api/v1/securities/search?q=${encodeURIComponent(query)}`, { cache: "no-store" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.detail || `HTTP ${response.status}`);
+        setSearchResults(data.results || []);
+        setSearchStatus(data.results?.length ? "" : "No matches");
+      } catch (error) {
+        setSearchResults([]);
+        setSearchStatus(error instanceof Error ? error.message : "Search unavailable");
+      }
+    }, 450);
+
+    return () => window.clearTimeout(timer);
+  }, [newTicker]);
 
   async function loadMarketData(symbol: string) {
     if (busySymbol) return;
@@ -135,8 +178,8 @@ export default function Home() {
     }
   }
 
-  async function addTicker() {
-    const symbol = newTicker.trim().toUpperCase();
+  async function addTicker(symbolOverride?: string) {
+    const symbol = (symbolOverride || newTicker).trim().toUpperCase();
     if (!symbol || busySymbol) return;
     setBusySymbol(symbol);
     setStatus(`Adding ${symbol}...`);
@@ -152,6 +195,7 @@ export default function Home() {
         throw new Error(detail?.detail || `HTTP ${response.status}`);
       }
       setNewTicker("");
+      setSearchResults([]);
       await loadWatchlist();
     } catch (error) {
       console.error(error);
@@ -207,7 +251,7 @@ export default function Home() {
       {activeTab === "Report" && (
         <section className="card">
           <h2>Daily Report</h2>
-          <p className="muted">Primary market data, world news and currency pipelines are connected. Secondary market-data verification and large-flow data are still pending.</p>
+          <p className="muted">Primary market data, cross-provider verification, world news and currency pipelines are connected. Large-flow data remains pending.</p>
         </section>
       )}
 
@@ -215,10 +259,23 @@ export default function Home() {
         <section>
           <div className="card">
             <h2>Watchlist</h2>
-            <p className="muted">Load symbols individually while the app is on the Twelve Data free tier to stay within provider rate limits.</p>
+            <p className="muted">Search by ticker or company. Market values use Twelve Data; Alpha Vantage verification is rationed to one persisted check per symbol per day.</p>
             <div className="ticker-add-row">
-              <input className="search" value={newTicker} onChange={(e) => setNewTicker(e.target.value.toUpperCase())} placeholder="Add ticker, e.g. MU" maxLength={20} onKeyDown={(e) => { if (e.key === "Enter") addTicker(); }} />
-              <button className="btn" onClick={addTicker} disabled={!newTicker.trim() || !!busySymbol}>Add</button>
+              <div className="search-wrap">
+                <input className="search" value={newTicker} onChange={(e) => setNewTicker(e.target.value)} placeholder="Search ticker or company" maxLength={64} onKeyDown={(e) => { if (e.key === "Enter") addTicker(); }} />
+                {(searchResults.length > 0 || searchStatus) && (
+                  <div className="search-results">
+                    {searchResults.map((result) => (
+                      <button key={`${result.symbol}-${result.exchange || ""}`} onClick={() => addTicker(result.symbol)}>
+                        <strong>{result.symbol}</strong>
+                        <span>{result.name || result.type || "Security"}{result.exchange ? ` · ${result.exchange}` : ""}</span>
+                      </button>
+                    ))}
+                    {searchStatus && <p className="muted search-message">{searchStatus}</p>}
+                  </div>
+                )}
+              </div>
+              <button className="btn" onClick={() => addTicker()} disabled={!newTicker.trim() || !!busySymbol}>Add</button>
             </div>
           </div>
 
@@ -226,6 +283,12 @@ export default function Home() {
             {tickers.map((ticker) => {
               const data = marketData[ticker];
               const error = marketErrors[ticker];
+              const verificationLabel = data?.verification_status === "verified"
+                ? "verified by 2 sources"
+                : data?.verification?.error
+                  ? "primary only · secondary deferred"
+                  : data?.verification_status?.replaceAll("_", " ") || "primary only";
+
               return (
                 <article className="card ticker-card" key={ticker}>
                   <div className="row">
@@ -248,7 +311,7 @@ export default function Home() {
                         <span>52W Low <strong>{money(data.low_52_week)}</strong></span>
                         <span>Volume <strong>{compact(data.volume)}</strong></span>
                       </div>
-                      <p className="source-line">As of {data.as_of || "—"} · {data.verification_status.replaceAll("_", " ")} · <a href={data.source_url} target="_blank" rel="noreferrer">{data.provider}</a></p>
+                      <p className="source-line">As of {data.as_of || "—"} · {verificationLabel} · <a href={data.source_url} target="_blank" rel="noreferrer">{data.provider}</a></p>
                     </div>
                   )}
                 </article>
