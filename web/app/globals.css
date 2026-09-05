@@ -68,7 +68,7 @@ p {
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 12px;
 }
 
@@ -131,6 +131,80 @@ p {
 
 .btn.danger {
   padding: 7px 10px;
+  font-size: 13px;
+}
+
+.load-market {
+  width: 100%;
+  margin-top: 14px;
+}
+
+.market-metrics {
+  margin-top: 14px;
+}
+
+.price-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.price-line strong {
+  font-size: 25px;
+}
+
+.positive {
+  color: #56d364;
+}
+
+.negative {
+  color: #ff7b72;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  font-size: 13px;
+  color: #929ba8;
+}
+
+.metric-grid span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid #20262e;
+  padding-bottom: 6px;
+}
+
+.metric-grid strong {
+  color: #f4f5f7;
+  font-weight: 600;
+}
+
+.source-line {
+  margin: 14px 0 0;
+  color: #929ba8;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.source-line a {
+  text-decoration: underline;
+}
+
+.market-error {
+  margin-top: 14px;
+  border: 1px solid #5a2d2d;
+  border-radius: 12px;
+  padding: 12px;
+  color: #ffb4ad;
+}
+
+.market-error p {
+  margin-bottom: 10px;
   font-size: 13px;
 }
 
