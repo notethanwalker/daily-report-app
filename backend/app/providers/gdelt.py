@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 import re
-from urllib.parse import quote_plus
+import time
 import xml.etree.ElementTree as ET
 
 import httpx
@@ -8,6 +8,8 @@ import httpx
 BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 SOURCE_URL = "https://www.gdeltproject.org/"
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
+GDELT_COOLDOWN_SECONDS = 1800
+_gdelt_cooldown_until = 0.0
 
 TOPICS = {
     "AI & Semiconductors": ["ai", "artificial intelligence", "semiconductor", "chip", "nvidia", "memory", "data center"],
@@ -74,7 +76,6 @@ def _article(title: str, url: str, domain=None, source_country=None, language=No
 
 
 def _google_query(query: str) -> str:
-    # Google News RSS handles normal search terms better than GDELT boolean syntax.
     lowered = query.lower()
     terms = []
     for term in [
@@ -130,6 +131,7 @@ class GdeltProvider:
     name = "GDELT"
 
     def search(self, query: str, max_records: int = 25, timespan: str = "24h") -> dict:
+        global _gdelt_cooldown_until
         params = {
             "query": query,
             "mode": "artlist",
@@ -141,47 +143,59 @@ class GdeltProvider:
 
         provider = self.name
         source_url = SOURCE_URL
-        try:
-            with httpx.Client(timeout=25.0) as client:
-                response = client.get(BASE_URL, params=params, headers={"User-Agent": "DailyReportApp/1.1"})
-                response.raise_for_status()
-                data = response.json()
+        fallback_reason = None
 
-            articles = []
-            seen_urls = set()
-            seen_titles = set()
-            for item in data.get("articles", []):
-                url = item.get("url")
-                title = item.get("title")
-                if not url or not title or url in seen_urls:
-                    continue
-                normalized = _normalize_title(title)
-                if not normalized or normalized in seen_titles:
-                    continue
-                seen_urls.add(url)
-                seen_titles.add(normalized)
-                articles.append(
-                    _article(
-                        title=title,
-                        url=url,
-                        domain=item.get("domain"),
-                        source_country=item.get("sourcecountry"),
-                        language=item.get("language"),
-                        published_at=item.get("seendate"),
-                        image_url=item.get("socialimage"),
-                    )
-                )
-                if len(articles) >= max_records:
-                    break
-        except (httpx.HTTPError, ValueError, ET.ParseError):
+        if time.time() < _gdelt_cooldown_until:
             articles = _google_news_fallback(query, max_records)
             provider = "Google News RSS fallback"
             source_url = "https://news.google.com/"
+            fallback_reason = "gdelt_cooldown"
+        else:
+            try:
+                with httpx.Client(timeout=25.0) as client:
+                    response = client.get(BASE_URL, params=params, headers={"User-Agent": "DailyReportApp/1.1"})
+                    if response.status_code == 429:
+                        _gdelt_cooldown_until = time.time() + GDELT_COOLDOWN_SECONDS
+                    response.raise_for_status()
+                    data = response.json()
+
+                articles = []
+                seen_urls = set()
+                seen_titles = set()
+                for item in data.get("articles", []):
+                    url = item.get("url")
+                    title = item.get("title")
+                    if not url or not title or url in seen_urls:
+                        continue
+                    normalized = _normalize_title(title)
+                    if not normalized or normalized in seen_titles:
+                        continue
+                    seen_urls.add(url)
+                    seen_titles.add(normalized)
+                    articles.append(
+                        _article(
+                            title=title,
+                            url=url,
+                            domain=item.get("domain"),
+                            source_country=item.get("sourcecountry"),
+                            language=item.get("language"),
+                            published_at=item.get("seendate"),
+                            image_url=item.get("socialimage"),
+                        )
+                    )
+                    if len(articles) >= max_records:
+                        break
+            except (httpx.HTTPError, ValueError, ET.ParseError):
+                articles = _google_news_fallback(query, max_records)
+                provider = "Google News RSS fallback"
+                source_url = "https://news.google.com/"
+                fallback_reason = "gdelt_rate_limited_or_unavailable"
 
         return {
             "provider": provider,
             "source_url": source_url,
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
             "query": query,
+            "fallback_reason": fallback_reason,
             "articles": articles,
         }
