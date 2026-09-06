@@ -6,3 +6,4 @@ httpx
 sqlalchemy
 psycopg[binary]
 yfinance
+pywebpush
