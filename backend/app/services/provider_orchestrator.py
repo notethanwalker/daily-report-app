@@ -18,8 +18,19 @@ FRESHNESS_POLICIES = {
     "news": FreshnessPolicy(10 * 60, 80),
     "macro": FreshnessPolicy(30 * 60, 75),
     "fx": FreshnessPolicy(60 * 60, 65),
+    "history": FreshnessPolicy(30 * 24 * 60 * 60, 55),
     "fundamentals": FreshnessPolicy(7 * 24 * 60 * 60, 40),
     "daily_features": FreshnessPolicy(24 * 60 * 60, 50),
+}
+
+PROVIDER_POLICY = {
+    "market": {"primary":"Twelve Data","fallback":None,"cache":"15m during market window"},
+    "history": {"primary":"Twelve Data","fallback":None,"cache":"persistent daily bars"},
+    "fundamentals": {"primary":"Alpha Vantage","fallback":"Yahoo Finance","cache":"7d"},
+    "flow": {"primary":"SquawkFlow","fallback":"stored observations","cache":"30s"},
+    "news": {"primary":"GDELT","fallback":"Google News RSS","cache":"10m"},
+    "fx": {"primary":"Frankfurter","fallback":None,"cache":"60m"},
+    "events": {"primary":"MacroRadar","fallback":"cached Yahoo earnings dates","cache":"request + persistent fundamentals"},
 }
 
 
@@ -50,3 +61,6 @@ class ProviderOrchestrator:
             except Exception as exc:
                 errors.append(f"{name}: {exc}")
         raise RuntimeError("; ".join(errors) or "No fundamentals provider available")
+
+    def describe(self) -> dict:
+        return PROVIDER_POLICY
