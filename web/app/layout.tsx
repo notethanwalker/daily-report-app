@@ -9,6 +9,7 @@ import "./intelligence-extras.css";
 import "./portfolio-access.css";
 import "./intelligence-v2.css";
 import "./v3-workspaces.css";
+import "./v4-fixes.css";
 import PwaRegister from "./pwa-register";
 import IntelligenceAugmentations from "./intelligence-augmentations";
 
@@ -21,9 +22,7 @@ export const metadata: Metadata = {
     title: "Daily Report",
     statusBarStyle: "black-translucent",
   },
-  icons: {
-    icon: "/icon.svg",
-  },
+  icons: { icon: "/icon.svg" },
 };
 
 export const viewport: Viewport = {
@@ -34,13 +33,5 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <html lang="en">
-      <body>
-        <PwaRegister />
-        {children}
-        <IntelligenceAugmentations />
-      </body>
-    </html>
-  );
+  return <html lang="en"><body><PwaRegister />{children}<IntelligenceAugmentations /></body></html>;
 }
