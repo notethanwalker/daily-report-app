@@ -53,7 +53,7 @@ def add_user_watchlist(body:SymbolIn,user:str=Depends(current_user),db:Session=D
     if not s or len(s)>20 or not all(c.isalnum() or c in ".-^" for c in s):raise HTTPException(400,"Invalid ticker symbol format")
     exists=db.query(UserWatchlistItem).filter(UserWatchlistItem.user_email==user,UserWatchlistItem.symbol==s).first()
     if not exists:db.add(UserWatchlistItem(user_email=user,symbol=s))
-    _enqueue(db,s,"market",100,user);_enqueue(db,s,"fundamentals",40,user);db.commit();return {"status":"added","symbol":s,"refresh":"queued"}
+    _enqueue(db,s,"market",100,user);_enqueue(db,s,"history",FRESHNESS_POLICIES["history"].priority,user);_enqueue(db,s,"fundamentals",40,user);db.commit();return {"status":"added","symbol":s,"refresh":"market, history and fundamentals queued against the shared symbol cache"}
 
 @router.delete("/user/watchlist/{symbol}")
 def remove_user_watchlist(symbol:str,user:str=Depends(current_user),db:Session=Depends(get_db)):
@@ -65,14 +65,15 @@ def remove_user_watchlist(symbol:str,user:str=Depends(current_user),db:Session=D
 def user_markets_latest(user:str=Depends(current_user),db:Session=Depends(get_db)):
     out=[];pending=[];now=datetime.now(timezone.utc)
     for symbol in _symbols(db,user):
-        p,row=_latest(db,symbol);f=db.get(FundamentalCache,symbol)
+        p,row=_latest(db,symbol);f=db.get(FundamentalCache,symbol);history_count=db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol).count()
         if p:out.append(p)
         if row is None or is_stale(row.retrieved_at,"market",now):_enqueue(db,symbol,"market",FRESHNESS_POLICIES["market"].priority,user);pending.append({"symbol":symbol,"data_class":"market"})
+        if history_count<120:_enqueue(db,symbol,"history",FRESHNESS_POLICIES["history"].priority,user);pending.append({"symbol":symbol,"data_class":"history"})
         if f is None or is_stale(f.retrieved_at,"fundamentals",now):_enqueue(db,symbol,"fundamentals",FRESHNESS_POLICIES["fundamentals"].priority,user);pending.append({"symbol":symbol,"data_class":"fundamentals"})
     db.commit();return {"markets":out,"pending_refresh":pending,"note":"User-specific watchlist references shared symbol-level caches; this route does not make provider calls."}
 
 
-def _returns(db,symbol,limit=70):
+def _returns(db,symbol,limit=260):
     rows=db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol).order_by(HistoricalDailyBar.bar_date.desc()).limit(limit).all();rows=list(reversed(rows));return {rows[i].bar_date:(rows[i].close/rows[i-1].close-1) for i in range(1,len(rows)) if rows[i-1].close}
 
 
@@ -82,15 +83,26 @@ def _corr(a,b):
     x=[a[d] for d in dates];y=[b[d] for d in dates];mx=sum(x)/len(x);my=sum(y)/len(y);dx=[v-mx for v in x];dy=[v-my for v in y];den=sqrt(sum(v*v for v in dx)*sum(v*v for v in dy))
     return sum(i*j for i,j in zip(dx,dy))/den if den else None
 
+
+def _beta(asset,bench):
+    dates=sorted(set(asset)&set(bench))
+    if len(dates)<20:return None
+    x=[asset[d] for d in dates];y=[bench[d] for d in dates];mx=sum(x)/len(x);my=sum(y)/len(y);cov=sum((a-mx)*(b-my) for a,b in zip(x,y));var=sum((b-my)**2 for b in y)
+    return cov/var if var else None
+
 @router.get("/portfolio/risk")
 def portfolio_risk(user:str=Depends(current_user),db:Session=Depends(get_db)):
-    symbols=[r.symbol for r in db.query(PortfolioHolding).filter(PortfolioHolding.user_email==user).all()];series={s:_returns(db,s) for s in symbols};pairs=[]
+    holdings=db.query(PortfolioHolding).filter(PortfolioHolding.user_email==user).all();symbols=[r.symbol for r in holdings];series={s:_returns(db,s) for s in symbols};spy=_returns(db,"SPY");pairs=[];betas=[];weighted_num=0.0;weighted_den=0.0
     for i,a in enumerate(symbols):
         for b in symbols[i+1:]:
             c=_corr(series[a],series[b])
             if c is not None:pairs.append({"a":a,"b":b,"correlation":round(c,2),"cluster_risk":"high" if c>=.8 else "moderate" if c>=.65 else "low"})
-    pairs.sort(key=lambda x:x["correlation"],reverse=True)
-    return {"pairs":pairs,"high_correlation_pairs":[p for p in pairs if p["correlation"]>=.8],"methodology":"Pearson correlation of overlapping stored daily returns, requiring at least 20 observations. Correlation is historical and can change."}
+    for h in holdings:
+        beta=_beta(series[h.symbol],spy);m,_=_latest(db,h.symbol);value=(float((m or {}).get("price") or 0))*h.shares
+        if beta is not None:
+            betas.append({"symbol":h.symbol,"beta":round(beta,2),"market_value":round(value,2)});weighted_num+=beta*value;weighted_den+=value
+    pairs.sort(key=lambda x:x["correlation"],reverse=True);betas.sort(key=lambda x:abs(x["beta"]),reverse=True)
+    return {"pairs":pairs,"high_correlation_pairs":[p for p in pairs if p["correlation"]>=.8],"betas":betas,"portfolio_beta":round(weighted_num/weighted_den,2) if weighted_den else None,"methodology":"Correlation uses overlapping stored daily returns; beta is covariance versus SPY divided by SPY variance. Both require at least 20 observations and are historical, not stable forecasts."}
 
 
 def _catalyst_score(db,symbol):
