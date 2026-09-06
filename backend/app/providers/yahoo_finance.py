@@ -32,6 +32,29 @@ def _series_values(frame, names, limit=5):
     return []
 
 
+def _earnings_date(calendar):
+    if calendar is None:
+        return None
+    try:
+        value = calendar.get("Earnings Date") if hasattr(calendar, "get") else None
+        if value is None and hasattr(calendar, "index") and "Earnings Date" in calendar.index:
+            value = calendar.loc["Earnings Date"]
+        if hasattr(value, "tolist"):
+            value = value.tolist()
+        if isinstance(value, (list, tuple)):
+            value = next((x for x in value if x is not None), None)
+        if hasattr(value, "to_pydatetime"):
+            value = value.to_pydatetime()
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        if value:
+            text = str(value)
+            return text[:10] if len(text) >= 10 else None
+    except Exception:
+        return None
+    return None
+
+
 class YahooFinanceProvider:
     name = "Yahoo Finance"
 
@@ -48,6 +71,8 @@ class YahooFinanceProvider:
                 hist=ticker.history(period="5d",auto_adjust=False)
                 quote=_float(hist["Close"].dropna().iloc[-1]) if hist is not None and not hist.empty else None
             except Exception: quote=None
+            try: calendar=ticker.calendar
+            except Exception: calendar=None
         except Exception as exc:
             raise YahooFinanceError(f"Yahoo Finance request failed for {s}") from exc
 
@@ -93,12 +118,13 @@ class YahooFinanceProvider:
             "quarterly_revenue_growth_yoy": revenue_growth,
             "quarterly_earnings_growth_yoy": earnings_growth,
             "market_cap": market_cap,
+            "earnings_date": _earnings_date(calendar),
             "sector": info.get("sector") or info.get("category"),
             "industry": info.get("industry"),
             "provider": self.name,
             "source_url": f"{SOURCE_ROOT}/{s}",
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
-            "valuation_refresh_version": 2,
+            "valuation_refresh_version": 3,
         }
         if all(payload.get(k) is None for k in ["pe_ratio", "peg_ratio", "price_to_sales_ratio", "eps", "revenue_ttm", "shares_outstanding", "market_cap"]):
             raise YahooFinanceError(f"Yahoo Finance returned no usable valuation fields for {s}")
