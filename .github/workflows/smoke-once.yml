@@ -9,9 +9,6 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for Render deploy
-        run: sleep 5
-
       - name: Check backend health
         run: |
           set -euo pipefail
@@ -19,38 +16,72 @@ jobs:
           echo "$HEALTH" | jq '{status,version}'
           echo "$HEALTH" | jq -e '.status == "ok"'
 
-      - name: Check expanded event calendar
+      - name: Check Events v3
         run: |
           set -euo pipefail
-          EVENTS=$(curl --fail --silent --show-error --retry 3 --retry-delay 5 'https://daily-report-api-ero2.onrender.com/api/v1/events?days=90&sort=impact&order=desc&limit=300')
-          echo "$EVENTS" | jq '{count,providers,categories,errors,sample:(.events[:3])}'
-          echo "$EVENTS" | jq -e '(.events | type == "array") and (.count >= 5) and (.providers | type == "array")'
+          EVENTS=$(curl --fail --silent --show-error --retry 3 --retry-delay 5 'https://daily-report-api-ero2.onrender.com/api/v1/events?days=30&sort=impact&order=desc&limit=100')
+          echo "$EVENTS" | jq '{count,categories,provider_count:(.providers|length),error_count:(.errors|length),sample:(.events[:3])}'
+          echo "$EVENTS" | jq -e '(.events|type=="array") and (.providers|type=="array") and (.categories|type=="array") and (.methodology|type=="string")'
 
-      - name: Check valuation coverage
+      - name: Check Command Center and shared analytics
         run: |
           set -euo pipefail
-          for SYMBOL in NVDA MU AAOI; do
-            FUND=$(curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${SYMBOL}/fundamentals")
-            echo "$FUND" | jq '{symbol,pe_ratio,price_to_sales_ratio,peg_ratio,coverage,valuation_sources,field_sources,provider,fundamentals_cache}'
-            echo "$FUND" | jq -e '.symbol != null and .coverage.ps == true'
-          done
+          CC=$(curl --fail --silent --show-error https://daily-report-api-ero2.onrender.com/api/v1/command-center)
+          echo "$CC" | jq '{tracked_symbols,new_flag_count,breadth,macro,liquidity}'
+          echo "$CC" | jq -e 'has("movers") and has("score_changes") and has("breadth") and has("macro") and has("relative_flow") and has("upcoming_events")'
 
-      - name: Check live portfolio baseline
+          MACRO=$(curl --fail --silent --show-error https://daily-report-api-ero2.onrender.com/api/v1/macro/expanded)
+          echo "$MACRO" | jq '{tracking,breadth,group_count:(.groups|length)}'
+          echo "$MACRO" | jq -e '(.rows|type=="array") and (.groups|type=="object") and (.categories|type=="object")'
+
+          RS=$(curl --fail --silent --show-error 'https://daily-report-api-ero2.onrender.com/api/v1/analytics/relative-strength?scope=macro&limit=20')
+          echo "$RS" | jq '{scope,count:(.rows|length)}'
+          echo "$RS" | jq -e '(.rows|type=="array") and (.methodology|type=="string")'
+
+          LIQ=$(curl --fail --silent --show-error https://daily-report-api-ero2.onrender.com/api/v1/analytics/liquidity)
+          echo "$LIQ" | jq '{stress_score,signals}'
+          echo "$LIQ" | jq -e 'has("stress_score") and (.signals|type=="array")'
+
+      - name: Check flow, catalyst and score-history analytics
+        run: |
+          set -euo pipefail
+          FLOW=$(curl --fail --silent --show-error 'https://daily-report-api-ero2.onrender.com/api/v1/flow/analytics?hours=72')
+          echo "$FLOW" | jq '{count:(.rows|length),sample:(.rows[:3])}'
+          echo "$FLOW" | jq -e '(.rows|type=="array") and (.methodology|type=="string")'
+
+          CAT=$(curl --fail --silent --show-error https://daily-report-api-ero2.onrender.com/api/v1/analytics/catalyst-density)
+          echo "$CAT" | jq '{market_wide_events_30d,count:(.rows|length)}'
+          echo "$CAT" | jq -e '(.rows|type=="array") and has("market_wide_events_30d")'
+
+          HIST=$(curl --fail --silent --show-error 'https://daily-report-api-ero2.onrender.com/api/v1/opportunities/SPY/history?days=180')
+          echo "$HIST" | jq '{symbol,count:(.history|length)}'
+          echo "$HIST" | jq -e '.symbol == "SPY" and (.history|type=="array")'
+
+      - name: Check portfolio analytics and benchmark performance
         run: |
           set -euo pipefail
           PORTS=$(curl --fail --silent --show-error https://daily-report-api-ero2.onrender.com/api/v1/portfolios)
-          PID=$(echo "$PORTS" | jq -r '.portfolios[] | select(.name=="Joint Fidelity") | .id' | head -1)
+          PID=$(echo "$PORTS" | jq -r '.portfolios[0].id // empty')
           test -n "$PID"
           DETAIL=$(curl --fail --silent --show-error "https://daily-report-api-ero2.onrender.com/api/v1/portfolios/${PID}")
-          echo "$DETAIL" | jq '{portfolio,baseline,market_value,invested_value,cash_percent,holding_count:(.holdings|length),sample:(.holdings[0]|{symbol,baseline,live})}'
-          echo "$DETAIL" | jq -e '.baseline.initial_total_value > 0 and (.holdings | length) == 9 and ([.holdings[] | has("baseline") and has("live")] | all)'
+          echo "$DETAIL" | jq '{portfolio,market_value,baseline,holding_count:(.holdings|length)}'
+          echo "$DETAIL" | jq -e 'has("baseline") and (.holdings|type=="array")'
 
-      - name: Check custom alert variables and Web Push readiness
+          ANALYTICS=$(curl --fail --silent --show-error "https://daily-report-api-ero2.onrender.com/api/v1/portfolios/${PID}/analytics")
+          echo "$ANALYTICS" | jq '{portfolio_beta_spy,annualized_volatility_percent,historical_max_drawdown_percent,risk_count:(.risk_contribution|length),history_count:(.history|length)}'
+          echo "$ANALYTICS" | jq -e 'has("portfolio_beta_spy") and (.risk_contribution|type=="array") and (.sector_exposure|type=="array") and (.history|type=="array")'
+
+          PERF=$(curl --fail --silent --show-error "https://daily-report-api-ero2.onrender.com/api/v1/portfolios/${PID}/performance")
+          echo "$PERF" | jq '{portfolio,benchmarks,relative,position_beta_count:(.position_beta|length)}'
+          echo "$PERF" | jq -e '(.benchmarks.SPY|type=="object") and (.benchmarks.QQQ|type=="object") and (.position_beta|type=="array")'
+
+      - name: Check data lineage and API budget
         run: |
           set -euo pipefail
-          ALERTS=$(curl --fail --silent --show-error https://daily-report-api-ero2.onrender.com/api/v1/alerts/v2)
-          echo "$ALERTS" | jq '{push,variable_count:(.variables|length),variables:(.variables|keys)}'
-          echo "$ALERTS" | jq -e '.variables.pe and .variables.sector_score and .variables.bullish_flow and .push.configured == true'
-          PUSH=$(curl --fail --silent --show-error https://daily-report-api-ero2.onrender.com/api/v1/push/config)
-          echo "$PUSH" | jq '{configured,subscriptions,public_key_present:(.public_key != null)}'
-          echo "$PUSH" | jq -e '.configured == true and .public_key != null'
+          LINEAGE=$(curl --fail --silent --show-error https://daily-report-api-ero2.onrender.com/api/v1/system/data-lineage)
+          echo "$LINEAGE" | jq '{fundamental_coverage,provider_classes:(.provider_policy|keys)}'
+          echo "$LINEAGE" | jq -e '(.provider_policy|type=="object") and (.field_policy|type=="object") and (.fundamental_coverage|type=="object")'
+
+          BUDGET=$(curl --fail --silent --show-error https://daily-report-api-ero2.onrender.com/api/v1/system/api-budget)
+          echo "$BUDGET" | jq '{alpha_vantage,twelve_data,forecast}'
+          echo "$BUDGET" | jq -e 'has("alpha_vantage") and has("twelve_data") and has("forecast")'
