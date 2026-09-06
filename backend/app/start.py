@@ -8,8 +8,13 @@ from starlette.responses import JSONResponse
 from .database import Base, SessionLocal, engine
 from . import main as stable
 from .main import app
+from . import v2_models as _v2_models  # register additive tables before create_all
 from .routers.overrides import router as override_router
 from .routers.health_override import router as health_router
+from .routers.events_v2 import router as events_v2_router
+from .routers.fundamentals_v2 import router as fundamentals_v2_router
+from .routers.alerts_v2 import router as alerts_v2_router
+from .routers.portfolio_live import router as portfolio_live_router
 from .routers.intelligence import router as intelligence_router
 from .routers.user_state import router as user_state_router
 from .routers.lifecycle import router as lifecycle_router
@@ -27,9 +32,16 @@ SECTORS.update(CROSS_ASSET)
 for symbol in CROSS_ASSET:
     if symbol not in stable.MACRO_BACKFILL_PRIORITY:stable.MACRO_BACKFILL_PRIORITY.append(symbol)
 
+# Replace the legacy fundamentals route with the composite Yahoo/SEC/Alpha endpoint.
+app.router.routes=[r for r in app.router.routes if not (getattr(r,"path",None)=="/api/v1/markets/{symbol}/fundamentals" and "GET" in (getattr(r,"methods",set()) or set()))]
+
 Base.metadata.create_all(bind=engine)
 app.include_router(override_router)
 app.include_router(health_router)
+app.include_router(fundamentals_v2_router)
+app.include_router(events_v2_router)
+app.include_router(alerts_v2_router)
+app.include_router(portfolio_live_router)
 app.include_router(portfolio_access_router)
 app.include_router(intelligence_router)
 app.include_router(user_state_router)
@@ -46,8 +58,8 @@ def _tokens():
     return out
 def _auth_enabled():return os.getenv("USER_AUTH_ENABLED","").strip().lower() in {"1","true","yes","on"} or bool(_allowed())
 
-USER_PATH_PREFIXES=("/api/v1/user/","/api/v1/portfolio","/api/v1/portfolios","/api/v1/opportunities","/api/v1/events","/api/v1/alerts","/api/v1/theses","/api/v1/users/me","/api/v1/admin/","/api/v1/flow","/api/v1/macro","/api/v1/security","/api/v1/system/")
-PERMISSION_PATHS=(("/api/v1/portfolios","can_manage_portfolios"),("/api/v1/opportunities","can_view_opportunities"),("/api/v1/events","can_view_events"),("/api/v1/flow","can_view_flow"),("/api/v1/macro","can_view_macro"),("/api/v1/security","can_view_research"),("/api/v1/alerts","can_manage_alerts"),("/api/v1/theses","can_manage_theses"),("/api/v1/system/","can_view_settings"))
+USER_PATH_PREFIXES=("/api/v1/user/","/api/v1/portfolio","/api/v1/portfolios","/api/v1/opportunities","/api/v1/events","/api/v1/alerts","/api/v1/push","/api/v1/theses","/api/v1/users/me","/api/v1/admin/","/api/v1/flow","/api/v1/macro","/api/v1/security","/api/v1/system/")
+PERMISSION_PATHS=(("/api/v1/portfolios","can_manage_portfolios"),("/api/v1/opportunities","can_view_opportunities"),("/api/v1/events","can_view_events"),("/api/v1/flow","can_view_flow"),("/api/v1/macro","can_view_macro"),("/api/v1/security","can_view_research"),("/api/v1/alerts","can_manage_alerts"),("/api/v1/push","can_manage_alerts"),("/api/v1/theses","can_manage_theses"),("/api/v1/system/","can_view_settings"))
 
 @app.middleware("http")
 async def selected_user_gate(request,call_next):
