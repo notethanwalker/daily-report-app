@@ -5,13 +5,14 @@ from datetime import datetime, timezone
 from ..database import SessionLocal
 from ..models import FundamentalCache, MarketSnapshot, PortfolioHolding, RefreshQueueItem, UserWatchlistItem, WatchlistItem
 from ..providers.twelve_data import TwelveDataProvider
+from .alert_engine import evaluate_alerts
 from .calculations import build_market_snapshot
 from .provider_orchestrator import FRESHNESS_POLICIES, ProviderOrchestrator, is_stale
 
 
 def _symbols(db):
     out={r.symbol for r in db.query(WatchlistItem).all()}
-    out|={r.symbol for r in db.query(UserWatchlistItem).all()}
+    out|={r.symbol for r in db.query(UserWatchlistItem).all() if r.symbol!="__INITIALIZED__"}
     out|={r.symbol for r in db.query(PortfolioHolding).all()}
     return sorted(out)
 
@@ -63,6 +64,12 @@ def run_cycle():
     try:
         enqueue_stale(db)
         process_queue(db,4)
+        # Refresh derived features after source data updates. Local import avoids router/service startup coupling.
+        from ..routers.intelligence import _refresh_feature
+        for symbol in _symbols(db):
+            try:_refresh_feature(db,symbol)
+            except Exception:db.rollback()
+        evaluate_alerts(db)
     except Exception:
         db.rollback()
     finally:
