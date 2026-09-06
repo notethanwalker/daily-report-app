@@ -5,6 +5,7 @@ import "./macro-flow.css";
 import "./pro-polish.css";
 import "./v18-polish.css";
 import "./intelligence-suite.css";
+import "./intelligence-extras.css";
 import PwaRegister from "./pwa-register";
 
 export const metadata: Metadata = {
