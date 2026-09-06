@@ -11,7 +11,7 @@ from .main import app
 from . import v2_models as _v2_models  # register additive tables before create_all
 from .routers.overrides import router as override_router
 from .routers.health_override import router as health_router
-from .routers.events_v2 import router as events_v2_router
+from .routers.events_v2 import events as events_v2_handler
 from .routers.fundamentals_v2 import router as fundamentals_v2_router
 from .routers.alerts_v2 import router as alerts_v2_router
 from .routers.portfolio_live import router as portfolio_live_router
@@ -37,17 +37,13 @@ def _is_get_route(route, *paths):
     return getattr(route, "path", None) in paths and "GET" in (getattr(route, "methods", set()) or set())
 
 
-# Make the v2 endpoints authoritative. Both the stable app and the intelligence
-# router still contain legacy route definitions; Starlette resolves duplicate
-# paths by route order, so remove the old definitions before mounting v2.
+# Replace the legacy fundamentals endpoint before mounting the composite route.
 app.router.routes = [
     r for r in app.router.routes
-    if not _is_get_route(
-        r,
-        "/api/v1/markets/{symbol}/fundamentals",
-        "/api/v1/events",
-    )
+    if not _is_get_route(r, "/api/v1/markets/{symbol}/fundamentals")
 ]
+
+# Prevent the older intelligence router from re-registering its original Events endpoint.
 intelligence_router.routes = [
     r for r in intelligence_router.routes
     if not _is_get_route(r, "/events", "/api/v1/events")
@@ -57,7 +53,6 @@ Base.metadata.create_all(bind=engine)
 app.include_router(override_router)
 app.include_router(health_router)
 app.include_router(fundamentals_v2_router)
-app.include_router(events_v2_router)
 app.include_router(alerts_v2_router)
 app.include_router(portfolio_live_router)
 app.include_router(portfolio_access_router)
@@ -65,6 +60,19 @@ app.include_router(intelligence_router)
 app.include_router(user_state_router)
 app.include_router(lifecycle_router)
 app.include_router(research_router)
+
+# Final authoritative Events registration. Remove every GET route at this path after
+# all routers are mounted, add the v2 handler directly, then move it to the front of
+# Starlette's route list so no legacy definition can shadow it.
+app.router.routes = [r for r in app.router.routes if not _is_get_route(r, "/api/v1/events")]
+app.add_api_route(
+    "/api/v1/events",
+    events_v2_handler,
+    methods=["GET"],
+    tags=["events-v2"],
+    name="events_v2_authoritative",
+)
+app.router.routes.insert(0, app.router.routes.pop())
 
 
 def _allowed():return {x.strip().lower() for x in os.getenv("ALLOWED_USER_EMAILS", "").split(",") if x.strip()}
