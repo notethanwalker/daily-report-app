@@ -12,6 +12,7 @@ from .routers.overrides import router as override_router
 from .routers.intelligence import router as intelligence_router
 from .routers.user_state import router as user_state_router
 from .routers.lifecycle import router as lifecycle_router
+from .routers.research_ext import router as research_router
 from .services.refresh_scheduler import scheduler_loop
 from .services.rotation import SECTORS
 
@@ -35,6 +36,7 @@ app.include_router(override_router)
 app.include_router(intelligence_router)
 app.include_router(user_state_router)
 app.include_router(lifecycle_router)
+app.include_router(research_router)
 
 
 def _allowed():
