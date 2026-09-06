@@ -9,6 +9,7 @@ from .database import Base, engine
 from . import main as stable
 from .main import app
 from .routers.overrides import router as override_router
+from .routers.health_override import router as health_router
 from .routers.intelligence import router as intelligence_router
 from .routers.user_state import router as user_state_router
 from .routers.lifecycle import router as lifecycle_router
@@ -35,8 +36,9 @@ for symbol in CROSS_ASSET:
 
 # The intelligence routers import the expanded ORM model set before create_all runs here.
 Base.metadata.create_all(bind=engine)
-# Mount the enhanced scorer first so /opportunities resolves to the catalyst-aware implementation.
+# Mount overrides before the stable intelligence routes when the same path is intentionally upgraded.
 app.include_router(override_router)
+app.include_router(health_router)
 app.include_router(intelligence_router)
 app.include_router(user_state_router)
 app.include_router(lifecycle_router)
@@ -55,7 +57,7 @@ def _tokens():
     return out
 
 
-USER_PATH_PREFIXES=("/api/v1/user/","/api/v1/portfolio","/api/v1/opportunities","/api/v1/alerts","/api/v1/theses","/api/v1/users/me")
+USER_PATH_PREFIXES=("/api/v1/user/","/api/v1/portfolio","/api/v1/opportunities","/api/v1/events","/api/v1/alerts","/api/v1/theses","/api/v1/users/me")
 
 @app.middleware("http")
 async def selected_user_gate(request,call_next):
