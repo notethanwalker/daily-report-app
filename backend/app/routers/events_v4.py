@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import FundamentalCache, UserWatchlistItem, WatchlistItem
+from ..models import FundamentalCache, SymbolRegistry, UserWatchlistItem, WatchlistItem
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from ..providers.yahoo_finance import YahooFinanceProvider
 from .intelligence import current_user
@@ -36,37 +36,62 @@ def _event_rows(symbol:str,payload:dict,start:date,end:date,sources:list[str]):
 
 
 def _merge_calendar_into_cache(db:Session,symbol:str,calendar_payload:dict):
+    checked=datetime.now(timezone.utc).isoformat()
     row=db.get(FundamentalCache,symbol)
     if row:
         payload={**(row.payload or {})}
         for key in ("earnings_date","ex_dividend_date","dividend_date"):
             if calendar_payload.get(key):payload[key]=calendar_payload[key]
         payload.setdefault("source_url",calendar_payload.get("source_url"))
+        payload["company_calendar_retrieved_at"]=checked
         row.payload=payload
+        row.retrieved_at=datetime.now(timezone.utc)
     else:
-        row=FundamentalCache(symbol=symbol,provider="Yahoo Finance",payload=calendar_payload,retrieved_at=datetime.now(timezone.utc));db.add(row)
+        payload={**calendar_payload,"company_calendar_retrieved_at":checked}
+        row=FundamentalCache(symbol=symbol,provider="Yahoo Finance",payload=payload,retrieved_at=datetime.now(timezone.utc));db.add(row)
     db.commit()
 
 
+def _recent_calendar_check(payload:dict,hours:int=24)->bool:
+    raw=payload.get("company_calendar_retrieved_at")
+    if not raw:return False
+    try:
+        dt=datetime.fromisoformat(str(raw).replace("Z","+00:00"))
+        if dt.tzinfo is None:dt=dt.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc)-dt<timedelta(hours=hours)
+    except Exception:return False
+
+
+def _is_company_symbol(db:Session,symbol:str)->bool:
+    reg=db.get(SymbolRegistry,symbol)
+    kind=str(getattr(reg,"asset_type","") or "").lower()
+    # Avoid spending synchronous calendar requests on obvious funds/ETFs.
+    return not any(x in kind for x in ("etf","fund","index","mutual"))
+
+
 @router.get("/events/tracked-companies")
-def tracked_company_events(days:int=Query(365,ge=7,le=730),scope:str=Query("all",pattern="^(all|markets|portfolio)$"),refresh_missing:bool=True,user:str=Depends(current_user),db:Session=Depends(get_db)):
+def tracked_company_events(days:int=Query(365,ge=7,le=730),scope:str=Query("all",pattern="^(all|markets|portfolio)$"),refresh_missing:bool=True,max_refresh:int=Query(20,ge=0,le=60),user:str=Depends(current_user),db:Session=Depends(get_db)):
     tracked=_tracked_symbols(db,user);markets=tracked["markets"];portfolio=tracked["portfolio"]
     symbols=markets|portfolio if scope=="all" else tracked[scope]
-    start=date.today();end=start+timedelta(days=days);events=[];errors=[];refreshed=[];unresolved=[]
-    provider=YahooFinanceProvider()
-    for symbol in sorted(symbols)[:60]:
+    start=date.today();end=start+timedelta(days=days);events=[];errors=[];refreshed=[];unresolved=[];deferred=[]
+    provider=YahooFinanceProvider();refresh_count=0
+    for symbol in sorted(symbols)[:80]:
         via=[]
         if symbol in markets:via.append("Markets")
         if symbol in portfolio:via.append("Portfolio")
         row=db.get(FundamentalCache,symbol);payload={**(row.payload or {})} if row else {}
         existing=_event_rows(symbol,payload,start,end,via)
         has_future=bool(existing)
-        if refresh_missing and not has_future:
+        eligible=refresh_missing and not has_future and _is_company_symbol(db,symbol) and not _recent_calendar_check(payload)
+        if eligible and refresh_count<max_refresh:
+            refresh_count+=1
             try:
-                cal=provider.company_calendar(symbol);_merge_calendar_into_cache(db,symbol,cal);payload={**payload,**{k:v for k,v in cal.items() if v is not None}};refreshed.append(symbol)
+                cal=provider.company_calendar(symbol);_merge_calendar_into_cache(db,symbol,cal);payload={**payload,**{k:v for k,v in cal.items() if v is not None},"company_calendar_retrieved_at":datetime.now(timezone.utc).isoformat()};refreshed.append(symbol)
             except Exception as exc:
                 errors.append(f"{symbol}: {str(exc)[:180]}")
+        elif eligible:
+            deferred.append(symbol)
         rows=_event_rows(symbol,payload,start,end,via);events.extend(rows)
         if not rows:unresolved.append(symbol)
     events.sort(key=lambda e:(e["event_date"],-int(e.get("impact_score") or 0),e["symbol"]))
-    return {"events":events,"count":len(events),"tracked_symbols":sorted(symbols),"markets_symbols":sorted(markets),"portfolio_symbols":sorted(portfolio),"refreshed_symbols":refreshed,"unresolved_symbols":unresolved,"errors":errors,"window":{"start":start.isoformat(),"end":end.isoformat()},"methodology":"Tracked-company calendar combines symbols visible in Markets with all positions in the user's portfolios. Cached company dates are used first; symbols without a usable upcoming date are queried from Yahoo Finance on demand and merged into the shared fundamentals cache."}
+    return {"events":events,"count":len(events),"tracked_symbols":sorted(symbols),"markets_symbols":sorted(markets),"portfolio_symbols":sorted(portfolio),"refreshed_symbols":refreshed,"deferred_symbols":deferred,"unresolved_symbols":unresolved,"errors":errors,"window":{"start":start.isoformat(),"end":end.isoformat()},"methodology":"Tracked-company calendar combines symbols visible in Markets with all positions in the user's portfolios. Cached company dates are used first. Missing company calendars are refreshed on demand in a bounded batch, recent empty checks are cached for 24 hours, and obvious ETF/fund symbols are not sent through company-calendar hydration."}
