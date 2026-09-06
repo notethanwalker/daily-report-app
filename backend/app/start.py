@@ -32,8 +32,26 @@ SECTORS.update(CROSS_ASSET)
 for symbol in CROSS_ASSET:
     if symbol not in stable.MACRO_BACKFILL_PRIORITY:stable.MACRO_BACKFILL_PRIORITY.append(symbol)
 
-# Replace the legacy fundamentals route with the composite Yahoo/SEC/Alpha endpoint.
-app.router.routes=[r for r in app.router.routes if not (getattr(r,"path",None)=="/api/v1/markets/{symbol}/fundamentals" and "GET" in (getattr(r,"methods",set()) or set()))]
+
+def _is_get_route(route, *paths):
+    return getattr(route, "path", None) in paths and "GET" in (getattr(route, "methods", set()) or set())
+
+
+# Make the v2 endpoints authoritative. Both the stable app and the intelligence
+# router still contain legacy route definitions; Starlette resolves duplicate
+# paths by route order, so remove the old definitions before mounting v2.
+app.router.routes = [
+    r for r in app.router.routes
+    if not _is_get_route(
+        r,
+        "/api/v1/markets/{symbol}/fundamentals",
+        "/api/v1/events",
+    )
+]
+intelligence_router.routes = [
+    r for r in intelligence_router.routes
+    if not _is_get_route(r, "/events", "/api/v1/events")
+]
 
 Base.metadata.create_all(bind=engine)
 app.include_router(override_router)
