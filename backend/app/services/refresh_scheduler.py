@@ -58,14 +58,18 @@ def process_queue(db,limit=4):
     return done
 
 
+def run_cycle():
+    db=SessionLocal()
+    try:
+        enqueue_stale(db)
+        process_queue(db,4)
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
 async def scheduler_loop():
     while True:
-        db=SessionLocal()
-        try:
-            enqueue_stale(db)
-            await asyncio.to_thread(process_queue,db,4)
-        except Exception:
-            db.rollback()
-        finally:
-            db.close()
+        await asyncio.to_thread(run_cycle)
         await asyncio.sleep(15*60)
