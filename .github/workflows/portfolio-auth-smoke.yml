@@ -1,0 +1,36 @@
+name: Portfolio Auth Smoke
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify live multi-portfolio and access APIs
+        shell: python
+        run: |
+          import json, urllib.request
+          base='https://daily-report-api-ero2.onrender.com'
+          def get(path):
+              with urllib.request.urlopen(base+path, timeout=30) as r:
+                  assert r.status == 200, (path, r.status)
+                  return json.load(r)
+          portfolios=get('/api/v1/portfolios')
+          rows=portfolios.get('portfolios',[])
+          joint=next((p for p in rows if p.get('name')=='Joint Fidelity'),None)
+          assert joint, portfolios
+          assert joint.get('position_count')==9, joint
+          detail=get(f"/api/v1/portfolios/{joint['id']}")
+          assert abs(detail['portfolio']['cash']-2979.57)<0.01, detail['portfolio']
+          symbols={x['symbol'] for x in detail.get('holdings',[])}
+          assert symbols=={'AAOI','GLD','IONQ','MU','NBIS','NVDA','OKLO','SCHD','SMH'}, symbols
+          aaoi=next(x for x in detail['holdings'] if x['symbol']=='AAOI')
+          assert aaoi['shares']==7 and abs(aaoi['average_cost']-148.19)<0.001, aaoi
+          assert 'market' in aaoi and 'imported_snapshot' in aaoi, aaoi
+          access=get('/api/v1/user/access')
+          assert access['role']=='owner' and access['permissions']['can_admin_users'], access
+          readiness=get('/api/v1/admin/auth-readiness')
+          assert readiness['auth_enabled'] is False, readiness
+          print(json.dumps({'joint_fidelity':joint,'aaoi':aaoi,'access':access,'readiness':readiness},indent=2)[:12000])
