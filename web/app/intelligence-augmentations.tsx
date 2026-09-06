@@ -3,6 +3,7 @@ import {useEffect,useRef,useState} from "react";
 import {createPortal} from "react-dom";
 import {AlertEventPanel,SecurityDrawer} from "./intelligence-extras";
 import PortfolioWorkspace from "./portfolio-workspace";
+import {AdvancedAlerts,AdvancedEvents,AdvancedOpportunities,AdvancedResearch,MacroExpansionSuggestions,TabDisclosureGuide} from "./intelligence-v2-panels";
 import {AdminUserPanel,applyUserVisibility,UserCustomizationPanel,useUserAccess} from "./user-customization";
 
 function AuthRefreshBridge(){
@@ -11,13 +12,17 @@ function AuthRefreshBridge(){
  return null;
 }
 
+const V2_MODES:Record<string,string>={Portfolio:"portfolio-v2-mode",Events:"events-v2-mode",Opportunities:"opportunities-v2-mode",Research:"research-v2-mode",Alerts:"alerts-v2-mode"};
+
 export default function IntelligenceAugmentations(){
  const[active,setActive]=useState(""),[mainTarget,setMainTarget]=useState<Element|null>(null),[tabTarget,setTabTarget]=useState<Element|null>(null);const{data:access,reload}=useUserAccess();
  useEffect(()=>{const sync=()=>{setActive((document.querySelector(".nav button.active")?.textContent||"").trim());setMainTarget(document.querySelector("main.container"));setTabTarget(document.querySelector("main.container > .tab-panel:last-of-type"))};sync();const observer=new MutationObserver(()=>requestAnimationFrame(sync));observer.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:["class"]});return()=>observer.disconnect()},[]);
- useEffect(()=>{document.body.classList.toggle("portfolio-v2-mode",active==="Portfolio");return()=>document.body.classList.remove("portfolio-v2-mode")},[active]);
+ useEffect(()=>{for(const cls of Object.values(V2_MODES))document.body.classList.toggle(cls,V2_MODES[active]===cls);return()=>{for(const cls of Object.values(V2_MODES))document.body.classList.remove(cls)}},[active]);
  useEffect(()=>{if(access){applyUserVisibility(access);const id=setTimeout(()=>applyUserVisibility(access),100);return()=>clearTimeout(id)}},[access,active]);
- const portfolio=mainTarget&&active==="Portfolio"?createPortal(<PortfolioWorkspace/>,mainTarget):null;
- const alerts=tabTarget&&active==="Alerts"?createPortal(<AlertEventPanel/>,tabTarget):null;
+ const upgraded=mainTarget?active==="Portfolio"?createPortal(<PortfolioWorkspace/>,mainTarget):active==="Events"?createPortal(<AdvancedEvents/>,mainTarget):active==="Opportunities"?createPortal(<AdvancedOpportunities/>,mainTarget):active==="Research"?createPortal(<AdvancedResearch/>,mainTarget):active==="Alerts"?createPortal(<AdvancedAlerts/>,mainTarget):null:null;
+ const alertHistory=mainTarget&&active==="Alerts"?createPortal(<AlertEventPanel/>,mainTarget):null;
+ const macroSuggestions=tabTarget&&active==="Macro"?createPortal(<MacroExpansionSuggestions/>,tabTarget):null;
+ const guideTabs=new Set(["Report","Markets","World News","Macro","Regime","Theses","Settings"]);const guide=tabTarget&&guideTabs.has(active)?createPortal(<TabDisclosureGuide active={active}/>,tabTarget):null;
  const settings=tabTarget&&active==="Settings"&&access?createPortal(<section className="augmentation-settings"><UserCustomizationPanel access={access} onChanged={reload}/>{access.permissions.can_admin_users&&<AdminUserPanel/>}</section>,tabTarget):null;
- return <><AuthRefreshBridge/>{portfolio}{alerts}{settings}<SecurityDrawer/></>;
+ return <><AuthRefreshBridge/>{upgraded}{alertHistory}{macroSuggestions}{guide}{settings}<SecurityDrawer/></>;
 }
