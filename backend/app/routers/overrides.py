@@ -1,9 +1,14 @@
-from fastapi import APIRouter, Depends
+from datetime import date, timedelta
+from functools import lru_cache
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..models import FundamentalCache
+from ..providers.macroradar import macro_calendar
 from .intelligence import _latest_market, current_user
-from .user_state import enhanced_opportunities
+from .user_state import _symbols, enhanced_opportunities
 
 router=APIRouter(prefix="/api/v1",tags=["intelligence-overrides"])
 
@@ -30,3 +35,35 @@ def regime_override(db:Session=Depends(get_db)):
         {"factor":"Crypto risk appetite","score":round(ibit,2),"state":"firm" if ibit>2 else "weak" if ibit<-2 else "neutral"},
     ]
     return {"factors":factors,"cross_asset":signals,"methodology":"Regime state uses stored ETF proxies for equities, duration, curve shape, credit, dollar, oil, copper and Bitcoin. It reuses the shared Twelve Data cache and does not create a second provider path."}
+
+@lru_cache(maxsize=8)
+def _macro_window(start:str,end:str):
+    return macro_calendar(start,end)
+
+
+def _sensitivity(title:str,symbols:list[str],db:Session):
+    text=title.lower();sector_targets=set();explicit=set();reason="Broad macro exposure"
+    if any(k in text for k in ["fed","fomc","interest rate","inflation","cpi","pce","yield","treasury"]):
+        sector_targets.update(["Technology","Financials","Real Estate","Utilities"]);explicit.update(["QQQ","TLT","SHY"]);reason="Rates/inflation sensitivity"
+    elif any(k in text for k in ["oil","crude","energy","opec"]):sector_targets.add("Energy");explicit.add("USO");reason="Energy-price sensitivity"
+    elif any(k in text for k in ["manufacturing","pmi","gdp","industrial"]):sector_targets.update(["Industrials","Materials","Technology"]);explicit.update(["IWM","SMH","CPER"]);reason="Growth/industrial-cycle sensitivity"
+    elif any(k in text for k in ["jobs","employment","payroll","unemployment"]):explicit.update(["SPY","QQQ","IWM"]);reason="Broad growth/rates sensitivity"
+    out=[]
+    for s in symbols:
+        m=_latest_market(db,s) or {};sector=str(m.get("sector") or "")
+        if s in explicit or sector in sector_targets:out.append(s)
+    return out[:10],reason
+
+@router.get("/events")
+def events_override(days:int=Query(default=60,ge=7,le=180),user:str=Depends(current_user),db:Session=Depends(get_db)):
+    start=date.today();end=start+timedelta(days=days);symbols=_symbols(db,user);items=[];source={}
+    try:
+        cal=_macro_window(start.isoformat(),end.isoformat());source={"provider":cal.get("provider"),"source_url":cal.get("source_url")}
+        for e in cal.get("events",[]):
+            title=str(e.get("title") or e.get("event") or e.get("name") or "Macro event");sensitive,reason=_sensitivity(title,symbols,db);items.append({**e,"kind":"macro","sensitive_symbols":sensitive,"sensitivity_reason":reason,"description":f"{reason}. Tracked symbols potentially exposed: {', '.join(sensitive) if sensitive else 'none identified from cached sector mappings'}."})
+    except Exception as exc:source={"provider":"unavailable","error":str(exc)}
+    for f in db.query(FundamentalCache).filter(FundamentalCache.symbol.in_(symbols)).all() if symbols else []:
+        dt=(f.payload or {}).get("earnings_date")
+        if dt and start.isoformat()<=str(dt)[:10]<=end.isoformat():items.append({"event_date":str(dt)[:10],"title":f"{f.symbol} earnings","symbol":f.symbol,"kind":"earnings","provider":f.provider,"sensitive_symbols":[f.symbol],"sensitivity_reason":"Direct company catalyst","description":f"Direct earnings catalyst for {f.symbol}."})
+    items.sort(key=lambda x:str(x.get("event_date") or x.get("date") or ""))
+    return {"events":items,"source":source,"window":{"start":start.isoformat(),"end":end.isoformat()},"watchlist_context":symbols,"provider_calls":"Macro calendar is process-cached by date window; sensitivity uses stored symbol metadata."}
