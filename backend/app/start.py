@@ -20,6 +20,7 @@ from .routers.intelligence import router as intelligence_router
 from .routers.user_state import router as user_state_router
 from .routers.lifecycle import router as lifecycle_router
 from .routers.research_ext import router as research_router
+from .routers.research_v4 import router as research_v4_router
 from .routers.decision_support import router as decision_support_router
 from .routers.analytics_v3 import router as analytics_v3_router
 from .routers.macro_v3 import router as macro_v3_router
@@ -48,7 +49,7 @@ def _is_get_route(route, *paths):
 
 
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/markets/{symbol}/fundamentals")]
-intelligence_router.routes=[r for r in intelligence_router.routes if not _is_get_route(r,"/events","/api/v1/events")]
+intelligence_router.routes=[r for r in intelligence_router.routes if not _is_get_route(r,"/events","/api/v1/events","/security/{symbol}/workspace")]
 
 Base.metadata.create_all(bind=engine)
 app.include_router(override_router)
@@ -61,6 +62,7 @@ app.include_router(intelligence_router)
 app.include_router(user_state_router)
 app.include_router(lifecycle_router)
 app.include_router(research_router)
+app.include_router(research_v4_router)
 app.include_router(decision_support_router)
 app.include_router(analytics_v3_router)
 app.include_router(macro_v3_router)
