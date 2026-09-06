@@ -63,6 +63,12 @@ class PortfolioHolding(Base):
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now(),nullable=False)
     updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now(),onupdate=func.now(),nullable=False)
 
+class PortfolioAccount(Base):
+    __tablename__="portfolio_accounts"
+    user_email:Mapped[str]=mapped_column(String(320),primary_key=True)
+    cash:Mapped[float]=mapped_column(Float,default=0.0,nullable=False)
+    updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now(),onupdate=func.now(),nullable=False)
+
 class AlertRule(Base):
     __tablename__="alert_rules"
     id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
@@ -74,6 +80,18 @@ class AlertRule(Base):
     label:Mapped[str]=mapped_column(String(256),nullable=False)
     enabled:Mapped[bool]=mapped_column(Boolean,default=True,nullable=False)
     created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now(),nullable=False)
+
+class AlertEvent(Base):
+    __tablename__="alert_events"
+    id:Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    alert_id:Mapped[int]=mapped_column(Integer,index=True,nullable=False)
+    user_email:Mapped[str]=mapped_column(String(320),index=True,nullable=False)
+    symbol:Mapped[str|None]=mapped_column(String(20),index=True,nullable=True)
+    label:Mapped[str]=mapped_column(String(256),nullable=False)
+    value:Mapped[float|None]=mapped_column(Float,nullable=True)
+    payload:Mapped[dict]=mapped_column(JSON,default=dict,nullable=False)
+    acknowledged:Mapped[bool]=mapped_column(Boolean,default=False,index=True,nullable=False)
+    created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),server_default=func.now(),index=True,nullable=False)
 
 class Thesis(Base):
     __tablename__="theses"
