@@ -8,6 +8,7 @@ import "./intelligence-suite.css";
 import "./intelligence-extras.css";
 import "./portfolio-access.css";
 import "./intelligence-v2.css";
+import "./v3-workspaces.css";
 import PwaRegister from "./pwa-register";
 import IntelligenceAugmentations from "./intelligence-augmentations";
 
