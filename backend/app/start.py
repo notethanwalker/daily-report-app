@@ -17,12 +17,16 @@ from .services.refresh_scheduler import scheduler_loop
 from .services.rotation import SECTORS
 
 # Broaden the shared macro universe without creating a second data-pull path.
+# ETF proxies keep the free market-data path uniform and avoid adding another provider/quota surface.
 CROSS_ASSET = {
     "IWM": "Small Caps",
     "TLT": "Long Treasuries",
+    "SHY": "Short Treasuries",
     "HYG": "High-Yield Credit",
     "UUP": "US Dollar",
     "USO": "Crude Oil",
+    "CPER": "Copper",
+    "IBIT": "Bitcoin",
 }
 SECTORS.update(CROSS_ASSET)
 for symbol in CROSS_ASSET:
