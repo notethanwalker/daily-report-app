@@ -65,6 +65,26 @@ def _calendar_value(calendar, *names):
 class YahooFinanceProvider:
     name = "Yahoo Finance"
 
+    def company_calendar(self, symbol: str) -> dict:
+        s=symbol.strip().upper()
+        try:
+            ticker=yf.Ticker(s)
+            try: calendar=ticker.calendar
+            except Exception: calendar=None
+            try: info=ticker.get_info() or {}
+            except Exception: info={}
+        except Exception as exc:
+            raise YahooFinanceError(f"Yahoo Finance calendar request failed for {s}") from exc
+        return {
+            "symbol":s,
+            "earnings_date":_calendar_value(calendar,"Earnings Date"),
+            "ex_dividend_date":_calendar_value(calendar,"Ex-Dividend Date") or _date_text(info.get("exDividendDate")),
+            "dividend_date":_calendar_value(calendar,"Dividend Date") or _date_text(info.get("dividendDate")),
+            "source_url":f"{SOURCE_ROOT}/{s}",
+            "provider":self.name,
+            "retrieved_at":datetime.now(timezone.utc).isoformat(),
+        }
+
     def overview(self, symbol: str) -> dict:
         s = symbol.strip().upper()
         try:
