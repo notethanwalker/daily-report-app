@@ -11,6 +11,7 @@ from .main import app
 from .routers.overrides import router as override_router
 from .routers.intelligence import router as intelligence_router
 from .routers.user_state import router as user_state_router
+from .routers.lifecycle import router as lifecycle_router
 from .services.refresh_scheduler import scheduler_loop
 from .services.rotation import SECTORS
 
@@ -33,6 +34,7 @@ Base.metadata.create_all(bind=engine)
 app.include_router(override_router)
 app.include_router(intelligence_router)
 app.include_router(user_state_router)
+app.include_router(lifecycle_router)
 
 
 def _allowed():
