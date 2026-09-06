@@ -1,4 +1,3 @@
-from collections import defaultdict
 from datetime import datetime, timezone
 from math import sqrt
 
@@ -7,9 +6,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import FundamentalCache, HistoricalDailyBar, MarketSnapshot, PortfolioHolding, RefreshQueueItem, UserWatchlistItem, WatchlistItem
+from ..models import FundamentalCache, HistoricalDailyBar, MarketSnapshot, PortfolioHolding, RefreshQueueItem, ReportSnapshot, UserWatchlistItem, WatchlistItem
 from ..services.provider_orchestrator import FRESHNESS_POLICIES, is_stale
-from .intelligence import current_user
+from .intelligence import _opportunity_components, current_user
 
 router=APIRouter(prefix="/api/v1",tags=["user-state"])
 SENTINEL="__INITIALIZED__"
@@ -92,6 +91,29 @@ def portfolio_risk(user:str=Depends(current_user),db:Session=Depends(get_db)):
             if c is not None:pairs.append({"a":a,"b":b,"correlation":round(c,2),"cluster_risk":"high" if c>=.8 else "moderate" if c>=.65 else "low"})
     pairs.sort(key=lambda x:x["correlation"],reverse=True)
     return {"pairs":pairs,"high_correlation_pairs":[p for p in pairs if p["correlation"]>=.8],"methodology":"Pearson correlation of overlapping stored daily returns, requiring at least 20 observations. Correlation is historical and can change."}
+
+
+def _catalyst_score(db,symbol):
+    report=db.query(ReportSnapshot).order_by(ReportSnapshot.created_at.desc()).first();hits=[]
+    if report:
+        payload=report.payload or {};articles=payload.get("top_market_news") or payload.get("market_news") or []
+        for a in articles:
+            text=f"{a.get('title','')} {a.get('why_it_matters','')}".upper()
+            if symbol.upper() in text:hits.append({"title":a.get("title"),"url":a.get("url"),"domain":a.get("domain")})
+    score=min(100,50+len(hits)*12)
+    return score,hits[:4]
+
+@router.get("/opportunities/enhanced")
+def enhanced_opportunities(user:str=Depends(current_user),db:Session=Depends(get_db)):
+    rows=[]
+    for symbol in _symbols(db,user):
+        o=_opportunity_components(db,symbol)
+        if not o:continue
+        catalyst,hits=_catalyst_score(db,symbol);base=o["components"];components={"technical":base.get("technical",50),"valuation":base.get("valuation",50),"sector":base.get("sector",50),"flow":base.get("flow",50),"relative_strength":base.get("momentum",50),"catalyst":catalyst,"risk":base.get("risk",50)}
+        buy=components["technical"]*.22+components["valuation"]*.18+components["sector"]*.14+components["flow"]*.14+components["relative_strength"]*.14+components["catalyst"]*.10+components["risk"]*.08
+        rows.append({"symbol":symbol,"buy_score":round(buy,1),"sell_score":round(100-buy,1),"components":components,"flow":o["flow"],"sector_score":o.get("sector_score"),"catalysts":hits})
+    rows.sort(key=lambda x:x["buy_score"],reverse=True)
+    return {"opportunities":rows,"methodology":"Buy score = technical 22%, valuation 18%, sector 14%, flow 14%, relative strength 14%, catalyst match 10%, risk 8%. Catalyst score uses the latest stored market-news report and therefore adds no provider pull. The score is an auditable screener, not a recommendation."}
 
 @router.get("/security/{symbol}/quality")
 def security_quality(symbol:str,db:Session=Depends(get_db)):
