@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from ..database import SessionLocal
 from ..models import FundamentalCache, HistoricalDailyBar, MarketSnapshot, PortfolioHolding, RefreshQueueItem, UserWatchlistItem, WatchlistItem
+from ..multiuser_models import PortfolioPosition
 from ..providers.twelve_data import SOURCE_URL, TwelveDataProvider
 from .alert_engine import evaluate_alerts
 from .calculations import build_market_snapshot
@@ -14,6 +15,7 @@ def _symbols(db):
     out={r.symbol for r in db.query(WatchlistItem).all()}
     out|={r.symbol for r in db.query(UserWatchlistItem).all() if r.symbol!="__INITIALIZED__"}
     out|={r.symbol for r in db.query(PortfolioHolding).all()}
+    out|={r.symbol for r in db.query(PortfolioPosition).all()}
     return sorted(out)
 
 
