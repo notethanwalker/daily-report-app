@@ -13,6 +13,7 @@ from . import v3_models as _v3_models
 from .routers.overrides import router as override_router
 from .routers.health_override import router as health_router
 from .routers.events_v3 import events as events_v3_handler, router as events_v3_router
+from .routers.events_v4 import router as events_v4_router
 from .routers.fundamentals_v2 import router as fundamentals_v2_router
 from .routers.alerts_v2 import router as alerts_v2_router
 from .routers.portfolio_live import router as portfolio_live_router
@@ -30,13 +31,11 @@ from .services.refresh_scheduler import scheduler_loop
 from .services.rotation import SECTORS
 from .services.macro_universe import EXPANDED_MACRO
 
-# Expand tracked macro groups while reusing the same symbol cache/backfill path.
 SECTORS.update(EXPANDED_MACRO)
 for symbol in EXPANDED_MACRO:
     if symbol not in stable.MACRO_BACKFILL_PRIORITY:
         stable.MACRO_BACKFILL_PRIORITY.append(symbol)
 
-# Extend the existing permission model without duplicating the large access router.
 if "Command Center" not in access_policy.ALL_TABS:
     access_policy.ALL_TABS.insert(0,"Command Center")
 access_policy.DEFAULT_PERMISSIONS["can_view_command_center"]=True
@@ -46,7 +45,6 @@ access_policy.TAB_PERMISSION["Command Center"]="can_view_command_center"
 
 def _is_get_route(route, *paths):
     return getattr(route, "path", None) in paths and "GET" in (getattr(route, "methods", set()) or set())
-
 
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/markets/{symbol}/fundamentals")]
 intelligence_router.routes=[r for r in intelligence_router.routes if not _is_get_route(r,"/events","/api/v1/events","/security/{symbol}/workspace")]
@@ -67,8 +65,8 @@ app.include_router(decision_support_router)
 app.include_router(analytics_v3_router)
 app.include_router(macro_v3_router)
 app.include_router(events_v3_router)
+app.include_router(events_v4_router)
 
-# Authoritative Events route after all routers are mounted.
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/events")]
 app.add_api_route("/api/v1/events",events_v3_handler,methods=["GET"],tags=["events-v3"],name="events_v3_authoritative")
 app.router.routes.insert(0,app.router.routes.pop())
