@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Wait for Render deploy
-        run: sleep 10
+        run: sleep 5
 
       - name: Check backend health
         run: |
