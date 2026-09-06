@@ -21,7 +21,7 @@ from .routers.intelligence import router as intelligence_router
 from .routers.user_state import router as user_state_router
 from .routers.lifecycle import router as lifecycle_router
 from .routers.research_ext import router as research_router
-from .routers.research_v4 import router as research_v4_router
+from .routers.research_v4 import security_workspace_v4, router as research_v4_router
 from .routers.decision_support import router as decision_support_router
 from .routers.analytics_v3 import router as analytics_v3_router
 from .routers.macro_v3 import router as macro_v3_router
@@ -47,7 +47,7 @@ def _is_get_route(route, *paths):
     return getattr(route, "path", None) in paths and "GET" in (getattr(route, "methods", set()) or set())
 
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/markets/{symbol}/fundamentals")]
-intelligence_router.routes=[r for r in intelligence_router.routes if not _is_get_route(r,"/events","/api/v1/events","/security/{symbol}/workspace")]
+intelligence_router.routes=[r for r in intelligence_router.routes if not _is_get_route(r,"/events","/api/v1/events","/security/{symbol}/workspace","/api/v1/security/{symbol}/workspace")]
 
 Base.metadata.create_all(bind=engine)
 app.include_router(override_router)
@@ -67,6 +67,13 @@ app.include_router(macro_v3_router)
 app.include_router(events_v3_router)
 app.include_router(events_v4_router)
 
+# Force the on-demand-hydrating Research workspace to be authoritative even if a
+# legacy router later reintroduces the same path.
+app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/security/{symbol}/workspace")]
+app.add_api_route("/api/v1/security/{symbol}/workspace",security_workspace_v4,methods=["GET"],tags=["research-v4"],name="security_workspace_v4_authoritative")
+app.router.routes.insert(0,app.router.routes.pop())
+
+# Keep the expanded event catalog authoritative over older event handlers.
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/events")]
 app.add_api_route("/api/v1/events",events_v3_handler,methods=["GET"],tags=["events-v3"],name="events_v3_authoritative")
 app.router.routes.insert(0,app.router.routes.pop())
