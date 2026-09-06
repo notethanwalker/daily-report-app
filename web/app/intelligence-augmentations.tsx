@@ -2,7 +2,7 @@
 import {useEffect,useRef,useState} from "react";
 import {createPortal} from "react-dom";
 import {AlertEventPanel,SecurityDrawer} from "./intelligence-extras";
-import PortfolioWorkspace from "./portfolio-workspace";
+import PortfolioWorkspace from "./portfolio-workspace-v2";
 import {AdvancedAlerts,AdvancedEvents,AdvancedOpportunities,AdvancedResearch,MacroExpansionSuggestions,TabDisclosureGuide} from "./intelligence-v2-panels";
 import {AdminUserPanel,applyUserVisibility,UserCustomizationPanel,useUserAccess} from "./user-customization";
 
@@ -22,7 +22,7 @@ export default function IntelligenceAugmentations(){
  const upgraded=mainTarget?active==="Portfolio"?createPortal(<PortfolioWorkspace/>,mainTarget):active==="Events"?createPortal(<AdvancedEvents/>,mainTarget):active==="Opportunities"?createPortal(<AdvancedOpportunities/>,mainTarget):active==="Research"?createPortal(<AdvancedResearch/>,mainTarget):active==="Alerts"?createPortal(<AdvancedAlerts/>,mainTarget):null:null;
  const alertHistory=mainTarget&&active==="Alerts"?createPortal(<AlertEventPanel/>,mainTarget):null;
  const macroSuggestions=tabTarget&&active==="Macro"?createPortal(<MacroExpansionSuggestions/>,tabTarget):null;
- const guideTabs=new Set(["Report","Markets","World News","Macro","Regime","Theses","Settings"]);const guide=tabTarget&&guideTabs.has(active)?createPortal(<TabDisclosureGuide active={active}/>,tabTarget):null;
+ const guideTabs=new Set(["Report","Markets","World News","Large Flow","Macro","Regime","Theses","Settings"]);const guide=tabTarget&&guideTabs.has(active)?createPortal(<TabDisclosureGuide active={active}/>,tabTarget):null;
  const settings=tabTarget&&active==="Settings"&&access?createPortal(<section className="augmentation-settings"><UserCustomizationPanel access={access} onChanged={reload}/>{access.permissions.can_admin_users&&<AdminUserPanel/>}</section>,tabTarget):null;
  return <><AuthRefreshBridge/>{upgraded}{alertHistory}{macroSuggestions}{guide}{settings}<SecurityDrawer/></>;
 }
