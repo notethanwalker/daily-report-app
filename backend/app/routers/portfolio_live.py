@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from ..v2_models import PortfolioBaseline, PortfolioPositionBaseline, PortfolioPositionRevision
+from ..v3_models import PortfolioValueSnapshot
 from .intelligence import _latest_market, _opportunity_components, current_user
 from .portfolio_access import _ensure_joint_fidelity, _portfolio_or_404, _queue_symbol, _require
 
@@ -73,6 +74,19 @@ def _position_payload(db:Session,pos:PortfolioPosition,total_live:float):
     }
 
 
+def _persist_value_snapshot(db:Session,p:PortfolioDefinition,holdings:list[dict],invested:float,total:float):
+    # One end-state snapshot per calendar day is enough for portfolio history while
+    # keeping database churn and provider demand negligible. Repeated live requests
+    # update the same row instead of creating minute-by-minute noise.
+    as_of=date.today().isoformat()
+    row=db.query(PortfolioValueSnapshot).filter(PortfolioValueSnapshot.portfolio_id==p.id,PortfolioValueSnapshot.as_of==as_of).first()
+    payload={"positions":[{"symbol":h["symbol"],"shares":h["shares"],"price":h["price"],"market_value":h["market_value"],"account_percent":h["account_percent"]} for h in holdings]}
+    if row:
+        row.market_value=total;row.invested_value=invested;row.cash=p.cash;row.payload=payload
+    else:
+        db.add(PortfolioValueSnapshot(portfolio_id=p.id,as_of=as_of,market_value=total,invested_value=invested,cash=p.cash,payload=payload))
+
+
 @router.get("/portfolios/{portfolio_id}")
 def portfolio_live(portfolio_id:int,user:str=Depends(current_user),db:Session=Depends(get_db)):
     _ensure_joint_fidelity(db,user);p=_portfolio_or_404(db,user,portfolio_id)
@@ -84,13 +98,14 @@ def portfolio_live(portfolio_id:int,user:str=Depends(current_user),db:Session=De
         live_values.append(float(px or 0)*pos.shares if px is not None else float(pos.imported_market_value or 0))
     invested=sum(live_values);total=invested+p.cash
     holdings=[_position_payload(db,pos,total) for pos in positions]
+    _persist_value_snapshot(db,p,holdings,invested,total)
     db.commit()
     cost=sum(x["cost_basis"] for x in holdings);pnl=invested-cost
     return {
         "portfolio":{"id":p.id,"name":p.name,"brokerage":p.brokerage,"account_type":p.account_type,"cash":p.cash,"is_default":p.is_default,"source_note":p.source_note,"updated_at":p.updated_at.isoformat() if p.updated_at else None},
         "holdings":holdings,"invested_value":round(invested,2),"market_value":round(total,2),"cost_basis":round(cost,2),"unrealized_pl":round(pnl,2),"unrealized_percent":round((invested/cost-1)*100,2) if cost else None,"cash_percent":round(p.cash/total*100,2) if total else 0,
         "baseline":{"initial_cash":round(baseline.initial_cash,2),"initial_invested_value":round(baseline.initial_invested_value,2),"initial_total_value":round(baseline.initial_total_value,2),"recorded_at":baseline.recorded_at.isoformat() if baseline.recorded_at else None},
-        "live_note":"Current prices, account percentages, portfolio value and unrealized P/L are recalculated from the latest shared market snapshot on every request. Original position metrics remain preserved in the baseline/imported snapshot.",
+        "live_note":"Current prices, account percentages, portfolio value and unrealized P/L are recalculated from the latest shared market snapshot on every request. Original position metrics remain preserved in the baseline/imported snapshot. One portfolio-value history point is persisted per day.",
     }
 
 
