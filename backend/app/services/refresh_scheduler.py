@@ -9,12 +9,13 @@ from ..providers.twelve_data import SOURCE_URL, TwelveDataProvider
 from ..providers.yahoo_finance import YahooFinanceProvider
 from .alert_engine import evaluate_alerts
 from .calculations import build_market_snapshot
-from .market_data_pipeline import bootstrap_market_batch, sync_us_symbol_universe
+from .market_data_pipeline import _normalize_twelve, bulk_refresh_us_market, persist_normalized_history, sync_us_symbol_universe
 from .provider_orchestrator import FRESHNESS_POLICIES, ProviderOrchestrator, is_stale
 from .rotation import SECTORS
 from .validation import build_secondary_metrics, cross_check_market_snapshot
 
-_last_universe_sync = None
+_last_universe_sync=None
+_last_bulk_attempt=None
 
 
 def _user_symbols(db):
@@ -55,8 +56,7 @@ def enqueue_stale(db):
     db.commit()
 
 
-def _market_refresh_allowed(now):
-    return now.weekday()<5 and 12<=now.hour<=22
+def _market_refresh_allowed(now):return now.weekday()<5 and 12<=now.hour<=22
 
 
 def _persist_history(db,symbol):
@@ -69,17 +69,16 @@ def _persist_history(db,symbol):
         row=existing.get(dt)
         if row:row.close=close;row.volume=volume;row.provider="Twelve Data";row.source_url=SOURCE_URL
         else:db.add(HistoricalDailyBar(symbol=symbol,bar_date=dt,close=close,volume=volume,provider="Twelve Data",source_url=SOURCE_URL));inserted+=1
+    persist_normalized_history(db,_normalize_twelve(symbol,raw))
     return inserted
 
 
 def _verified_market_snapshot(symbol):
     snap=build_market_snapshot(TwelveDataProvider().market_snapshot_raw(symbol))
     try:
-        secondary=build_secondary_metrics(YahooFinanceProvider().daily_history(symbol))
-        snap.update(cross_check_market_snapshot(snap,secondary))
+        secondary=build_secondary_metrics(YahooFinanceProvider().daily_history(symbol));snap.update(cross_check_market_snapshot(snap,secondary))
     except Exception as exc:
-        snap["verification_status"]="primary_only"
-        snap["verification"]={"primary_provider":snap.get("provider"),"secondary_provider":"Yahoo Finance","error":"secondary_provider_unavailable","detail":str(exc)[:160]}
+        snap["verification_status"]="primary_only";snap["verification"]={"primary_provider":snap.get("provider"),"secondary_provider":"Yahoo Finance","error":"secondary_provider_unavailable","detail":str(exc)[:160]}
     return snap
 
 
@@ -104,26 +103,19 @@ def process_queue(db,limit=4):
     return done
 
 
-def _run_free_market_bootstrap(db):
+def _sync_universe_if_due(db):
     global _last_universe_sync
     now=datetime.now(timezone.utc)
     if _last_universe_sync is None or (now-_last_universe_sync).total_seconds()>=12*60*60:
-        try:
-            sync_us_symbol_universe(db)
-            _last_universe_sync=now
-        except Exception:
-            db.rollback()
-    try:
-        bootstrap_market_batch(db,limit=8)
-    except Exception:
-        db.rollback()
+        sync_us_symbol_universe(db);_last_universe_sync=now
 
 
 def run_cycle():
     db=SessionLocal()
     try:
         enqueue_stale(db);process_queue(db,4)
-        _run_free_market_bootstrap(db)
+        try:_sync_universe_if_due(db)
+        except Exception:db.rollback()
         from ..routers.intelligence import _refresh_feature
         for symbol in _user_symbols(db):
             try:_refresh_feature(db,symbol)
@@ -133,6 +125,27 @@ def run_cycle():
     finally:db.close()
 
 
+def run_bulk_market_cycle():
+    global _last_bulk_attempt
+    now=datetime.now(timezone.utc)
+    if _last_bulk_attempt is not None and (now-_last_bulk_attempt).total_seconds()<18*60*60:return {"status":"skipped","reason":"bulk refresh attempted within 18 hours"}
+    _last_bulk_attempt=now;db=SessionLocal()
+    try:
+        try:_sync_universe_if_due(db)
+        except Exception:db.rollback()
+        return bulk_refresh_us_market(db)
+    except Exception as exc:
+        db.rollback();return {"status":"failed","error":str(exc)[:500]}
+    finally:db.close()
+
+
 async def scheduler_loop():
     while True:
         await asyncio.to_thread(run_cycle);await asyncio.sleep(15*60)
+
+
+async def bulk_market_loop():
+    # Kept separate so a large archive download never blocks tracked-symbol refreshes.
+    await asyncio.sleep(60)
+    while True:
+        await asyncio.to_thread(run_bulk_market_cycle);await asyncio.sleep(6*60*60)
