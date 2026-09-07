@@ -10,7 +10,10 @@ from pathlib import Path
 
 UPLOAD_ROOT = Path(os.getenv("STOOQ_UPLOAD_TEMP_DIR") or tempfile.gettempdir()) / "daily-report-stooq-uploads"
 MAX_UPLOAD_BYTES = int(os.getenv("STOOQ_MANUAL_UPLOAD_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
-DEFAULT_CHUNK_BYTES = int(os.getenv("STOOQ_UPLOAD_CHUNK_BYTES", str(8 * 1024 * 1024)))
+# Keep chunks below Vercel's request-body ceiling because the browser uploader
+# proxies through /backend before reaching Render. 3 MiB leaves margin for
+# headers/runtime overhead while remaining efficient for 40-100 MiB packages.
+DEFAULT_CHUNK_BYTES = int(os.getenv("STOOQ_UPLOAD_CHUNK_BYTES", str(3 * 1024 * 1024)))
 DISK_RESERVE_BYTES = int(os.getenv("MARKET_BULK_DISK_RESERVE_BYTES", str(128 * 1024 * 1024)))
 
 
