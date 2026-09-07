@@ -2,10 +2,11 @@
 import SentimentMeters from "./sentiment-meters";
 import styles from "./report-additions.module.css";
 
-type Market={symbol:string;price:number|null;change_percent:number|null;seven_day_percent:number|null;thirty_day_percent:number|null;relative_volume:number|null};
+type Market={symbol:string;price:number|null;change_percent:number|null;seven_day_percent:number|null;thirty_day_percent:number|null;relative_volume:number|null;as_of?:string|null;retrieved_at?:string|null};
 type Rotation={leaders:any[];laggards:any[];sectors:any[]};
 const money=(v:number|null|undefined)=>v==null?"—":`$${v.toFixed(2)}`;
 const pct=(v:number|null|undefined)=>v==null?"—":`${v>=0?"+":""}${v.toFixed(2)}%`;
+function newestAsOf(rows:Market[]){const vals=rows.map(r=>r.as_of||r.retrieved_at).filter(Boolean) as string[];if(!vals.length)return"as-of unavailable";const v=vals.sort().at(-1)!;const d=new Date(v);return Number.isNaN(d.getTime())?v:d.toLocaleString()}
 
 export default function HomeDashboard({market,rotation,onOpenMarkets,onOpenMacro}:{market:Record<string,Market>;rotation:Rotation|null;onOpenMarkets:()=>void;onOpenMacro:()=>void}){
  const preferred=["SPY","QQQ","SMH","GLD","VIX","IONQ","OKLO"];
@@ -18,13 +19,13 @@ export default function HomeDashboard({market,rotation,onOpenMarkets,onOpenMacro
  const mood=score>=70?"Greed":score>=58?"Risk-on":score>=42?"Neutral":score>=30?"Risk-off":"Fear";
  const themes=(rotation?.leaders||[]).slice(0,4);
  return <>
-  <div className="card home-dashboard-card reveal-card"><div className="section-head"><div><span className="eyebrow">Live overview</span><h2>Market Dashboard</h2></div><button className="text-btn" onClick={onOpenMarkets}>All markets →</button></div>
+  <div className="card home-dashboard-card reveal-card"><div className="section-head"><div><span className="eyebrow">Market overview</span><h2>Market Dashboard</h2><p className="muted">Latest visible market input: {newestAsOf(rows)}</p></div><button className="text-btn" onClick={onOpenMarkets}>All markets →</button></div>
    <div className="dashboard-table"><div className="dashboard-row dashboard-head"><span>Ticker</span><span>Price</span><span>Day</span><span>7D</span></div>{rows.map(r=><div className="dashboard-row" key={r.symbol}><strong>{r.symbol}</strong><span>{money(r.price)}</span><span className={(r.change_percent||0)>=0?"positive":"negative"}>{pct(r.change_percent)}</span><span className={(r.seven_day_percent||0)>=0?"positive":"negative"}>{pct(r.seven_day_percent)}</span></div>)}</div>
   </div>
   <div className={styles.sentimentCluster}>
-   <div className="card sentiment-card reveal-card"><div className="section-head"><div><span className="eyebrow">App composite</span><h2>Market Sentiment</h2></div><strong className="sentiment-label">{mood}</strong></div><div className="sentiment-body"><div className="sentiment-ring" style={{"--score":`${score*3.6}deg`} as React.CSSProperties}><div><strong>{score}</strong><span>/100</span></div></div><div className="sentiment-factors"><div><span>Breadth</span><strong>{equityRows.length?`${adv}/${equityRows.length} up`:"—"}</strong></div><div><span>SPY</span><strong className={spy>=0?"positive":"negative"}>{pct(spy)}</strong></div><div><span>QQQ</span><strong className={qqq>=0?"positive":"negative"}>{pct(qqq)}</strong></div><div><span>VIX</span><strong className={vix<=0?"positive":"negative"}>{pct(vix)}</strong></div></div></div><p className="muted small-note">App-derived score from market breadth, SPY/QQQ direction and VIX change. It is not an external sentiment index.</p></div>
+   <div className="card sentiment-card reveal-card"><div className="section-head"><div><span className="eyebrow">App composite · normalized 0–100</span><h2>Market Sentiment</h2></div><strong className="sentiment-label">{mood}</strong></div><div className="sentiment-body"><div className="sentiment-ring" style={{"--score":`${score*3.6}deg`} as React.CSSProperties}><div><strong>{score}</strong><span>/100</span></div></div><div className="sentiment-factors"><div><span>Breadth</span><strong>{equityRows.length?`${adv}/${equityRows.length} up`:"—"}</strong></div><div><span>SPY</span><strong className={spy>=0?"positive":"negative"}>{pct(spy)}</strong></div><div><span>QQQ</span><strong className={qqq>=0?"positive":"negative"}>{pct(qqq)}</strong></div><div><span>VIX</span><strong className={vix<=0?"positive":"negative"}>{pct(vix)}</strong></div></div></div><p className="muted small-note">Derived from the app’s current breadth, SPY/QQQ direction and VIX change. Do not compare its numeric score directly with the external meters below; those use different definitions, scales and update times.</p></div>
    <SentimentMeters/>
   </div>
-  <div className="card themes-card reveal-card"><div className="section-head"><div><span className="eyebrow">Leadership</span><h2>Top Themes</h2></div><button className="text-btn" onClick={onOpenMacro}>Macro →</button></div><div className="theme-list">{themes.length?themes.map((t:any)=><div className="theme-row" key={t.symbol}><div><strong>{t.name}</strong><span>{t.symbol}</span></div><strong className={(t.rotation_score||0)>=0?"positive":"negative"}>{t.rotation_score>=0?"+":""}{t.rotation_score?.toFixed(2)}</strong></div>):<p className="muted">Rotation data has not loaded yet.</p>}</div></div>
+  <div className="card themes-card reveal-card"><div className="section-head"><div><span className="eyebrow">Leadership · rotation score points</span><h2>Top Themes</h2></div><button className="text-btn" onClick={onOpenMacro}>Macro →</button></div><div className="theme-list">{themes.length?themes.map((t:any)=><div className="theme-row" key={t.symbol}><div><strong>{t.name}</strong><span>{t.symbol}</span></div><strong className={(t.rotation_score||0)>=0?"positive":"negative"}>{t.rotation_score>=0?"+":""}{t.rotation_score?.toFixed(2)} pts</strong></div>):<p className="muted">Rotation data has not loaded yet.</p>}</div></div>
  </>;
 }
