@@ -48,7 +48,8 @@ class FutureReleaseContract(unittest.TestCase):
         self.assertIn('settings["dashboard_layouts"]', ROUTER)
         self.assertIn('settings["active_dashboard_layout"]', ROUTER)
         self.assertIn('data-dashboard-card="market_dashboard"', HOME)
-        self.assertIn("DashboardLayoutsPanel", AUG)
+        self.assertIn("DashboardLayoutEditorV2", AUG)
+        self.assertIn("DashboardLayoutRuntimeV3", AUG)
 
     def test_snapshot_compare_and_exports_preserve_stored_history(self):
         self.assertIn('@router.get("/reports/compare")', ROUTER)
@@ -58,9 +59,10 @@ class FutureReleaseContract(unittest.TestCase):
         self.assertIn("ReportComparePanel", AUG)
 
     def test_alert_templates_are_capability_aware(self):
-        self.assertIn('READY=new Set(["relative_volume"])', ALERT_TEMPLATES)
-        self.assertIn("absolute-distance/transition predicates", ALERT_TEMPLATES)
-        self.assertIn("Evaluator extension required", ALERT_TEMPLATES)
+        self.assertIn('KIND_BY_ID', ALERT_TEMPLATES)
+        self.assertIn('/api/v1/alerts/v3/preview', ALERT_TEMPLATES)
+        self.assertIn('Would trigger now', ALERT_TEMPLATES)
+        self.assertIn('MA proximity uses absolute distance', ALERT_TEMPLATES)
         self.assertIn("FutureAlertTemplates", AUG)
 
     def test_mobile_dense_data_guards(self):
