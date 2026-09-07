@@ -41,3 +41,4 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt
       - run: python -m compileall -q app
+      - run: python -m unittest discover -s tests -p "test_*.py"
