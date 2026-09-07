@@ -27,6 +27,7 @@ from .routers.research_ext import router as research_router
 from .routers.research_v4 import security_workspace_v4, router as research_v4_router
 from .routers.security_intelligence_v5 import router as security_intelligence_v5_router
 from .routers.decision_support import router as decision_support_router
+from .routers.opportunity_scanner import router as opportunity_scanner_router
 from .routers.analytics_v3 import router as analytics_v3_router
 from .routers.macro_v3 import router as macro_v3_router
 from .routers.reconciliation import router as reconciliation_router
@@ -90,6 +91,7 @@ app.include_router(research_router)
 app.include_router(research_v4_router)
 app.include_router(security_intelligence_v5_router)
 app.include_router(decision_support_router)
+app.include_router(opportunity_scanner_router)
 app.include_router(analytics_v3_router)
 app.include_router(macro_v3_router)
 app.include_router(events_v3_router)
