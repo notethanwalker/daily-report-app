@@ -16,6 +16,7 @@ import httpx
 BASE_URL = "https://stooq.com/q/d/l/"
 SOURCE_URL = "https://stooq.com/"
 DEFAULT_BULK_US_URL = "https://static.stooq.com/db/h/d_us_txt.zip"
+MIN_TECHNICAL_BARS = int(os.getenv("MARKET_MIN_TECHNICAL_BARS", "120"))
 
 
 class StooqError(RuntimeError):
@@ -230,7 +231,7 @@ class StooqProvider:
                 symbol = _archive_symbol(name)
                 if not symbol:
                     continue
-                rows = deque(maxlen=max(220, tail))
+                rows = deque(maxlen=max(MIN_TECHNICAL_BARS, tail))
                 all_time_high = None
                 first_date = None
                 try:
@@ -246,7 +247,7 @@ class StooqProvider:
                                 rows.append(parsed)
                 except Exception:
                     continue
-                if len(rows) < 220:
+                if len(rows) < MIN_TECHNICAL_BARS:
                     continue
                 yield {
                     "symbol": symbol,
