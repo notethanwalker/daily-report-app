@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from pathlib import Path
 UPLOAD_ROOT = Path(os.getenv("STOOQ_UPLOAD_TEMP_DIR") or tempfile.gettempdir()) / "daily-report-stooq-uploads"
 MAX_UPLOAD_BYTES = int(os.getenv("STOOQ_MANUAL_UPLOAD_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
 DEFAULT_CHUNK_BYTES = int(os.getenv("STOOQ_UPLOAD_CHUNK_BYTES", str(8 * 1024 * 1024)))
+DISK_RESERVE_BYTES = int(os.getenv("MARKET_BULK_DISK_RESERVE_BYTES", str(128 * 1024 * 1024)))
 
 
 def _dir(upload_id: str) -> Path:
@@ -39,6 +41,11 @@ def create_upload(filename: str, total_bytes: int) -> dict:
     if total_bytes <= 0 or total_bytes > MAX_UPLOAD_BYTES:
         raise ValueError(f"Archive size must be between 1 and {MAX_UPLOAD_BYTES} bytes")
     UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(UPLOAD_ROOT).free
+    if free < total_bytes + DISK_RESERVE_BYTES:
+        raise ValueError(
+            f"Insufficient temporary disk for Stooq archive: need about {total_bytes + DISK_RESERVE_BYTES} bytes including reserve; {free} bytes are free"
+        )
     upload_id = uuid.uuid4().hex
     folder = _dir(upload_id)
     folder.mkdir(parents=True, exist_ok=False)
@@ -51,7 +58,10 @@ def create_upload(filename: str, total_bytes: int) -> dict:
         "total_bytes": int(total_bytes),
         "chunk_bytes": DEFAULT_CHUNK_BYTES,
         "received": [],
+        "received_bytes": 0,
         "status": "uploading",
+        "free_bytes_before": free,
+        "disk_reserve_bytes": DISK_RESERVE_BYTES,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     _save(upload_id, manifest)
@@ -112,16 +122,10 @@ def upload_status(upload_id: str) -> dict:
     return _load(upload_id)
 
 
-def cleanup_upload(upload_id: str) -> None:
-    folder = _dir(upload_id)
-    if not folder.exists():
-        return
-    for path in folder.iterdir():
-        try:
-            path.unlink()
-        except OSError:
-            pass
+def cleanup_archive_bytes(upload_id: str) -> None:
+    """Free the large ZIP after import while retaining the small manifest for status polling."""
+    archive = _archive_path(upload_id)
     try:
-        folder.rmdir()
+        archive.unlink()
     except OSError:
         pass
