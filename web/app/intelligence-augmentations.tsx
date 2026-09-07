@@ -13,6 +13,10 @@ import GroupedNavigation from "./navigation-v3";
 import DataHealthV3 from "./data-health-v3";
 import {AdvancedAlerts,TabDisclosureGuide} from "./intelligence-v2-panels";
 import {AdminUserPanel,applyUserVisibility,UserCustomizationPanel,useUserAccess} from "./user-customization";
+import {DashboardLayoutsPanel,FlowClustersPanel,ImpactMapPanel,RegimeConfidencePanel,ReportComparePanel} from "./future-release-panels";
+import DashboardLayoutRuntimeV2 from "./dashboard-layout-runtime-v2";
+import FutureAlertTemplates from "./future-alert-templates";
+import {OpportunityChangeDigest,PortfolioIntelligenceAutoPanel} from "./future-release-wrappers";
 import {closeDropdowns,type NavigationTarget} from "./navigation-context";
 
 const REPLACEMENTS=new Set(["Portfolio","Events","Opportunities","Research","Alerts","Macro","Large Flow"]);
@@ -28,10 +32,13 @@ export default function IntelligenceAugmentations(){
  useEffect(()=>{const handler=(ev:Event)=>{const t=ev.target as HTMLElement|null;if(!t||t.closest("summary"))return;if(t.closest("button,select,[role='tab'],input[type='radio'],input[type='checkbox']"))requestAnimationFrame(closeDropdowns)};document.addEventListener("click",handler,true);document.addEventListener("change",handler,true);return()=>{document.removeEventListener("click",handler,true);document.removeEventListener("change",handler,true)}},[]);
  useEffect(()=>{document.body.classList.toggle("command-center-v3-mode",commandActive);document.body.classList.toggle("workspace-replacement-v3-mode",!commandActive&&REPLACEMENTS.has(baseActive));document.body.dataset.replacementTab=!commandActive&&REPLACEMENTS.has(baseActive)?baseActive:"";return()=>{document.body.classList.remove("command-center-v3-mode","workspace-replacement-v3-mode");delete document.body.dataset.replacementTab}},[baseActive,commandActive]);
  useEffect(()=>{if(access){applyUserVisibility(access);const id=setTimeout(()=>applyUserVisibility(access),100);return()=>clearTimeout(id)}},[access,baseActive,commandActive]);
- const upgraded=mainTarget?(commandActive?createPortal(<CommandCenterPanel/>,mainTarget):baseActive==="Portfolio"?createPortal(<PortfolioWorkspaceV3/>,mainTarget):baseActive==="Events"?createPortal(<EventsWorkspaceV4 navigation={navContext}/>,mainTarget):baseActive==="Opportunities"?createPortal(<OpportunitiesWorkspaceV4 navigation={navContext}/>,mainTarget):baseActive==="Research"?createPortal(<ResearchWorkspaceV4 navigation={navContext}/>,mainTarget):baseActive==="Alerts"?createPortal(<AdvancedAlerts/>,mainTarget):baseActive==="Macro"?createPortal(<MacroWorkspaceV4 navigation={navContext}/>,mainTarget):baseActive==="Large Flow"?createPortal(<LargeFlowWorkspaceV3/>,mainTarget):null):null;
+ const upgraded=mainTarget?(commandActive?createPortal(<CommandCenterPanel/>,mainTarget):baseActive==="Portfolio"?createPortal(<><PortfolioWorkspaceV3/><PortfolioIntelligenceAutoPanel/></>,mainTarget):baseActive==="Events"?createPortal(<EventsWorkspaceV4 navigation={navContext}/>,mainTarget):baseActive==="Opportunities"?createPortal(<><OpportunitiesWorkspaceV4 navigation={navContext}/><OpportunityChangeDigest/></>,mainTarget):baseActive==="Research"?createPortal(<ResearchWorkspaceV4 navigation={navContext}/>,mainTarget):baseActive==="Alerts"?createPortal(<AdvancedAlerts/>,mainTarget):baseActive==="Macro"?createPortal(<MacroWorkspaceV4 navigation={navContext}/>,mainTarget):baseActive==="Large Flow"?createPortal(<><LargeFlowWorkspaceV3/><FlowClustersPanel/></>,mainTarget):null):null;
  const nav=navTarget?createPortal(<GroupedNavigation nav={navTarget} active={baseActive} commandActive={commandActive} access={access} onCommand={()=>{closeDropdowns();setCommandActive(true)}}/>,navTarget):null;
- const alertHistory=mainTarget&&!commandActive&&baseActive==="Alerts"?createPortal(<AlertEventPanel/>,mainTarget):null;
+ const alertHistory=mainTarget&&!commandActive&&baseActive==="Alerts"?createPortal(<><FutureAlertTemplates/><AlertEventPanel/></>,mainTarget):null;
  const guideTabs=new Set(["Report","Markets","World News","Regime","Theses"]),guide=tabTarget&&!commandActive&&guideTabs.has(baseActive)?createPortal(<TabDisclosureGuide active={baseActive}/>,tabTarget):null;
- const settings=tabTarget&&!commandActive&&baseActive==="Settings"&&access?createPortal(<section className="augmentation-settings"><DataHealthV3/><UserCustomizationPanel access={access} onChanged={reload}/>{access.permissions.can_admin_users&&<AdminUserPanel/>}</section>,tabTarget):null;
- return <>{nav}{upgraded}{alertHistory}{guide}{settings}<SecurityDrawer/></>;
+ const reportFuture=tabTarget&&!commandActive&&baseActive==="Report"?createPortal(<ReportComparePanel/>,tabTarget):null;
+ const worldFuture=tabTarget&&!commandActive&&baseActive==="World News"?createPortal(<ImpactMapPanel/>,tabTarget):null;
+ const regimeFuture=tabTarget&&!commandActive&&baseActive==="Regime"?createPortal(<RegimeConfidencePanel/>,tabTarget):null;
+ const settings=tabTarget&&!commandActive&&baseActive==="Settings"&&access?createPortal(<section className="augmentation-settings"><DataHealthV3/><DashboardLayoutsPanel/><UserCustomizationPanel access={access} onChanged={reload}/>{access.permissions.can_admin_users&&<AdminUserPanel/>}</section>,tabTarget):null;
+ return <><DashboardLayoutRuntimeV2/>{nav}{upgraded}{alertHistory}{guide}{reportFuture}{worldFuture}{regimeFuture}{settings}<SecurityDrawer/></>;
 }

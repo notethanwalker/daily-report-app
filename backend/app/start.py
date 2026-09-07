@@ -11,6 +11,7 @@ from . import auth_models as _auth_models
 from .auth_models import AuthAccount
 from . import v2_models as _v2_models
 from . import v3_models as _v3_models
+from . import future_models as _future_models
 from . import intelligence_cache_models as _intelligence_cache_models
 from .routers.overrides import router as override_router
 from .routers.health_override import router as health_router
@@ -29,6 +30,7 @@ from .routers.decision_support import router as decision_support_router
 from .routers.analytics_v3 import router as analytics_v3_router
 from .routers.macro_v3 import router as macro_v3_router
 from .routers.reconciliation import router as reconciliation_router
+from .routers.future_release import router as future_release_router
 from .routers.auth import router as auth_router
 from .routers import portfolio_access as access_policy
 from .routers.portfolio_access import _permissions, router as portfolio_access_router
@@ -91,6 +93,7 @@ app.include_router(analytics_v3_router)
 app.include_router(macro_v3_router)
 app.include_router(events_v3_router)
 app.include_router(events_v4_router)
+app.include_router(future_release_router)
 
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/security/{symbol}/workspace")]
 app.add_api_route("/api/v1/security/{symbol}/workspace",security_workspace_v4,methods=["GET"],tags=["research-v4"],name="security_workspace_v4_authoritative")
