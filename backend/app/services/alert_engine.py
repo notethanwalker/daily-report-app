@@ -4,6 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 from ..models import AlertEvent, AlertRule, FeatureSnapshot, MarketSnapshot
 from ..v2_models import AlertDeliveryPreference, PushSubscription
+from .typed_alerts import evaluate_typed_value, typed_trigger
+
+TYPED_KINDS={"ma100_proximity","ma200_proximity","catalyst_days","persistent_flow","portfolio_position_weight","regime_transition"}
 
 
 def _latest_market(db, symbol):
@@ -18,7 +21,7 @@ def _latest_features(db, symbol):
     return {**(row.payload or {})} if row else None
 
 
-def _value(rule, market, features):
+def _legacy_value(rule, market, features):
     market=market or {};features=features or {}
     return {
         "price":market.get("price"),
@@ -42,7 +45,7 @@ def _value(rule, market, features):
     }.get(rule.kind)
 
 
-def _triggered(value, operator, threshold):
+def _legacy_triggered(value, operator, threshold):
     if value is None or threshold is None:return False
     return {">=":value>=threshold,"<=":value<=threshold,">":value>threshold,"<":value<threshold,"==":value==threshold}.get(operator,False)
 
@@ -53,7 +56,7 @@ def _send_pushes(db, event: AlertEvent, rule: AlertRule, pref: AlertDeliveryPref
     private=os.getenv("VAPID_PRIVATE_KEY");subject=os.getenv("VAPID_SUBJECT","mailto:admin@daily-report.local")
     if not private or not os.getenv("VAPID_PUBLIC_KEY"):return
     try:
-        from pywebpush import WebPushException, webpush
+        from pywebpush import webpush
     except Exception:
         return
     payload=json.dumps({"title":f"{rule.symbol or 'Market'} alert","body":f"{rule.label}: {event.value if event.value is not None else 'condition met'}","url":"/?tab=Alerts","tag":f"daily-report-alert-{rule.id}","alert_id":rule.id})
@@ -69,14 +72,26 @@ def _send_pushes(db, event: AlertEvent, rule: AlertRule, pref: AlertDeliveryPref
 def evaluate_alerts(db):
     now=datetime.now(timezone.utc);created=[]
     for rule in db.query(AlertRule).filter(AlertRule.enabled.is_(True)).all():
-        market=_latest_market(db,rule.symbol);features=_latest_features(db,rule.symbol);value=_value(rule,market,features)
-        if not _triggered(value,rule.operator,rule.threshold):continue
+        typed=rule.kind in TYPED_KINDS
+        meta={}
+        if typed:
+            value,meta=evaluate_typed_value(db,rule.user_email,rule.kind,rule.symbol)
+            triggered=typed_trigger(rule.kind,value,rule.operator,rule.threshold)
+        else:
+            market=_latest_market(db,rule.symbol);features=_latest_features(db,rule.symbol);value=_legacy_value(rule,market,features)
+            triggered=_legacy_triggered(value,rule.operator,rule.threshold)
+        if not triggered:continue
         pref=db.query(AlertDeliveryPreference).filter(AlertDeliveryPreference.alert_id==rule.id).first();cooldown=max(15,int(pref.cooldown_minutes if pref else 360))
         last=db.query(AlertEvent).filter(AlertEvent.alert_id==rule.id).order_by(AlertEvent.created_at.desc()).first()
+        event_key=(meta or {}).get("event_key")
         if last:
+            if event_key and (last.payload or {}).get("event_key")==event_key:
+                continue
             at=last.created_at if last.created_at.tzinfo else last.created_at.replace(tzinfo=timezone.utc)
             if now-at<timedelta(minutes=cooldown):continue
-        event=AlertEvent(alert_id=rule.id,user_email=rule.user_email,symbol=rule.symbol,label=rule.label,value=float(value) if value is not None else None,payload={"kind":rule.kind,"operator":rule.operator,"threshold":rule.threshold,"observed":value,"channels":pref.channels if pref else {"in_app":True}})
+        payload={"kind":rule.kind,"operator":rule.operator,"threshold":rule.threshold,"observed":value,"typed":typed,"meta":meta,"channels":pref.channels if pref else {"in_app":True}}
+        if event_key:payload["event_key"]=event_key
+        event=AlertEvent(alert_id=rule.id,user_email=rule.user_email,symbol=rule.symbol,label=rule.label,value=float(value) if value is not None else None,payload=payload)
         db.add(event);db.flush();created.append(rule.id)
         _send_pushes(db,event,rule,pref)
     if created:db.commit()
