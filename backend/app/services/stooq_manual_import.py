@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import os
-import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from ..models import MarketSnapshot, SymbolRegistry
+from ..models import MarketSnapshot
 from ..providers.stooq import StooqProvider, symbol_key
 from .market_data_pipeline import (
     NORMALIZED_HISTORY_DAYS,
@@ -20,6 +18,17 @@ from .market_data_pipeline import (
 )
 
 CANONICAL_STATE_KEY = "stooq_manual_archive"
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _bar_payloads(data: dict) -> list[dict]:
@@ -46,15 +55,10 @@ def _bar_payloads(data: dict) -> list[dict]:
 
 
 def import_stooq_archive(db: Session, archive_path: str, archive_name: str = "d_us_txt.zip") -> dict:
-    """Import a manually supplied Stooq U.S. daily ZIP as the canonical broad-market history.
-
-    The archive supplies the historical backbone. Newer Yahoo/Twelve bars may coexist
-    in normalized_daily_bars and extend the series beyond the archive date, but they do
-    not change the canonical-history designation recorded in pipeline state.
-    """
+    """Import a manually supplied Stooq U.S. daily ZIP as canonical broad-market history."""
     provider = StooqProvider()
     validation = provider._validate_archive(archive_path)
-    sha256 = hashlib.sha256(Path(archive_path).read_bytes()).hexdigest()
+    sha256 = _sha256_file(archive_path)
     provider.last_bulk_metadata = {
         "url": "manual-upload://stooq/d_us_txt.zip",
         "bytes": os.path.getsize(archive_path),
@@ -172,27 +176,3 @@ def import_stooq_archive(db: Session, archive_path: str, archive_name: str = "d_
     }
     _set_state(db, CANONICAL_STATE_KEY, state)
     return state
-
-
-def save_upload_to_temp(upload_file, max_bytes: int | None = None) -> str:
-    max_bytes = int(max_bytes or os.getenv("STOOQ_MANUAL_UPLOAD_MAX_BYTES", str(2 * 1024 * 1024 * 1024)))
-    fd, path = tempfile.mkstemp(prefix="stooq-manual-", suffix=".zip")
-    os.close(fd)
-    total = 0
-    try:
-        with open(path, "wb") as out:
-            while True:
-                chunk = upload_file.file.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    raise ValueError("Stooq archive exceeds configured upload size limit")
-                out.write(chunk)
-        return path
-    except Exception:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-        raise
