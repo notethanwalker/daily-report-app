@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ..models import MarketSnapshot, SymbolRegistry
@@ -10,7 +10,7 @@ from ..normalized_market_models import NormalizedDailyBar
 from ..providers.nasdaq_trader import NasdaqTraderProvider
 from ..providers.stooq import StooqProvider
 from ..providers.twelve_data import TwelveDataProvider
-from ..providers.yahoo_finance import YahooFinanceProvider
+from ..providers.yahoo_ohlcv import YahooOhlcvProvider
 from .calculations import build_market_snapshot
 
 
@@ -81,10 +81,12 @@ def _history_from_sources(symbol: str, prefer: str = "stooq") -> tuple[dict, lis
             elif source == "twelve":
                 data = _normalize_twelve(s, TwelveDataProvider().daily_history(s, outputsize=750))
             else:
-                data = YahooFinanceProvider().daily_history(s, period="5y")
-            if len(data.get("rows") or []) >= 14:
+                data = YahooOhlcvProvider().daily_history(s, period="5y")
+            rows = data.get("rows") or []
+            full_bars = sum(1 for r in rows if r.get("high") is not None and r.get("low") is not None)
+            if len(rows) >= 14 and full_bars >= 14:
                 return data, errors
-            errors.append(f"{source}: insufficient history")
+            errors.append(f"{source}: insufficient full OHLCV history")
         except Exception as exc:
             errors.append(f"{source}: {str(exc)[:180]}")
     raise RuntimeError("; ".join(errors) or f"No free history source available for {s}")
@@ -94,10 +96,7 @@ def persist_normalized_history(db: Session, data: dict) -> int:
     symbol = data["symbol"].upper()
     provider = str(data.get("provider") or "Unknown")
     source_url = str(data.get("source_url") or "")
-    existing = {
-        row.bar_date: row
-        for row in db.query(NormalizedDailyBar).filter(NormalizedDailyBar.symbol == symbol).all()
-    }
+    existing = {row.bar_date: row for row in db.query(NormalizedDailyBar).filter(NormalizedDailyBar.symbol == symbol).all()}
     touched = 0
     for item in data.get("rows") or []:
         dt = str(item.get("date") or "")[:10]
@@ -125,7 +124,7 @@ def _snapshot_from_normalized(db: Session, symbol: str) -> dict | None:
     usable = [r for r in rows if r.high is not None and r.low is not None]
     if len(usable) < 200:
         return None
-    values = [{"datetime": r.bar_date, "open": r.open, "high": r.high, "low": r.low, "close": r.close, "volume": r.volume} for r in rows]
+    values = [{"datetime": r.bar_date, "open": r.open, "high": r.high, "low": r.low, "close": r.close, "volume": r.volume} for r in rows if r.high is not None and r.low is not None]
     raw = {"history": {"values": values, "meta": {"symbol": symbol.upper()}}, "provider": rows[-1].provider, "source_url": rows[-1].source_url, "retrieved_at": datetime.now(timezone.utc).isoformat()}
     return build_market_snapshot(raw)
 
@@ -143,7 +142,7 @@ def refresh_symbol(db: Session, symbol: str, tracked: bool = False) -> dict:
 
 def bootstrap_needed_symbols(db: Session, limit: int = 8) -> list[str]:
     counts = dict(db.query(NormalizedDailyBar.symbol, func.count(NormalizedDailyBar.id)).group_by(NormalizedDailyBar.symbol).all())
-    rows = db.query(SymbolRegistry).filter(SymbolRegistry.asset_type.in_(["Stock", "ETF", "Equity", None])).order_by(SymbolRegistry.symbol).all()
+    rows = db.query(SymbolRegistry).filter(or_(SymbolRegistry.asset_type.in_(["Stock", "ETF", "Equity"]), SymbolRegistry.asset_type.is_(None))).order_by(SymbolRegistry.symbol).all()
     return [r.symbol for r in rows if counts.get(r.symbol, 0) < 200][:limit]
 
 
