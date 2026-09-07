@@ -1,6 +1,8 @@
 # Daily Report authentication architecture
 
-## Credential storage
+## Credential model
+
+The current account system uses **email + password authentication**. The administrator-supplied login secret is treated as a password, not as a WebAuthn/FIDO passkey. A true passkey would use a device-generated public/private key pair and would never be a user-chosen text string.
 
 - Passwords are never stored in plaintext and are never reversibly encrypted. They are stored as salted Scrypt password hashes.
 - Email addresses and display names are encrypted with AES-GCM before they are written to Postgres.
