@@ -1,20 +1,27 @@
 import asyncio
+import os
 import time
 from datetime import date, datetime, timezone
 
+from sqlalchemy import func
+
 from ..database import SessionLocal
-from ..models import FundamentalCache, HistoricalDailyBar, MarketSnapshot, PortfolioHolding, RefreshQueueItem, UserWatchlistItem, WatchlistItem
+from ..models import FundamentalCache, HistoricalDailyBar, MarketSnapshot, PortfolioHolding, RefreshQueueItem, SymbolRegistry, UserWatchlistItem, WatchlistItem
 from ..multiuser_models import PortfolioPosition
+from ..normalized_market_models import MarketPipelineState, NormalizedDailyBar
 from ..providers.twelve_data import SOURCE_URL, TwelveDataProvider
 from ..providers.yahoo_finance import YahooFinanceProvider
+from ..providers.yahoo_ohlcv import YahooOhlcvProvider
 from .alert_engine import evaluate_alerts
 from .market_data_pipeline import (
     _normalize_twelve,
+    _snapshot_from_normalized,
     bulk_refresh_us_market,
     persist_normalized_history,
     prune_market_snapshots,
     prune_normalized_bars,
     refresh_tracked_market_snapshot,
+    store_market_snapshot,
     sync_us_symbol_universe,
 )
 from .provider_orchestrator import FRESHNESS_POLICIES, ProviderOrchestrator, is_stale
@@ -23,6 +30,7 @@ from .validation import build_secondary_metrics, cross_check_market_snapshot
 
 _last_universe_sync = None
 _last_bulk_attempt = None
+_last_cleanup = None
 
 
 def _user_symbols(db):
@@ -85,14 +93,9 @@ def _market_refresh_allowed(now):
 
 
 def _persist_history(db, symbol):
-    # Legacy historical table is still used by portfolio analytics. 400 daily bars
-    # cover its current 365-day needs while avoiding the previous 750-bar pull.
     raw = TwelveDataProvider().daily_history(symbol, outputsize=400)
     values = raw.get("values") or raw.get("data") or []
-    existing = {
-        r.bar_date: r
-        for r in db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol == symbol).all()
-    }
+    existing = {r.bar_date: r for r in db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol == symbol).all()}
     inserted = 0
     for item in values:
         dt = str(item.get("datetime") or item.get("date") or "")[:10]
@@ -105,21 +108,10 @@ def _persist_history(db, symbol):
             continue
         row = existing.get(dt)
         if row:
-            row.close = close
-            row.volume = volume
-            row.provider = "Twelve Data"
-            row.source_url = SOURCE_URL
+            row.close = close; row.volume = volume; row.provider = "Twelve Data"; row.source_url = SOURCE_URL
         else:
-            db.add(HistoricalDailyBar(
-                symbol=symbol,
-                bar_date=dt,
-                close=close,
-                volume=volume,
-                provider="Twelve Data",
-                source_url=SOURCE_URL,
-            ))
+            db.add(HistoricalDailyBar(symbol=symbol, bar_date=dt, close=close, volume=volume, provider="Twelve Data", source_url=SOURCE_URL))
             inserted += 1
-    # Reuse the exact same provider response for the canonical OHLCV store.
     persist_normalized_history(db, _normalize_twelve(symbol, raw))
     return inserted
 
@@ -131,19 +123,11 @@ def _verified_market_snapshot(db, symbol):
         snap.update(cross_check_market_snapshot(snap, secondary))
     except Exception as exc:
         snap["verification_status"] = "primary_only"
-        snap["verification"] = {
-            "primary_provider": snap.get("provider"),
-            "secondary_provider": "Yahoo Finance",
-            "error": "secondary_provider_unavailable",
-            "detail": str(exc)[:160],
-        }
+        snap["verification"] = {"primary_provider": snap.get("provider"), "secondary_provider": "Yahoo Finance", "error": "secondary_provider_unavailable", "detail": str(exc)[:160]}
     snap["tracked_refresh"] = refresh_meta
     latest = db.query(MarketSnapshot).filter(MarketSnapshot.symbol == symbol.upper()).order_by(MarketSnapshot.id.desc()).first()
     if latest:
-        latest.payload = snap
-        latest.provider = str(snap.get("provider") or "Twelve Data")
-        latest.as_of = str(snap.get("as_of") or latest.as_of)
-        db.commit()
+        latest.payload = snap; latest.provider = str(snap.get("provider") or "Twelve Data"); latest.as_of = str(snap.get("as_of") or latest.as_of); db.commit()
     return snap
 
 
@@ -155,37 +139,22 @@ def process_queue(db, limit=4):
     rows = q.order_by(RefreshQueueItem.priority.desc(), RefreshQueueItem.created_at).limit(limit).all()
     done = []
     for idx, row in enumerate(rows):
-        row.status = "running"
-        db.commit()
+        row.status = "running"; db.commit()
         try:
             if row.data_class == "fundamentals":
                 payload, _ = ProviderOrchestrator().fundamentals(row.symbol, allow_alpha=False)
                 cached = db.get(FundamentalCache, row.symbol)
                 if cached:
-                    cached.provider = str(payload.get("provider") or "Composite fundamentals")
-                    cached.payload = payload
-                    cached.retrieved_at = datetime.now(timezone.utc)
+                    cached.provider = str(payload.get("provider") or "Composite fundamentals"); cached.payload = payload; cached.retrieved_at = datetime.now(timezone.utc)
                 else:
-                    db.add(FundamentalCache(
-                        symbol=row.symbol,
-                        provider=str(payload.get("provider") or "Composite fundamentals"),
-                        payload=payload,
-                        retrieved_at=datetime.now(timezone.utc),
-                    ))
+                    db.add(FundamentalCache(symbol=row.symbol, provider=str(payload.get("provider") or "Composite fundamentals"), payload=payload, retrieved_at=datetime.now(timezone.utc)))
             elif row.data_class == "history":
                 _persist_history(db, row.symbol)
             else:
                 _verified_market_snapshot(db, row.symbol)
-            row.status = "complete"
-            row.error = None
-            db.commit()
-            done.append({"symbol": row.symbol, "data_class": row.data_class})
+            row.status = "complete"; row.error = None; db.commit(); done.append({"symbol": row.symbol, "data_class": row.data_class})
         except Exception as exc:
-            db.rollback()
-            row = db.get(RefreshQueueItem, row.id)
-            row.status = "failed"
-            row.error = str(exc)[:500]
-            db.commit()
+            db.rollback(); row = db.get(RefreshQueueItem, row.id); row.status = "failed"; row.error = str(exc)[:500]; db.commit()
         if idx < len(rows) - 1:
             time.sleep(8.2)
     return done
@@ -195,25 +164,121 @@ def _sync_universe_if_due(db):
     global _last_universe_sync
     now = datetime.now(timezone.utc)
     if _last_universe_sync is None or (now - _last_universe_sync).total_seconds() >= 12 * 60 * 60:
-        sync_us_symbol_universe(db)
-        _last_universe_sync = now
+        sync_us_symbol_universe(db); _last_universe_sync = now
+
+
+def _pipeline_state(db, key):
+    row = db.get(MarketPipelineState, key)
+    return dict(row.payload or {}) if row else {}
+
+
+def _save_pipeline_state(db, key, payload):
+    row = db.get(MarketPipelineState, key)
+    if row:
+        row.payload = payload
+    else:
+        db.add(MarketPipelineState(key=key, payload=payload))
+    db.commit()
+
+
+def _broad_stock_eligible(row):
+    if str(row.asset_type or "").lower() not in {"stock", "equity"}:
+        return False
+    name = str(row.name or "").lower()
+    # Nasdaq Trader's ETF flag removes ETFs; these name checks remove listed
+    # instruments that are not ordinary operating-company equity.
+    blocked = (" warrant", " warrants", " unit", " units", " right", " rights", " preferred", " preference", " notes due", " bond", " fund")
+    return not any(term in name for term in blocked)
+
+
+def yahoo_broad_bootstrap_batch(db, limit=None, chunk_size=None):
+    limit = int(limit or os.getenv("YAHOO_BOOTSTRAP_SYMBOLS_PER_CYCLE", "300"))
+    chunk_size = int(chunk_size or os.getenv("YAHOO_BOOTSTRAP_CHUNK_SIZE", "50"))
+    min_bars = int(os.getenv("MARKET_MIN_TECHNICAL_BARS", "120"))
+    covered = set(r[0] for r in db.query(NormalizedDailyBar.symbol).group_by(NormalizedDailyBar.symbol).having(func.count(NormalizedDailyBar.id) >= min_bars).all())
+    rows = [r for r in db.query(SymbolRegistry).order_by(SymbolRegistry.symbol).all() if (r.provider_ids or {}).get("universe_source") == "Nasdaq Trader" and _broad_stock_eligible(r)]
+    if not rows:
+        return {"status": "waiting_for_universe", "requested": 0}
+
+    state = _pipeline_state(db, "yahoo_bootstrap")
+    cursor = str(state.get("cursor") or "")
+    candidates = [r.symbol.upper() for r in rows if r.symbol.upper() not in covered and r.symbol.upper() > cursor]
+    wrapped = False
+    if not candidates:
+        candidates = [r.symbol.upper() for r in rows if r.symbol.upper() not in covered]
+        cursor = ""; wrapped = True
+    selected = candidates[:limit]
+    if not selected:
+        result = {"status": "complete", "eligible_stocks": len(rows), "covered_stocks": len(covered), "requested": 0, "completed_at": datetime.now(timezone.utc).isoformat()}
+        _save_pipeline_state(db, "yahoo_bootstrap", result)
+        return result
+
+    provider = YahooOhlcvProvider()
+    succeeded = failed = snapshots = bars = 0
+    failed_examples = []
+    for i in range(0, len(selected), max(1, chunk_size)):
+        chunk = selected[i:i + max(1, chunk_size)]
+        try:
+            batch = provider.batch_daily_history(chunk, period="2y")
+        except Exception as exc:
+            batch = {}
+            failed += len(chunk)
+            if len(failed_examples) < 10:
+                failed_examples.append({"symbols": chunk[:5], "error": str(exc)[:180]})
+            continue
+        for symbol in chunk:
+            data = batch.get(symbol)
+            if not data or len(data.get("rows") or []) < min_bars:
+                failed += 1
+                if len(failed_examples) < 10:
+                    failed_examples.append({"symbol": symbol, "error": "insufficient Yahoo history"})
+                continue
+            try:
+                bars += persist_normalized_history(db, data)
+                snap = _snapshot_from_normalized(db, symbol)
+                if snap:
+                    store_market_snapshot(db, symbol, snap, "Yahoo Finance")
+                    snapshots += 1
+                succeeded += 1
+            except Exception as exc:
+                db.rollback(); failed += 1
+                if len(failed_examples) < 10:
+                    failed_examples.append({"symbol": symbol, "error": str(exc)[:180]})
+
+    result = {
+        "status": "running",
+        "source": "Yahoo Finance batch OHLCV",
+        "eligible_stocks": len(rows),
+        "covered_before": len(covered),
+        "requested": len(selected),
+        "succeeded": succeeded,
+        "failed": failed,
+        "snapshots_written": snapshots,
+        "bars_touched": bars,
+        "cursor": selected[-1],
+        "wrapped": wrapped,
+        "failed_examples": failed_examples,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_pipeline_state(db, "yahoo_bootstrap", result)
+    return result
 
 
 def run_cycle():
+    global _last_cleanup
     db = SessionLocal()
     try:
-        enqueue_stale(db)
-        process_queue(db, 4)
+        enqueue_stale(db); process_queue(db, 4)
         try:
             _sync_universe_if_due(db)
         except Exception:
             db.rollback()
-        # Cheap bounded cleanup; historical analysis lives in FeatureSnapshot and daily bars.
-        try:
-            prune_market_snapshots(db)
-            prune_normalized_bars(db)
-        except Exception:
-            db.rollback()
+        now = datetime.now(timezone.utc)
+        if _last_cleanup is None or (now - _last_cleanup).total_seconds() >= 6 * 60 * 60:
+            try:
+                prune_market_snapshots(db); prune_normalized_bars(db); _last_cleanup = now
+            except Exception:
+                db.rollback()
         from ..routers.intelligence import _refresh_feature
         for symbol in _user_symbols(db):
             try:
@@ -239,7 +304,30 @@ def run_bulk_market_cycle():
             _sync_universe_if_due(db)
         except Exception:
             db.rollback()
-        return bulk_refresh_us_market(db)
+        result = bulk_refresh_us_market(db)
+        # Stooq's archive currently rejects the Render runtime. Do not wait 18h
+        # for the tiny per-symbol fallback: immediately advance the Yahoo batch bootstrap.
+        if result.get("status") in {"degraded", "failed"}:
+            result["yahoo_bootstrap"] = yahoo_broad_bootstrap_batch(db)
+        return result
+    except Exception as exc:
+        db.rollback()
+        try:
+            return {"status": "degraded", "error": str(exc)[:500], "yahoo_bootstrap": yahoo_broad_bootstrap_batch(db)}
+        except Exception as fallback_exc:
+            return {"status": "failed", "error": str(exc)[:500], "fallback_error": str(fallback_exc)[:500]}
+    finally:
+        db.close()
+
+
+def run_yahoo_bootstrap_cycle():
+    db = SessionLocal()
+    try:
+        try:
+            _sync_universe_if_due(db)
+        except Exception:
+            db.rollback()
+        return yahoo_broad_bootstrap_batch(db)
     except Exception as exc:
         db.rollback()
         return {"status": "failed", "error": str(exc)[:500]}
@@ -254,8 +342,16 @@ async def scheduler_loop():
 
 
 async def bulk_market_loop():
-    # Separate loop means archive work cannot block watchlist/portfolio freshness.
     await asyncio.sleep(60)
     while True:
         await asyncio.to_thread(run_bulk_market_cycle)
         await asyncio.sleep(6 * 60 * 60)
+
+
+async def yahoo_bootstrap_loop():
+    # Fast path for broad discovery. It runs independently so tracked-symbol
+    # refreshes remain responsive even while the broad cache is being populated.
+    await asyncio.sleep(90)
+    while True:
+        await asyncio.to_thread(run_yahoo_bootstrap_cycle)
+        await asyncio.sleep(10 * 60)
