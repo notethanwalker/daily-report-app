@@ -124,9 +124,11 @@ class StooqProvider:
         if len(rows) < 14:
             raise StooqError(f"Stooq returned insufficient history for {s}")
         rows.sort(key=lambda x: x["date"])
+        all_time_high = max((r["high"] for r in rows if r.get("high") is not None), default=None)
         return {
             "symbol": s,
             "rows": rows,
+            "all_time_high": all_time_high,
             "provider": self.name,
             "source_url": SOURCE_URL,
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
@@ -146,8 +148,6 @@ class StooqProvider:
                 names = [name for name in zf.namelist() if name.lower().endswith(".txt")]
                 if len(names) < min_files:
                     raise StooqError(f"Stooq bulk archive contained only {len(names)} data files")
-                # Opening representative members catches corrupt central-directory/member metadata
-                # without decompressing the entire archive twice.
                 for name in (names[0], names[len(names) // 2], names[-1]):
                     with zf.open(name) as handle:
                         sample = handle.read(512)
@@ -190,7 +190,6 @@ class StooqProvider:
                                 downloaded += len(chunk)
                                 if downloaded > max_bytes:
                                     raise StooqError("Stooq archive exceeded configured maximum size")
-                                # When Content-Length is missing, retain the reserve dynamically.
                                 if not advertised and shutil.disk_usage(temp_dir).free < len(chunk) + reserve:
                                     raise StooqInsufficientDiskError("Insufficient temporary disk while streaming Stooq archive")
                                 digest.update(chunk)
@@ -216,7 +215,6 @@ class StooqProvider:
                 except OSError:
                     pass
                 if isinstance(exc, StooqInsufficientDiskError):
-                    # Trying another mirror cannot fix local disk pressure.
                     break
 
         self.last_bulk_metadata = {"attempts": attempts, "failed_at": datetime.now(timezone.utc).isoformat()}
@@ -225,7 +223,7 @@ class StooqProvider:
         raise StooqError("All configured Stooq bulk archive sources failed") from last_error
 
     def iter_us_bulk_history(self, archive_path: str, tail: int = 260):
-        """Yield one symbol at a time, retaining only the requested tail in memory."""
+        """Yield one symbol at a time, retaining only the technical tail while tracking full-history high."""
         source_url = self.last_bulk_metadata.get("url") or DEFAULT_BULK_US_URL
         with ZipFile(archive_path) as zf:
             for name in zf.namelist():
@@ -233,11 +231,18 @@ class StooqProvider:
                 if not symbol:
                     continue
                 rows = deque(maxlen=max(220, tail))
+                all_time_high = None
+                first_date = None
                 try:
                     with zf.open(name) as raw, TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="") as text:
                         for item in csv.DictReader(text):
                             parsed = _parse_archive_row(item)
                             if parsed:
+                                if first_date is None:
+                                    first_date = parsed["date"]
+                                high = parsed.get("high")
+                                if high is not None:
+                                    all_time_high = high if all_time_high is None else max(all_time_high, high)
                                 rows.append(parsed)
                 except Exception:
                     continue
@@ -246,6 +251,8 @@ class StooqProvider:
                 yield {
                     "symbol": symbol,
                     "rows": list(rows),
+                    "all_time_high": all_time_high,
+                    "history_start_date": first_date,
                     "provider": self.name,
                     "source_url": source_url,
                     "retrieved_at": datetime.now(timezone.utc).isoformat(),
