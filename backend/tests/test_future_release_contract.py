@@ -58,7 +58,8 @@ class FutureReleaseContract(unittest.TestCase):
         self.assertIn("ReportComparePanel", AUG)
 
     def test_alert_templates_are_capability_aware(self):
-        self.assertIn('READY=new Set(["ma100_distance","ma200_distance","relative_volume"])', ALERT_TEMPLATES)
+        self.assertIn('READY=new Set(["relative_volume"])', ALERT_TEMPLATES)
+        self.assertIn("absolute-distance/transition predicates", ALERT_TEMPLATES)
         self.assertIn("Evaluator extension required", ALERT_TEMPLATES)
         self.assertIn("FutureAlertTemplates", AUG)
 
