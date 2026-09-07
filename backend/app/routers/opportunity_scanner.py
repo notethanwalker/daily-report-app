@@ -1,16 +1,54 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+import os
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from ..database import get_db
+from ..auth_models import AuthAccount
+from ..database import SessionLocal, get_db
 from ..models import PortfolioHolding, UserWatchlistItem
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from ..services.market_data_pipeline import pipeline_status
 from ..services.opportunity_scanner import scan_cached_market
+from ..services.stooq_manual_import import import_stooq_archive
+from ..services.stooq_upload_session import (
+    cleanup_upload,
+    create_upload,
+    finalize_upload,
+    mark_imported,
+    upload_status,
+    write_chunk,
+)
 from .intelligence import _opportunity_components, current_user
 
 router = APIRouter(prefix="/api/v1/opportunities", tags=["opportunity-scanner"])
+
+
+class StooqUploadInit(BaseModel):
+    filename: str = "d_us_txt.zip"
+    total_bytes: int
+
+
+def _require_owner(db: Session, user: str) -> None:
+    account = db.get(AuthAccount, user)
+    if not account or account.role != "owner" or not account.enabled:
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+
+def _run_stooq_import(upload_id: str, archive_path: str, archive_name: str) -> None:
+    db = SessionLocal()
+    try:
+        result = import_stooq_archive(db, archive_path, archive_name=archive_name)
+        mark_imported(upload_id, result=result)
+    except Exception as exc:
+        db.rollback()
+        mark_imported(upload_id, error=str(exc)[:1000])
+    finally:
+        db.close()
+        # The database now contains the canonical history; the ZIP itself is not retained.
+        cleanup_upload(upload_id)
 
 
 def _tracked_symbols(db: Session, user: str) -> list[str]:
@@ -112,3 +150,80 @@ def market_opportunities(
 def opportunity_data_pipeline(db: Session = Depends(get_db), user: str = Depends(current_user)):
     _ = user
     return pipeline_status(db)
+
+
+@router.post("/stooq-archive/init")
+def init_stooq_archive_upload(
+    payload: StooqUploadInit,
+    db: Session = Depends(get_db),
+    user: str = Depends(current_user),
+):
+    _require_owner(db, user)
+    try:
+        session = create_upload(payload.filename, payload.total_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "upload_id": session["upload_id"],
+        "chunk_bytes": session["chunk_bytes"],
+        "total_bytes": session["total_bytes"],
+        "status": session["status"],
+    }
+
+
+@router.put("/stooq-archive/{upload_id}/chunk")
+async def upload_stooq_archive_chunk(
+    upload_id: str,
+    request: Request,
+    offset: int = Query(ge=0),
+    db: Session = Depends(get_db),
+    user: str = Depends(current_user),
+):
+    _require_owner(db, user)
+    max_chunk = int(os.getenv("STOOQ_UPLOAD_MAX_CHUNK_BYTES", str(16 * 1024 * 1024)))
+    body = await request.body()
+    if not body or len(body) > max_chunk:
+        raise HTTPException(status_code=400, detail=f"Chunk must be between 1 and {max_chunk} bytes")
+    try:
+        state = write_chunk(upload_id, offset, body)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "upload_id": upload_id,
+        "received_bytes": state.get("received_bytes", 0),
+        "total_bytes": state["total_bytes"],
+        "status": state["status"],
+    }
+
+
+@router.get("/stooq-archive/{upload_id}")
+def stooq_archive_upload_status(
+    upload_id: str,
+    db: Session = Depends(get_db),
+    user: str = Depends(current_user),
+):
+    _require_owner(db, user)
+    try:
+        return upload_status(upload_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/stooq-archive/{upload_id}/finalize", status_code=202)
+def finalize_stooq_archive_upload(
+    upload_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: str = Depends(current_user),
+):
+    _require_owner(db, user)
+    try:
+        archive_path, manifest = finalize_upload(upload_id)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    background_tasks.add_task(_run_stooq_import, upload_id, archive_path, manifest.get("filename") or "d_us_txt.zip")
+    return {
+        "upload_id": upload_id,
+        "status": "queued_for_import",
+        "message": "Stooq archive upload completed; canonical-history import has started.",
+    }
