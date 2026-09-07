@@ -4,6 +4,23 @@ type Release={version:string;date:string;title:string;summary:string;changes:str
 
 const RELEASES:Release[]=[
  {
+  version:"v1.7",
+  date:"September 6, 2026",
+  title:"Stock intelligence, calendar navigation, and responsive UI",
+  summary:"Unified stock-specific intelligence across Opportunities and Research, added a navigable event calendar and richer macro explanations, and hardened the interface across mobile and desktop layouts.",
+  changes:[
+   "Added a persistent shared per-symbol intelligence cache so Opportunities, Research, catalysts, linked news, flow context, and price history reuse the same hydrated data instead of repeating provider pulls.",
+   "Expanded Opportunity cards to hydrate stock-specific unusual-flow matches on demand and fall back to clearly labeled listed-options activity when no unusual-flow observation is available.",
+   "Added scheduled catalysts and linked recent news directly to expanded Opportunity views, with explicit per-symbol force refresh controls.",
+   "Expanded Research with stored-price visualization and 1M, 3M, 6M, 1Y, and 2Y timeframe controls plus shared flow, catalyst, and linked-news intelligence.",
+   "Added a real month-view Events calendar with expandable/selectable days and visual severity states for empty, minor, significant, and tracked-stock significant events.",
+   "Restored Macro Possible Reasons beneath rotation bars with linked news, technical-analysis explanations, written summaries, and direct navigation into Leadership detail.",
+   "Made macro bars, category entries, and related ticker controls clickable so they route into the corresponding Leadership detail view.",
+   "Strengthened responsive behavior across common phone, tablet, and desktop widths with vertical mobile dropdowns, wrapped controls, viewport-safe menus, and self-contained scrolling for dense cards and expanded panels.",
+   "Kept automatic Vercel Git deployments disabled so production releases remain manually controlled."
+  ]
+ },
+ {
   version:"v1.6",
   date:"September 5, 2026",
   title:"Macro drilldowns, relative flow, and report intelligence",
