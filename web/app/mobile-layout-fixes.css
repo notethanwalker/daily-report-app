@@ -1,137 +1,70 @@
-/* Mobile-only layout hardening. Loaded last so it can safely override workspace-specific styles. */
+/* Loaded last: responsive and overflow hardening across active workspaces. */
+
+/* Cross-resolution safety: content may grow, but it must not grow through a card edge. */
+.card,.tab-panel,.v3-workspace,.suite-panel,.methodology-dropdown,.metric-explainer,.opportunity-v3-card,.macro-rank-card,.event-v2-day{min-width:0;max-width:100%;overflow-wrap:anywhere}
+.card>*,.methodology-dropdown>*,.metric-explainer>*,details>summary>*{min-width:0;max-width:100%}
+details>summary{min-width:0;max-width:100%}
+button,input,select,textarea{max-width:100%}
+button{overflow-wrap:anywhere}
+.subtab-bar,.bar-metric-toggle,.sort-strip,.v2-toolbar,.calendar-controls{max-width:100%;flex-wrap:wrap;gap:8px}
+.card-scroll-region,.intel-scroll,.price-chart-scroll{max-height:min(56vh,560px);overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;touch-action:pan-x pan-y}
+.data-pre{white-space:pre-wrap;word-break:break-word}
+.intel-two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.compact-intel-list{max-height:330px}
+.intel-flow-row,.intel-catalyst-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid rgba(90,116,129,.15)}
+.intel-flow-row>div,.intel-catalyst-row>div{display:grid;gap:3px;min-width:0}.intel-flow-row>div:last-child{text-align:right}.intel-flow-row small,.intel-catalyst-row small{color:#788a95;font-size:10px}.intel-catalyst-row{grid-template-columns:auto minmax(0,1fr) auto}.intel-news-row{display:grid;gap:4px;padding:10px 0;border-bottom:1px solid rgba(90,116,129,.15)}.intel-news-row small,.intel-news-row span{color:#7d8e98;font-size:10px}.intel-news-row span{line-height:1.45}.intel-refresh-bar{display:flex;align-items:center;justify-content:space-between;gap:14px}.intel-refresh-bar>div{display:grid;gap:4px;min-width:0}
+
+/* Price chart stays inside its own card at every viewport. */
+.price-chart-card{position:relative;overflow:hidden}.chart-timeframes{display:flex;gap:6px;flex-wrap:wrap}.chart-timeframes button,.bar-metric-toggle button{border:1px solid #26323b;background:#111921;color:#aebbc3;border-radius:9px;padding:7px 9px;cursor:pointer}.chart-timeframes button.active,.bar-metric-toggle button.active{border-color:#14d67a;color:#74f0b2;background:rgba(20,214,122,.08)}.price-chart-scroll{max-height:none;overflow-x:auto;overflow-y:hidden}.price-chart{display:block;width:100%;min-width:520px;height:250px}.price-chart line{stroke:rgba(130,151,162,.16);stroke-width:.4}.price-chart polyline{fill:none;stroke:#74f0b2;stroke-width:1.7;vector-effect:non-scaling-stroke}.chart-scale{display:flex;justify-content:space-between;gap:10px;color:#768994;font-size:10px;margin-top:6px}
+
+/* Calendar severity and self-contained selected-day view. */
+.calendar-shell{min-width:0;overflow-x:auto;overscroll-behavior:contain}.calendar-weekdays,.calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(84px,1fr));gap:6px;min-width:630px}.calendar-weekdays{margin-bottom:6px}.calendar-weekdays span{text-align:center;color:#758793;font-size:10px;text-transform:uppercase;letter-spacing:.05em}.calendar-day,.calendar-blank{min-height:86px;border-radius:10px}.calendar-day{display:grid;align-content:start;gap:5px;text-align:left;padding:9px;border:1px solid #26323b;background:#0d151c;color:#dbe5ea;cursor:pointer}.calendar-day strong{font-size:13px}.calendar-day span{font-size:9px;color:#84949e}.calendar-day b{font-size:8px;color:#9af0c0}.calendar-day.severity-minor{border-color:rgba(92,133,157,.38);background:rgba(75,113,137,.09)}.calendar-day.severity-high{border-color:rgba(212,167,44,.55);background:rgba(212,167,44,.09)}.calendar-day.severity-tracked-high{border-color:rgba(20,214,122,.62);background:rgba(20,214,122,.10);box-shadow:inset 0 0 0 1px rgba(20,214,122,.10)}.calendar-day.selected{outline:2px solid rgba(116,240,178,.55);outline-offset:1px}.calendar-legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.calendar-legend span{padding:5px 7px;border-radius:8px;border:1px solid #26323b;font-size:9px}.calendar-legend .severity-minor{border-color:rgba(92,133,157,.5)}.calendar-legend .severity-high{border-color:rgba(212,167,44,.55)}.calendar-legend .severity-tracked-high{border-color:rgba(20,214,122,.62)}.calendar-controls{display:grid;grid-template-columns:auto 1fr auto auto;align-items:center}.calendar-controls>strong{text-align:center}
+
+/* Macro navigation/readability. */
+.clickable-bar,.macro-category-grid button,.relative-grid button,.reason-jump{appearance:none;border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left;width:100%}.clickable-bar{display:grid}.clickable-bar:hover,.macro-category-grid button:hover,.relative-grid button:hover,.reason-jump:hover{background:rgba(20,214,122,.045)}.macro-written-summary{line-height:1.55;color:#c6d2d8}.reason-jump{display:grid;gap:3px;padding:9px;border:1px solid rgba(116,240,178,.22);border-radius:9px;margin-bottom:8px}.reason-jump span{font-size:10px;color:#74f0b2}.focused-rank{border-color:rgba(20,214,122,.5)!important;box-shadow:0 0 0 1px rgba(20,214,122,.08)}
+
+/* Desktop/tablet: dense expansions scroll inside their card instead of forcing the whole page to extreme height. */
+@media (min-width:721px){
+ .opportunity-v3-detail,.rank-detail,.selected-day-card .card-scroll-region{max-height:min(62vh,620px);overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding-right:4px}
+ .event-v2-day>div.card-scroll-region{max-height:min(54vh,520px)}
+ .macro-category-grid.card-scroll-region,.relative-grid.card-scroll-region{max-height:min(54vh,540px)}
+}
+
 @media (max-width: 720px) {
-  /* Security/detail drawer tabs should read as a vertical menu on phones. */
-  .drawer-tabs {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 6px;
-    overflow: visible;
-    padding: 0 14px 12px;
-  }
-  .drawer-tabs button {
-    width: 100%;
-    min-width: 0;
-    white-space: normal;
-    text-align: left;
-    padding: 10px 12px;
-    line-height: 1.25;
-  }
+  /* Primary grouped navigation and security/detail drawer menus become vertical phone menus. */
+  .nav-menu,.drawer-tabs{display:grid!important;grid-template-columns:1fr!important;gap:6px!important;overflow:visible!important;width:min(92vw,360px);max-width:calc(100vw - 24px)}
+  .nav-menu{position:absolute!important;left:0!important;right:auto!important;top:calc(100% + 6px)!important;z-index:80!important;max-height:min(70vh,520px);overflow-y:auto!important;overscroll-behavior:contain;padding:7px!important}
+  .nav-group{position:relative!important}.nav-group:last-child .nav-menu{left:auto!important;right:0!important}
+  .nav-menu button,.drawer-tabs button{width:100%!important;min-width:0!important;white-space:normal!important;text-align:left!important;padding:10px 12px!important;line-height:1.25}
+  .drawer-tabs{width:100%;max-width:none;padding:0 14px 12px!important}
 
-  /* Toggle/menu groups inside tabs stack vertically instead of colliding. */
-  .view-toggle,
-  .suite-hero > .view-toggle,
-  .news-controls,
-  .report-actions,
-  .expanded-actions,
-  .health-pills,
-  .suite-meta {
-    width: 100%;
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 8px;
-    margin-top: 10px;
-  }
-  .view-toggle > button,
-  .suite-hero > .view-toggle > button,
-  .news-controls > button,
-  .report-actions > button,
-  .expanded-actions > button,
-  .view-toggle > .btn,
-  .view-toggle > .toggle {
-    width: 100%;
-    min-width: 0;
-    white-space: normal;
-  }
+  /* Toggle/menu/action groups stack rather than collide. */
+  .view-toggle,.suite-hero>.view-toggle,.news-controls,.report-actions,.expanded-actions,.health-pills,.suite-meta,.chart-timeframes,.bar-metric-toggle{width:100%;display:grid!important;grid-template-columns:1fr!important;gap:8px!important;margin-top:10px}
+  .view-toggle>button,.suite-hero>.view-toggle>button,.news-controls>button,.report-actions>button,.expanded-actions>button,.chart-timeframes>button,.bar-metric-toggle>button{width:100%;min-width:0;white-space:normal}
 
-  /* Headers with actions become two clean rows on narrow screens. */
-  .row,
-  .section-head,
-  .report-utility,
-  .suite-hero,
-  .security-title,
-  .app-header {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .row > *,
-  .section-head > *,
-  .report-utility > *,
-  .suite-hero > *,
-  .security-title > *,
-  .app-header > * {
-    min-width: 0;
-    max-width: 100%;
-  }
-  .status {
-    text-align: left;
-  }
+  /* Headers/actions become stable rows. */
+  .row,.section-head,.report-utility,.suite-hero,.security-title,.app-header,.intel-refresh-bar{flex-direction:column;align-items:stretch}
+  .row>*,.section-head>*,.report-utility>*,.suite-hero>*,.security-title>*,.app-header>*,.intel-refresh-bar>*{min-width:0;max-width:100%}.status{text-align:left}
 
-  /* Forms and action rows should never retain desktop inline widths after tab switches. */
-  .research-search,
-  .ticker-add-row,
-  .cash-form,
-  .form-pair {
-    width: 100%;
-    grid-template-columns: 1fr;
-    min-width: 0;
-    gap: 8px;
-  }
-  .research-search {
-    display: grid;
-  }
-  .research-search .search,
-  .research-search .btn,
-  .ticker-add-row .btn,
-  .cash-form .btn,
-  .form-pair .btn,
-  .suite-form .btn,
-  .suite-form input,
-  .suite-form select,
-  .suite-form textarea {
-    width: 100%;
-    min-width: 0;
-  }
+  /* Forms discard desktop inline sizing after tab switches/reloads. */
+  .research-search,.ticker-add-row,.cash-form,.form-pair{width:100%;grid-template-columns:1fr!important;min-width:0;gap:8px}.research-search{display:grid}.research-search .search,.research-search .btn,.ticker-add-row .btn,.cash-form .btn,.form-pair .btn,.suite-form .btn,.suite-form input,.suite-form select,.suite-form textarea{width:100%;min-width:0}
 
-  /* Keep cards/panels from preserving stale desktop minimum widths after remount/reload. */
-  .tab-panel,
-  .suite-panel,
-  .card,
-  .suite-grid-card,
-  .opportunity-card,
-  .ticker-add-card {
-    min-width: 0;
-    max-width: 100%;
-  }
+  /* Dense two-column intelligence becomes a readable stack. */
+  .intel-two{grid-template-columns:1fr}.intel-catalyst-row{grid-template-columns:auto minmax(0,1fr)}.intel-catalyst-row .source-link{grid-column:1/-1;margin-top:2px}.intel-flow-row{grid-template-columns:1fr}.intel-flow-row>div:last-child{text-align:left}
+  .card-scroll-region,.intel-scroll{max-height:min(52vh,440px)}
 
-  /* Dense button rows elsewhere may wrap, but never overlap. */
-  .chips,
-  .symbol-chips {
-    gap: 8px;
-    align-items: stretch;
-  }
+  /* Phone calendar preserves seven days but scrolls only within the calendar card. */
+  .calendar-controls{grid-template-columns:1fr 1fr}.calendar-controls>strong{grid-column:1/-1;grid-row:1;text-align:left}.calendar-controls>.view-toggle{grid-column:1/-1}.calendar-weekdays,.calendar-grid{grid-template-columns:repeat(7,56px);min-width:416px}.calendar-day,.calendar-blank{min-height:72px}.calendar-day{padding:6px}.calendar-day span{font-size:8px}.calendar-day b{font-size:7px}
 
-  /* Use stable touch sizing and let long labels wrap rather than clip. */
-  .btn,
-  .toggle,
-  button {
-    max-width: 100%;
-  }
-  .btn,
-  .toggle {
-    min-height: 42px;
-    line-height: 1.2;
-  }
+  /* Stable touch sizing and wrapping. */
+  .btn,.toggle{min-height:42px;line-height:1.2}.chips,.symbol-chips{gap:8px;align-items:stretch}
 }
 
-@media (max-width: 430px) {
-  .container {
-    padding-left: calc(12px + env(safe-area-inset-left));
-    padding-right: calc(12px + env(safe-area-inset-right));
-  }
-  .card {
-    padding: 14px;
-  }
-  .brand-lockup h1 {
-    font-size: 26px;
-  }
+@media (max-width:430px){
+ .container{padding-left:calc(12px + env(safe-area-inset-left));padding-right:calc(12px + env(safe-area-inset-right))}.card{padding:14px}.brand-lockup h1{font-size:26px}
+ .subtab-bar{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;overflow:visible!important}.subtab-bar button{width:100%;white-space:normal!important;min-width:0!important}
+ .calendar-weekdays,.calendar-grid{grid-template-columns:repeat(7,48px);min-width:360px}.calendar-day strong{font-size:11px}.calendar-day span{font-size:7px}
+ .price-chart{min-width:430px;height:220px}
 }
+
+@media (max-width:360px){.subtab-bar{grid-template-columns:1fr!important}.calendar-weekdays,.calendar-grid{grid-template-columns:repeat(7,44px);min-width:332px}.card{padding:12px}}
