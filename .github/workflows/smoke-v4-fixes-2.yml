@@ -18,15 +18,15 @@ jobs:
         run: |
           set -euo pipefail
           DATA=$(curl --fail --silent --show-error --max-time 90 'https://daily-report-api-ero2.onrender.com/api/v1/events?days=365&sort=date&order=asc&limit=1200')
-          echo "$DATA" | jq '{count,providers,categories,error_count:(.errors|length),sample:(.events[:3])}'
+          echo "$DATA" | jq '{count,providers,categories,error_count:(.errors|length)}'
           echo "$DATA" | jq -e '(.events|type=="array") and (.count|type=="number") and (.providers|type=="array") and (.categories|type=="array")'
 
-      - name: Tracked company events
+      - name: Portfolio company events deep check
         run: |
           set -euo pipefail
-          DATA=$(curl --fail --silent --show-error --max-time 120 'https://daily-report-api-ero2.onrender.com/api/v1/events/tracked-companies?days=365&scope=all&refresh_missing=true&max_refresh=3')
-          echo "$DATA" | jq '{count,tracked:(.tracked_symbols|length),markets:(.markets_symbols|length),portfolio:(.portfolio_symbols|length),refreshed_symbols,deferred:(.deferred_symbols|length),unresolved:(.unresolved_symbols|length),errors}'
-          echo "$DATA" | jq -e '(.events|type=="array") and (.tracked_symbols|type=="array") and (.markets_symbols|type=="array") and (.portfolio_symbols|type=="array") and (.deferred_symbols|type=="array")'
+          DATA=$(curl --fail --silent --show-error --max-time 180 'https://daily-report-api-ero2.onrender.com/api/v1/events/tracked-companies?days=365&scope=portfolio&refresh_missing=true&max_refresh=60')
+          echo "$DATA" | jq '{count,tracked_symbols,portfolio_symbols,refreshed_symbols,deferred_symbols,unresolved_symbols,errors,events}'
+          echo "$DATA" | jq -e '(.events|type=="array") and (.portfolio_symbols|type=="array")'
 
       - name: Research workspace SNDK
         run: |
