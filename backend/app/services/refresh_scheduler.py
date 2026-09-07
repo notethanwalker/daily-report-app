@@ -1,6 +1,6 @@
 import asyncio
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
 from ..database import SessionLocal
 from ..models import FundamentalCache, HistoricalDailyBar, MarketSnapshot, PortfolioHolding, RefreshQueueItem, UserWatchlistItem, WatchlistItem
@@ -8,144 +8,254 @@ from ..multiuser_models import PortfolioPosition
 from ..providers.twelve_data import SOURCE_URL, TwelveDataProvider
 from ..providers.yahoo_finance import YahooFinanceProvider
 from .alert_engine import evaluate_alerts
-from .calculations import build_market_snapshot
-from .market_data_pipeline import _normalize_twelve, bulk_refresh_us_market, persist_normalized_history, sync_us_symbol_universe
+from .market_data_pipeline import (
+    _normalize_twelve,
+    bulk_refresh_us_market,
+    persist_normalized_history,
+    prune_market_snapshots,
+    prune_normalized_bars,
+    refresh_tracked_market_snapshot,
+    sync_us_symbol_universe,
+)
 from .provider_orchestrator import FRESHNESS_POLICIES, ProviderOrchestrator, is_stale
 from .rotation import SECTORS
 from .validation import build_secondary_metrics, cross_check_market_snapshot
 
-_last_universe_sync=None
-_last_bulk_attempt=None
+_last_universe_sync = None
+_last_bulk_attempt = None
 
 
 def _user_symbols(db):
-    out={r.symbol for r in db.query(WatchlistItem).all()}
-    out|={r.symbol for r in db.query(UserWatchlistItem).all() if r.symbol!="__INITIALIZED__"}
-    out|={r.symbol for r in db.query(PortfolioHolding).all()}
-    out|={r.symbol for r in db.query(PortfolioPosition).all()}
+    out = {r.symbol for r in db.query(WatchlistItem).all()}
+    out |= {r.symbol for r in db.query(UserWatchlistItem).all() if r.symbol != "__INITIALIZED__"}
+    out |= {r.symbol for r in db.query(PortfolioHolding).all()}
+    out |= {r.symbol for r in db.query(PortfolioPosition).all()}
     return sorted(out)
 
 
-def _enqueue(db,symbol,data_class,priority):
-    exists=db.query(RefreshQueueItem).filter(RefreshQueueItem.symbol==symbol,RefreshQueueItem.data_class==data_class,RefreshQueueItem.status.in_(["queued","running"])).first()
-    if not exists:db.add(RefreshQueueItem(symbol=symbol,data_class=data_class,priority=priority,requested_by="scheduler"))
+def _enqueue(db, symbol, data_class, priority):
+    exists = db.query(RefreshQueueItem).filter(
+        RefreshQueueItem.symbol == symbol,
+        RefreshQueueItem.data_class == data_class,
+        RefreshQueueItem.status.in_(["queued", "running"]),
+    ).first()
+    if not exists:
+        db.add(RefreshQueueItem(symbol=symbol, data_class=data_class, priority=priority, requested_by="scheduler"))
 
 
-def _history_needs_refresh(db,symbol,now):
-    count=db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol).count()
-    if count<120:return True
-    latest=db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol).order_by(HistoricalDailyBar.bar_date.desc()).first()
-    if not latest:return True
-    try:last=date.fromisoformat(str(latest.bar_date)[:10])
-    except ValueError:return True
-    age=(now.date()-last).days
-    return age>3 if now.weekday() in (0,1) else age>2
+def _history_needs_refresh(db, symbol, now):
+    count = db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol == symbol).count()
+    if count < 120:
+        return True
+    latest = db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol == symbol).order_by(HistoricalDailyBar.bar_date.desc()).first()
+    if not latest:
+        return True
+    try:
+        last = date.fromisoformat(str(latest.bar_date)[:10])
+    except ValueError:
+        return True
+    age = (now.date() - last).days
+    return age > 3 if now.weekday() in (0, 1) else age > 2
 
 
 def enqueue_stale(db):
-    now=datetime.now(timezone.utc);users=set(_user_symbols(db));macro=set(SECTORS)
+    now = datetime.now(timezone.utc)
+    users = set(_user_symbols(db))
+    macro = set(SECTORS)
     for symbol in sorted(users):
-        market=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol).order_by(MarketSnapshot.retrieved_at.desc()).first();fundamental=db.get(FundamentalCache,symbol)
-        if not market or is_stale(market.retrieved_at,"market",now):_enqueue(db,symbol,"market",FRESHNESS_POLICIES["market"].priority)
-        if _history_needs_refresh(db,symbol,now):_enqueue(db,symbol,"history",FRESHNESS_POLICIES["history"].priority)
-        if not fundamental or is_stale(fundamental.retrieved_at,"fundamentals",now):_enqueue(db,symbol,"fundamentals",FRESHNESS_POLICIES["fundamentals"].priority)
-    for symbol in sorted(macro-users):
-        market=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol).order_by(MarketSnapshot.retrieved_at.desc()).first()
-        if not market or is_stale(market.retrieved_at,"market",now):_enqueue(db,symbol,"market",FRESHNESS_POLICIES["market"].priority)
-        if _history_needs_refresh(db,symbol,now):_enqueue(db,symbol,"history",FRESHNESS_POLICIES["history"].priority)
+        market = db.query(MarketSnapshot).filter(MarketSnapshot.symbol == symbol).order_by(MarketSnapshot.retrieved_at.desc()).first()
+        fundamental = db.get(FundamentalCache, symbol)
+        if not market or is_stale(market.retrieved_at, "market", now):
+            _enqueue(db, symbol, "market", FRESHNESS_POLICIES["market"].priority)
+        if _history_needs_refresh(db, symbol, now):
+            _enqueue(db, symbol, "history", FRESHNESS_POLICIES["history"].priority)
+        if not fundamental or is_stale(fundamental.retrieved_at, "fundamentals", now):
+            _enqueue(db, symbol, "fundamentals", FRESHNESS_POLICIES["fundamentals"].priority)
+    for symbol in sorted(macro - users):
+        market = db.query(MarketSnapshot).filter(MarketSnapshot.symbol == symbol).order_by(MarketSnapshot.retrieved_at.desc()).first()
+        if not market or is_stale(market.retrieved_at, "market", now):
+            _enqueue(db, symbol, "market", FRESHNESS_POLICIES["market"].priority)
+        if _history_needs_refresh(db, symbol, now):
+            _enqueue(db, symbol, "history", FRESHNESS_POLICIES["history"].priority)
     db.commit()
 
 
-def _market_refresh_allowed(now):return now.weekday()<5 and 12<=now.hour<=22
+def _market_refresh_allowed(now):
+    return now.weekday() < 5 and 12 <= now.hour <= 22
 
 
-def _persist_history(db,symbol):
-    raw=TwelveDataProvider().daily_history(symbol,outputsize=750);values=raw.get("values") or raw.get("data") or [];existing={r.bar_date:r for r in db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol).all()};inserted=0
+def _persist_history(db, symbol):
+    # Legacy historical table is still used by portfolio analytics. 400 daily bars
+    # cover its current 365-day needs while avoiding the previous 750-bar pull.
+    raw = TwelveDataProvider().daily_history(symbol, outputsize=400)
+    values = raw.get("values") or raw.get("data") or []
+    existing = {
+        r.bar_date: r
+        for r in db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol == symbol).all()
+    }
+    inserted = 0
     for item in values:
-        dt=str(item.get("datetime") or item.get("date") or "")[:10]
-        try:close=float(item.get("close"));volume=float(item.get("volume") or 0)
-        except (TypeError,ValueError):continue
-        if not dt:continue
-        row=existing.get(dt)
-        if row:row.close=close;row.volume=volume;row.provider="Twelve Data";row.source_url=SOURCE_URL
-        else:db.add(HistoricalDailyBar(symbol=symbol,bar_date=dt,close=close,volume=volume,provider="Twelve Data",source_url=SOURCE_URL));inserted+=1
-    persist_normalized_history(db,_normalize_twelve(symbol,raw))
+        dt = str(item.get("datetime") or item.get("date") or "")[:10]
+        try:
+            close = float(item.get("close"))
+            volume = float(item.get("volume") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not dt:
+            continue
+        row = existing.get(dt)
+        if row:
+            row.close = close
+            row.volume = volume
+            row.provider = "Twelve Data"
+            row.source_url = SOURCE_URL
+        else:
+            db.add(HistoricalDailyBar(
+                symbol=symbol,
+                bar_date=dt,
+                close=close,
+                volume=volume,
+                provider="Twelve Data",
+                source_url=SOURCE_URL,
+            ))
+            inserted += 1
+    # Reuse the exact same provider response for the canonical OHLCV store.
+    persist_normalized_history(db, _normalize_twelve(symbol, raw))
     return inserted
 
 
-def _verified_market_snapshot(symbol):
-    snap=build_market_snapshot(TwelveDataProvider().market_snapshot_raw(symbol))
+def _verified_market_snapshot(db, symbol):
+    snap, refresh_meta = refresh_tracked_market_snapshot(db, symbol)
     try:
-        secondary=build_secondary_metrics(YahooFinanceProvider().daily_history(symbol));snap.update(cross_check_market_snapshot(snap,secondary))
+        secondary = build_secondary_metrics(YahooFinanceProvider().daily_history(symbol))
+        snap.update(cross_check_market_snapshot(snap, secondary))
     except Exception as exc:
-        snap["verification_status"]="primary_only";snap["verification"]={"primary_provider":snap.get("provider"),"secondary_provider":"Yahoo Finance","error":"secondary_provider_unavailable","detail":str(exc)[:160]}
+        snap["verification_status"] = "primary_only"
+        snap["verification"] = {
+            "primary_provider": snap.get("provider"),
+            "secondary_provider": "Yahoo Finance",
+            "error": "secondary_provider_unavailable",
+            "detail": str(exc)[:160],
+        }
+    snap["tracked_refresh"] = refresh_meta
+    latest = db.query(MarketSnapshot).filter(MarketSnapshot.symbol == symbol.upper()).order_by(MarketSnapshot.id.desc()).first()
+    if latest:
+        latest.payload = snap
+        latest.provider = str(snap.get("provider") or "Twelve Data")
+        latest.as_of = str(snap.get("as_of") or latest.as_of)
+        db.commit()
     return snap
 
 
-def process_queue(db,limit=4):
-    now=datetime.now(timezone.utc);q=db.query(RefreshQueueItem).filter(RefreshQueueItem.status=="queued")
-    if not _market_refresh_allowed(now):q=q.filter(RefreshQueueItem.data_class!="market")
-    rows=q.order_by(RefreshQueueItem.priority.desc(),RefreshQueueItem.created_at).limit(limit).all();done=[]
-    for idx,row in enumerate(rows):
-        row.status="running";db.commit()
+def process_queue(db, limit=4):
+    now = datetime.now(timezone.utc)
+    q = db.query(RefreshQueueItem).filter(RefreshQueueItem.status == "queued")
+    if not _market_refresh_allowed(now):
+        q = q.filter(RefreshQueueItem.data_class != "market")
+    rows = q.order_by(RefreshQueueItem.priority.desc(), RefreshQueueItem.created_at).limit(limit).all()
+    done = []
+    for idx, row in enumerate(rows):
+        row.status = "running"
+        db.commit()
         try:
-            if row.data_class=="fundamentals":
-                payload,_=ProviderOrchestrator().fundamentals(row.symbol,allow_alpha=False);cached=db.get(FundamentalCache,row.symbol)
-                if cached:cached.provider=str(payload.get("provider") or "Composite fundamentals");cached.payload=payload;cached.retrieved_at=datetime.now(timezone.utc)
-                else:db.add(FundamentalCache(symbol=row.symbol,provider=str(payload.get("provider") or "Composite fundamentals"),payload=payload,retrieved_at=datetime.now(timezone.utc)))
-            elif row.data_class=="history":_persist_history(db,row.symbol)
+            if row.data_class == "fundamentals":
+                payload, _ = ProviderOrchestrator().fundamentals(row.symbol, allow_alpha=False)
+                cached = db.get(FundamentalCache, row.symbol)
+                if cached:
+                    cached.provider = str(payload.get("provider") or "Composite fundamentals")
+                    cached.payload = payload
+                    cached.retrieved_at = datetime.now(timezone.utc)
+                else:
+                    db.add(FundamentalCache(
+                        symbol=row.symbol,
+                        provider=str(payload.get("provider") or "Composite fundamentals"),
+                        payload=payload,
+                        retrieved_at=datetime.now(timezone.utc),
+                    ))
+            elif row.data_class == "history":
+                _persist_history(db, row.symbol)
             else:
-                snap=_verified_market_snapshot(row.symbol);db.add(MarketSnapshot(symbol=row.symbol,as_of=str(snap.get("as_of") or ""),provider=str(snap.get("provider") or "Twelve Data"),payload=snap))
-            row.status="complete";row.error=None;db.commit();done.append({"symbol":row.symbol,"data_class":row.data_class})
+                _verified_market_snapshot(db, row.symbol)
+            row.status = "complete"
+            row.error = None
+            db.commit()
+            done.append({"symbol": row.symbol, "data_class": row.data_class})
         except Exception as exc:
-            db.rollback();row=db.get(RefreshQueueItem,row.id);row.status="failed";row.error=str(exc)[:500];db.commit()
-        if idx<len(rows)-1:time.sleep(8.2)
+            db.rollback()
+            row = db.get(RefreshQueueItem, row.id)
+            row.status = "failed"
+            row.error = str(exc)[:500]
+            db.commit()
+        if idx < len(rows) - 1:
+            time.sleep(8.2)
     return done
 
 
 def _sync_universe_if_due(db):
     global _last_universe_sync
-    now=datetime.now(timezone.utc)
-    if _last_universe_sync is None or (now-_last_universe_sync).total_seconds()>=12*60*60:
-        sync_us_symbol_universe(db);_last_universe_sync=now
+    now = datetime.now(timezone.utc)
+    if _last_universe_sync is None or (now - _last_universe_sync).total_seconds() >= 12 * 60 * 60:
+        sync_us_symbol_universe(db)
+        _last_universe_sync = now
 
 
 def run_cycle():
-    db=SessionLocal()
+    db = SessionLocal()
     try:
-        enqueue_stale(db);process_queue(db,4)
-        try:_sync_universe_if_due(db)
-        except Exception:db.rollback()
+        enqueue_stale(db)
+        process_queue(db, 4)
+        try:
+            _sync_universe_if_due(db)
+        except Exception:
+            db.rollback()
+        # Cheap bounded cleanup; historical analysis lives in FeatureSnapshot and daily bars.
+        try:
+            prune_market_snapshots(db)
+            prune_normalized_bars(db)
+        except Exception:
+            db.rollback()
         from ..routers.intelligence import _refresh_feature
         for symbol in _user_symbols(db):
-            try:_refresh_feature(db,symbol)
-            except Exception:db.rollback()
+            try:
+                _refresh_feature(db, symbol)
+            except Exception:
+                db.rollback()
         evaluate_alerts(db)
-    except Exception:db.rollback()
-    finally:db.close()
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
 
 
 def run_bulk_market_cycle():
     global _last_bulk_attempt
-    now=datetime.now(timezone.utc)
-    if _last_bulk_attempt is not None and (now-_last_bulk_attempt).total_seconds()<18*60*60:return {"status":"skipped","reason":"bulk refresh attempted within 18 hours"}
-    _last_bulk_attempt=now;db=SessionLocal()
+    now = datetime.now(timezone.utc)
+    if _last_bulk_attempt is not None and (now - _last_bulk_attempt).total_seconds() < 18 * 60 * 60:
+        return {"status": "skipped", "reason": "bulk refresh attempted within 18 hours"}
+    _last_bulk_attempt = now
+    db = SessionLocal()
     try:
-        try:_sync_universe_if_due(db)
-        except Exception:db.rollback()
+        try:
+            _sync_universe_if_due(db)
+        except Exception:
+            db.rollback()
         return bulk_refresh_us_market(db)
     except Exception as exc:
-        db.rollback();return {"status":"failed","error":str(exc)[:500]}
-    finally:db.close()
+        db.rollback()
+        return {"status": "failed", "error": str(exc)[:500]}
+    finally:
+        db.close()
 
 
 async def scheduler_loop():
     while True:
-        await asyncio.to_thread(run_cycle);await asyncio.sleep(15*60)
+        await asyncio.to_thread(run_cycle)
+        await asyncio.sleep(15 * 60)
 
 
 async def bulk_market_loop():
-    # Kept separate so a large archive download never blocks tracked-symbol refreshes.
+    # Separate loop means archive work cannot block watchlist/portfolio freshness.
     await asyncio.sleep(60)
     while True:
-        await asyncio.to_thread(run_bulk_market_cycle);await asyncio.sleep(6*60*60)
+        await asyncio.to_thread(run_bulk_market_cycle)
+        await asyncio.sleep(6 * 60 * 60)
