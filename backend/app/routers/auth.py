@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from ..auth_models import AuthAccount, AuthSession
 from ..database import get_db
-from ..services.auth_mailer import mail_configured, notify_owner_registration, notify_user_decision
 from ..services.auth_security import SESSION_COOKIE, SESSION_DAYS, account_from_session, create_session, decrypt_text, email_lookup, encrypt_text, ensure_user_defaults, hash_password, normalize_email, revoke_all_sessions, revoke_session, safe_account, validate_password, verify_password
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -58,9 +57,8 @@ def register(body: Credentials, request: Request, db: Session = Depends(get_db))
     lookup=email_lookup(email);existing=db.query(AuthAccount).filter(AuthAccount.email_lookup==lookup).first()
     if not existing:
         account=AuthAccount(id="usr_"+secrets.token_hex(16),email_ciphertext=encrypt_text(email),email_lookup=lookup,password_hash=hash_password(body.password),name_ciphertext=None,role="approved_user",status="pending",enabled=False)
-        db.add(account);db.commit();db.refresh(account);notify_owner_registration(db,account)
-    elif existing.status=="pending":notify_owner_registration(db,existing)
-    return {"status":"pending","message":"If this address is eligible, the account request has been submitted for administrator approval."}
+        db.add(account);db.commit()
+    return {"status":"pending","message":"Account request submitted. The administrator can approve or deny it from Settings."}
 
 @router.post("/login")
 def login(body: Credentials, request: Request, response: Response, db: Session = Depends(get_db)):
@@ -109,16 +107,16 @@ def update_password(body: PasswordUpdate, request: Request, response: Response, 
 @router.get("/admin/pending")
 def pending_accounts(request: Request, db: Session = Depends(get_db)):
     _owner_or_403(request,db);rows=db.query(AuthAccount).filter(AuthAccount.status=="pending").order_by(AuthAccount.created_at.asc()).all()
-    return {"accounts":[{"id":row.id,"email":decrypt_text(row.email_ciphertext),"created_at":row.created_at.isoformat() if row.created_at else None} for row in rows],"approval_email_notifications_configured":mail_configured()}
+    return {"accounts":[{"id":row.id,"email":decrypt_text(row.email_ciphertext),"created_at":row.created_at.isoformat() if row.created_at else None} for row in rows]}
 @router.post("/admin/accounts/{user_id}/approve")
 def approve_account(user_id: str, request: Request, db: Session = Depends(get_db)):
     _owner_or_403(request,db);account=db.get(AuthAccount,user_id)
     if not account:raise HTTPException(404,"Account request not found")
-    account.status="approved";account.enabled=True;account.approved_at=datetime.now(timezone.utc);db.commit();ensure_user_defaults(db,account);notification_sent=notify_user_decision(db,account,True)
-    return {"status":"approved","id":account.id,"notification_sent":notification_sent}
+    account.status="approved";account.enabled=True;account.approved_at=datetime.now(timezone.utc);db.commit();ensure_user_defaults(db,account)
+    return {"status":"approved","id":account.id}
 @router.post("/admin/accounts/{user_id}/reject")
 def reject_account(user_id: str, request: Request, db: Session = Depends(get_db)):
     _owner_or_403(request,db);account=db.get(AuthAccount,user_id)
     if not account:raise HTTPException(404,"Account request not found")
-    account.status="rejected";account.enabled=False;db.commit();db.query(AuthSession).filter(AuthSession.user_id==account.id).delete(synchronize_session=False);db.commit();notification_sent=notify_user_decision(db,account,False)
-    return {"status":"rejected","id":account.id,"notification_sent":notification_sent}
+    account.status="rejected";account.enabled=False;db.commit();db.query(AuthSession).filter(AuthSession.user_id==account.id).delete(synchronize_session=False);db.commit()
+    return {"status":"rejected","id":account.id}
