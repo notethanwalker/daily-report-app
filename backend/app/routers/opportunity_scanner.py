@@ -10,11 +10,12 @@ from ..auth_models import AuthAccount
 from ..database import SessionLocal, get_db
 from ..models import PortfolioHolding, UserWatchlistItem
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
+from ..normalized_market_models import MarketPipelineState
 from ..services.market_data_pipeline import pipeline_status
 from ..services.opportunity_scanner import scan_cached_market
 from ..services.stooq_manual_import import import_stooq_archive
 from ..services.stooq_upload_session import (
-    cleanup_upload,
+    cleanup_archive_bytes,
     create_upload,
     finalize_upload,
     mark_imported,
@@ -37,6 +38,11 @@ def _require_owner(db: Session, user: str) -> None:
         raise HTTPException(status_code=403, detail="Owner access required")
 
 
+def _state(db: Session, key: str) -> dict:
+    row = db.get(MarketPipelineState, key)
+    return dict(row.payload or {}) if row else {}
+
+
 def _run_stooq_import(upload_id: str, archive_path: str, archive_name: str) -> None:
     db = SessionLocal()
     try:
@@ -47,8 +53,7 @@ def _run_stooq_import(upload_id: str, archive_path: str, archive_name: str) -> N
         mark_imported(upload_id, error=str(exc)[:1000])
     finally:
         db.close()
-        # The database now contains the canonical history; the ZIP itself is not retained.
-        cleanup_upload(upload_id)
+        cleanup_archive_bytes(upload_id)
 
 
 def _tracked_symbols(db: Session, user: str) -> list[str]:
@@ -149,7 +154,18 @@ def market_opportunities(
 @router.get("/data-pipeline")
 def opportunity_data_pipeline(db: Session = Depends(get_db), user: str = Depends(current_user)):
     _ = user
-    return pipeline_status(db)
+    result = pipeline_status(db)
+    canonical = _state(db, "stooq_manual_archive")
+    incremental = _state(db, "opportunity_incremental")
+    result["canonical_stooq_archive"] = canonical
+    result["incremental_freshness"] = incremental
+    result["canonical_history_ready"] = canonical.get("status") == "ready" and bool(canonical.get("canonical"))
+    result["effective_history_policy"] = {
+        "historical_authority": "Stooq manual archive",
+        "incremental_daily_freshness": "Yahoo Finance",
+        "tracked_symbol_freshness": "Twelve Data with Yahoo verification",
+    }
+    return result
 
 
 @router.post("/stooq-archive/init")
