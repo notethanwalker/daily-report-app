@@ -1,0 +1,31 @@
+name: Final Events Research Smoke
+
+on:
+  push:
+    paths:
+      - .github/workflows/smoke-events-research-final.yml
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Main calendar has BLS-class releases via fallback
+        run: |
+          set -euo pipefail
+          DATA=$(curl --fail --silent --show-error --max-time 120 'https://daily-report-api-ero2.onrender.com/api/v1/events?days=365&sort=date&order=asc&limit=1200')
+          echo "$DATA" | jq '{count,fred:[.providers[]|select(.provider=="FRED BLS calendar fallback")],cpi:[.events[]|select(.title|ascii_downcase|contains("consumer price index"))][0:3],jobs:[.events[]|select(.title|ascii_downcase|contains("employment situation"))][0:3],errors}'
+          echo "$DATA" | jq -e '(.count >= 70) and any(.providers[]; .provider=="FRED BLS calendar fallback" and .count>0) and any(.events[]; (.title|ascii_downcase|contains("consumer price index"))) and any(.events[]; (.title|ascii_downcase|contains("employment situation")))'
+
+      - name: Portfolio company catalysts populate
+        run: |
+          set -euo pipefail
+          DATA=$(curl --fail --silent --show-error --max-time 180 'https://daily-report-api-ero2.onrender.com/api/v1/events/tracked-companies?days=365&scope=portfolio&refresh_missing=true&max_refresh=60')
+          echo "$DATA" | jq '{count,portfolio_symbols,refreshed_symbols,unresolved_symbols,events}'
+          echo "$DATA" | jq -e '(.count > 0) and any(.events[]; .symbol=="NVDA") and any(.events[]; .date_status=="estimated" or .date_status=="reported")'
+
+      - name: Research SNDK uses v4 workspace
+        run: |
+          set -euo pipefail
+          DATA=$(curl --fail --silent --show-error --max-time 120 'https://daily-report-api-ero2.onrender.com/api/v1/security/SNDK/workspace')
+          echo "$DATA" | jq '{symbol,data_state,hydrated,history_state,price:.market.price,as_of:.market.as_of}'
+          echo "$DATA" | jq -e '.symbol=="SNDK" and (.market.price!=null) and (.data_state=="stored" or .data_state=="hydrated_on_demand") and (.history_state|type=="object")'
