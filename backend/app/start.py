@@ -8,6 +8,7 @@ from .database import Base, SessionLocal, engine
 from . import main as stable
 from .main import app
 from . import auth_models as _auth_models
+from .auth_models import AuthAccount
 from . import v2_models as _v2_models
 from . import v3_models as _v3_models
 from .routers.overrides import router as override_router
@@ -59,6 +60,10 @@ Base.metadata.create_all(bind=engine)
 _bootstrap_db=SessionLocal()
 try:
     _owner=bootstrap_admin(_bootstrap_db)
+    if not _owner:
+        _owner=_bootstrap_db.query(AuthAccount).filter(
+            AuthAccount.role=="owner",AuthAccount.status=="approved",AuthAccount.enabled.is_(True)
+        ).order_by(AuthAccount.created_at.asc()).first()
     if _owner:
         # Existing authorization code uses OWNER_EMAIL as its subject key. From this
         # point forward that value is an opaque user ID, not an email address.
@@ -90,19 +95,14 @@ app.include_router(macro_v3_router)
 app.include_router(events_v3_router)
 app.include_router(events_v4_router)
 
-# Force the on-demand-hydrating Research workspace to be authoritative even if a
-# legacy router later reintroduces the same path.
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/security/{symbol}/workspace")]
 app.add_api_route("/api/v1/security/{symbol}/workspace",security_workspace_v4,methods=["GET"],tags=["research-v4"],name="security_workspace_v4_authoritative")
 app.router.routes.insert(0,app.router.routes.pop())
 
-# Keep the expanded event catalog authoritative over older event handlers.
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/events")]
 app.add_api_route("/api/v1/events",events_v3_handler,methods=["GET"],tags=["events-v3"],name="events_v3_authoritative")
 app.router.routes.insert(0,app.router.routes.pop())
 
-# Reconciled routes supersede legacy primary-only market refreshes and the raw
-# unusual-options feed. Specific market subroutes remain untouched.
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/markets/{symbol}","/api/v1/flow/recent")]
 app.include_router(reconciliation_router)
 
