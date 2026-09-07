@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Index, Integer, JSON, String, UniqueConstraint, func
+from sqlalchemy import DateTime, Float, Integer, JSON, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -8,10 +8,9 @@ from .database import Base
 
 class NormalizedDailyBar(Base):
     __tablename__ = "normalized_daily_bars"
-    __table_args__ = (
-        UniqueConstraint("symbol", "bar_date", name="uq_normalized_daily_symbol_date"),
-        Index("ix_normalized_daily_symbol_date", "symbol", "bar_date"),
-    )
+    # The unique constraint creates the composite btree needed by symbol/date queries;
+    # a second explicit index would duplicate storage and write amplification.
+    __table_args__ = (UniqueConstraint("symbol", "bar_date", name="uq_normalized_daily_symbol_date"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
