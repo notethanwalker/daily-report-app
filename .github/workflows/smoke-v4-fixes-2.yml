@@ -9,18 +9,15 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe Yahoo quote earnings fields
+      - name: Probe Nasdaq forward earnings endpoints
         continue-on-error: true
         run: |
-          echo '--- Yahoo quote ---'
-          curl -L --silent --show-error --max-time 30 -A 'Mozilla/5.0' 'https://query1.finance.yahoo.com/v7/finance/quote?symbols=NVDA' | jq '{error:.quoteResponse.error,result:(.quoteResponse.result[0] | {symbol,earningsTimestamp,earningsTimestampStart,earningsTimestampEnd,dividendDate,exDividendDate})}'
-          echo '--- Yahoo quoteSummary ---'
-          curl -L --silent --show-error --max-time 30 -A 'Mozilla/5.0' 'https://query2.finance.yahoo.com/v10/finance/quoteSummary/NVDA?modules=calendarEvents' | jq '{error:.quoteSummary.error,result:(.quoteSummary.result[0].calendarEvents // null)}'
-
-      - name: Probe Nasdaq company/calendar endpoints
-        continue-on-error: true
-        run: |
-          echo '--- Nasdaq earnings surprise ---'
-          curl -L --silent --show-error --max-time 30 -H 'Accept: application/json, text/plain, */*' -H 'User-Agent: Mozilla/5.0' -H 'Origin: https://www.nasdaq.com' -H 'Referer: https://www.nasdaq.com/' 'https://api.nasdaq.com/api/company/NVDA/earnings-surprise' | jq '{status:.status,message:.message,data:(.data | {symbol,earningsSurpriseTable})}'
-          echo '--- Nasdaq today calendar sample ---'
-          curl -L --silent --show-error --max-time 30 -H 'Accept: application/json, text/plain, */*' -H 'User-Agent: Mozilla/5.0' -H 'Origin: https://www.nasdaq.com' -H 'Referer: https://www.nasdaq.com/' 'https://api.nasdaq.com/api/calendar/earnings?date=2026-09-07' | jq '{status:.status,count:(.data.rows|length),sample:(.data.rows[:3])}'
+          H=(-H 'Accept: application/json, text/plain, */*' -H 'User-Agent: Mozilla/5.0' -H 'Origin: https://www.nasdaq.com' -H 'Referer: https://www.nasdaq.com/')
+          echo '--- analyst earnings forecast ---'
+          curl -L --silent --show-error --max-time 30 "${H[@]}" 'https://api.nasdaq.com/api/analyst/NVDA/earnings-forecast' | jq '{status:.status,data:.data}'
+          echo '--- company earnings forecast ---'
+          curl -L --silent --show-error --max-time 30 "${H[@]}" 'https://api.nasdaq.com/api/company/NVDA/earnings-forecast' | jq '{status:.status,data:.data}'
+          echo '--- calendar symbol parameter ---'
+          curl -L --silent --show-error --max-time 30 "${H[@]}" 'https://api.nasdaq.com/api/calendar/earnings?symbol=NVDA' | jq '{status:.status,data:.data}'
+          echo '--- info endpoint ---'
+          curl -L --silent --show-error --max-time 30 "${H[@]}" 'https://api.nasdaq.com/api/quote/NVDA/info?assetclass=stocks' | jq '{status:.status,data:(.data | {symbol,companyName,primaryData,secondaryData})}'
