@@ -33,12 +33,41 @@ class TwelveDataProvider:
         return data
 
     def daily_history(self, symbol: str, outputsize: int = 260) -> dict:
-        return self._get("/time_series", {"symbol": symbol,"interval": "1day","outputsize": outputsize,"order": "asc"})
+        return self._get("/time_series", {
+            "symbol": symbol,
+            "interval": "1day",
+            "outputsize": outputsize,
+            "order": "asc",
+        })
+
+    def latest_daily_bars(self, symbol: str, outputsize: int = 3) -> dict:
+        """Small tracked-symbol refresh; historical indicators come from normalized local bars."""
+        return self.daily_history(symbol, outputsize=max(2, min(outputsize, 10)))
 
     def symbol_search(self, query: str, outputsize: int = 8) -> dict:
-        data = self._get("/symbol_search", {"symbol": query,"outputsize": outputsize})
+        data = self._get("/symbol_search", {"symbol": query, "outputsize": outputsize})
         rows = data.get("data") or []
-        return {"query": query,"provider": self.name,"source_url": SOURCE_URL,"results": [{"symbol": row.get("symbol"),"name": row.get("instrument_name") or row.get("name"),"exchange": row.get("exchange"),"country": row.get("country"),"currency": row.get("currency"),"type": row.get("instrument_type") or row.get("type")} for row in rows if row.get("symbol")],"retrieved_at": datetime.now(timezone.utc).isoformat()}
+        return {
+            "query": query,
+            "provider": self.name,
+            "source_url": SOURCE_URL,
+            "results": [{
+                "symbol": row.get("symbol"),
+                "name": row.get("instrument_name") or row.get("name"),
+                "exchange": row.get("exchange"),
+                "country": row.get("country"),
+                "currency": row.get("currency"),
+                "type": row.get("instrument_type") or row.get("type"),
+            } for row in rows if row.get("symbol")],
+            "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     def market_snapshot_raw(self, symbol: str) -> dict:
-        return {"history": self.daily_history(symbol, outputsize=5000),"provider": self.name,"source_url": SOURCE_URL,"retrieved_at": datetime.now(timezone.utc).isoformat()}
+        # Compatibility fallback only. 260 bars are enough for MA200, Williams %R,
+        # 20-day MA slope and approach-velocity calculations; 5,000 bars were wasteful.
+        return {
+            "history": self.daily_history(symbol, outputsize=260),
+            "provider": self.name,
+            "source_url": SOURCE_URL,
+            "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        }
