@@ -25,6 +25,7 @@ from .routers.research_v4 import security_workspace_v4, router as research_v4_ro
 from .routers.decision_support import router as decision_support_router
 from .routers.analytics_v3 import router as analytics_v3_router
 from .routers.macro_v3 import router as macro_v3_router
+from .routers.reconciliation import router as reconciliation_router
 from .routers import portfolio_access as access_policy
 from .routers.portfolio_access import _permissions, router as portfolio_access_router, verify_db_token
 from .services.refresh_scheduler import scheduler_loop
@@ -77,6 +78,11 @@ app.router.routes.insert(0,app.router.routes.pop())
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/events")]
 app.add_api_route("/api/v1/events",events_v3_handler,methods=["GET"],tags=["events-v3"],name="events_v3_authoritative")
 app.router.routes.insert(0,app.router.routes.pop())
+
+# Reconciled routes supersede legacy primary-only market refreshes and the raw
+# unusual-options feed. Specific market subroutes remain untouched.
+app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/markets/{symbol}","/api/v1/flow/recent")]
+app.include_router(reconciliation_router)
 
 
 def _allowed():return {x.strip().lower() for x in os.getenv("ALLOWED_USER_EMAILS","").split(",") if x.strip()}
