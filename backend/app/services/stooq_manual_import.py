@@ -88,13 +88,32 @@ def _import_records(db: Session, records, archive_meta: dict, archive_name: str,
 
     bar_buffer: list[dict] = []
     snapshot_buffer: list[MarketSnapshot] = []
-    bar_batch = int(os.getenv("MARKET_BAR_UPSERT_BATCH", "10000"))
-    snapshot_batch = int(os.getenv("MARKET_SNAPSHOT_BATCH", "500"))
+    # Keep batches modest for Render free Postgres. 10k-row INSERT/ON CONFLICT statements can
+    # stall long enough that the owner upload appears dead before the first commit is visible.
+    bar_batch = int(os.getenv("STOOQ_IMPORT_BAR_BATCH", "1000"))
+    snapshot_batch = int(os.getenv("STOOQ_IMPORT_SNAPSHOT_BATCH", "100"))
+    progress_every = int(os.getenv("STOOQ_IMPORT_PROGRESS_EVERY", "250"))
 
     seen = matched = exact_matches = alias_matches = snapshots = 0
     latest_bar_date = archive_meta.get("archive_latest_bar_date")
     earliest_history_date = archive_meta.get("archive_history_start_date")
     unmatched_examples: list[str] = []
+    started_at = datetime.now(timezone.utc).isoformat()
+
+    _set_state(db, CANONICAL_STATE_KEY, {
+        "status": "importing",
+        "canonical": False,
+        "provider": "Stooq",
+        "archive_name": archive_name,
+        "archive_sha256": archive_meta.get("source_archive_sha256") or package_sha256,
+        "package_sha256": package_sha256,
+        "package_format": archive_meta.get("format") or "raw-stooq-zip",
+        "package_symbols": archive_meta.get("symbols"),
+        "started_at": started_at,
+        "seen": 0,
+        "matched": 0,
+        "snapshots_written": 0,
+    })
 
     def flush_bars():
         nonlocal bar_buffer
@@ -107,6 +126,26 @@ def _import_records(db: Session, records, archive_meta: dict, archive_name: str,
         if snapshot_buffer:
             db.add_all(snapshot_buffer)
             snapshot_buffer = []
+
+    def commit_progress():
+        flush_bars()
+        flush_snapshots()
+        db.commit()
+        _set_state(db, CANONICAL_STATE_KEY, {
+            "status": "importing",
+            "canonical": False,
+            "provider": "Stooq",
+            "archive_name": archive_name,
+            "archive_sha256": archive_meta.get("source_archive_sha256") or package_sha256,
+            "package_sha256": package_sha256,
+            "package_format": archive_meta.get("format") or "raw-stooq-zip",
+            "package_symbols": archive_meta.get("symbols"),
+            "started_at": started_at,
+            "seen": seen,
+            "matched": matched,
+            "snapshots_written": snapshots,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
 
     for data in records:
         seen += 1
@@ -160,12 +199,10 @@ def _import_records(db: Session, records, archive_meta: dict, archive_name: str,
             ))
             snapshots += 1
 
-        if len(bar_buffer) >= bar_batch:
-            flush_bars()
-            db.commit()
-        if len(snapshot_buffer) >= snapshot_batch:
-            flush_snapshots()
-            db.commit()
+        # Bound both SQL statement size and transaction duration. Progress commits also make
+        # imports observable and resumable in practice after a failed first attempt.
+        if len(bar_buffer) >= bar_batch or len(snapshot_buffer) >= snapshot_batch or matched % progress_every == 0:
+            commit_progress()
 
     flush_bars()
     flush_snapshots()
@@ -179,7 +216,7 @@ def _import_records(db: Session, records, archive_meta: dict, archive_name: str,
         "archive_name": archive_name,
         "archive_sha256": archive_meta.get("source_archive_sha256") or package_sha256,
         "package_sha256": package_sha256,
-        "archive_bytes": archive_meta.get("source_archive_bytes") or os.path.getsize(archive_name) if os.path.exists(archive_name) else None,
+        "archive_bytes": archive_meta.get("source_archive_bytes") or (os.path.getsize(archive_name) if os.path.exists(archive_name) else None),
         "package_bytes": archive_meta.get("package_bytes"),
         "archive_data_files": archive_meta.get("symbols") or archive_meta.get("data_files"),
         "archive_latest_bar_date": latest_bar_date,
@@ -191,6 +228,7 @@ def _import_records(db: Session, records, archive_meta: dict, archive_name: str,
         "snapshots_written": snapshots,
         "coverage_percent": round((matched / universe) * 100.0, 2) if universe else 0.0,
         "unmatched_archive_examples": unmatched_examples,
+        "started_at": started_at,
         "imported_at": datetime.now(timezone.utc).isoformat(),
         "freshness_role": "canonical historical backbone; incremental providers may append newer bars",
         "package_format": archive_meta.get("format") or "raw-stooq-zip",
