@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 INTELLIGENCE = (ROOT / "backend/app/routers/intelligence.py").read_text(encoding="utf-8")
 START = (ROOT / "backend/app/start.py").read_text(encoding="utf-8")
 USER_STATE = (ROOT / "backend/app/routers/user_state.py").read_text(encoding="utf-8")
+OPPORTUNITY_ROUTER = (ROOT / "backend/app/routers/opportunity_scanner.py").read_text(encoding="utf-8")
 THESIS_UI = (ROOT / "web/app/intelligence-suite.tsx").read_text(encoding="utf-8")
 OPPORTUNITY_UI = (ROOT / "web/app/opportunities-workspace-v4.tsx").read_text(encoding="utf-8")
 
@@ -31,10 +32,15 @@ class PrivateScopeContract(unittest.TestCase):
     def test_watchlist_routes_are_user_scoped(self):
         self.assertIn("UserWatchlistItem.user_email==user", USER_STATE)
 
-    def test_opportunities_use_authenticated_watchlist_scope(self):
-        self.assertIn('@router.get("/opportunities/enhanced")', USER_STATE)
-        self.assertIn("for symbol in _symbols(db,user)", USER_STATE)
-        self.assertIn('api("/api/v1/opportunities/enhanced")', OPPORTUNITY_UI)
+    def test_opportunities_use_authenticated_tracked_scope_and_shared_market_cache(self):
+        self.assertIn('@router.get("/tracked")', OPPORTUNITY_ROUTER)
+        self.assertIn("UserWatchlistItem.user_email == user", OPPORTUNITY_ROUTER)
+        self.assertIn("PortfolioHolding.user_email == user", OPPORTUNITY_ROUTER)
+        self.assertIn("PortfolioDefinition.user_email == user", OPPORTUNITY_ROUTER)
+        self.assertIn('@router.get("/market-scan")', OPPORTUNITY_ROUTER)
+        self.assertIn("user: str = Depends(current_user)", OPPORTUNITY_ROUTER)
+        self.assertIn('api("/api/v1/opportunities/tracked")', OPPORTUNITY_UI)
+        self.assertIn('api("/api/v1/opportunities/market-scan?limit=200")', OPPORTUNITY_UI)
         self.assertNotIn('api("/api/v1/opportunities?limit=200")', OPPORTUNITY_UI)
 
     def test_thesis_draft_does_not_ship_with_live_example_values(self):
