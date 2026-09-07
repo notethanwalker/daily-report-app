@@ -38,7 +38,7 @@ from .routers.auth import router as auth_router
 from .routers import portfolio_access as access_policy
 from .routers.portfolio_access import _permissions, router as portfolio_access_router
 from .services.auth_security import SESSION_COOKIE, account_from_session, bootstrap_admin
-from .services.refresh_scheduler import bulk_market_loop, scheduler_loop
+from .services.refresh_scheduler import bulk_market_loop, scheduler_loop, yahoo_bootstrap_loop
 from .services.rotation import SECTORS
 from .services.macro_universe import EXPANDED_MACRO
 
@@ -113,4 +113,4 @@ async def authenticated_session_gate(request,call_next):
 
 @app.on_event("startup")
 async def start_refresh_scheduler():
-    asyncio.create_task(scheduler_loop());asyncio.create_task(bulk_market_loop())
+    asyncio.create_task(scheduler_loop());asyncio.create_task(bulk_market_loop());asyncio.create_task(yahoo_bootstrap_loop())
