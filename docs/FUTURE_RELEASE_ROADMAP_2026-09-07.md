@@ -99,21 +99,21 @@ Product decision still open: Report snapshots currently remain shared market-dat
 
 ## 8. Alert templates — PARTIALLY IMPLEMENTED, CAPABILITY-AWARE
 
-Immediately executable templates:
-- 100MA proximity
-- 200MA proximity
+Immediately executable template:
 - unusual relative volume
 
 Designed but intentionally disabled until evaluator support exists:
+- 100MA proximity — needs absolute-distance or crossing/transition semantics; signed distance alone is not true proximity
+- 200MA proximity — same limitation
 - upcoming earnings/catalyst window
 - persistent flow cluster
 - portfolio concentration
 - regime transition
 
 Recommended changes:
-- Extend the scheduler with typed evaluators for non-ticker state instead of faking them through a placeholder ticker.
+- Extend the scheduler with typed evaluators for absolute-distance, transitions and non-ticker state instead of approximating them with simple numeric rules.
 - Add template-specific threshold controls and preview the current value before creating the rule.
-- Add “notify once per transition” semantics for regime changes instead of numeric threshold comparison.
+- Add “notify once per transition” semantics for moving-average crosses and regime changes instead of continuous threshold firing.
 
 ## 9. Mobile-first dense-data views — IMPLEMENTED BASELINE
 
@@ -135,7 +135,7 @@ Recommended changes:
 Ship the current tranche: portfolio intelligence, score explanations, flow clustering, impact mapping, regime confidence, first-stage layouts, snapshot compare/export, capability-aware alert templates and mobile hardening.
 
 ### Release B — Typed alert engine + dashboard expansion
-Add catalyst/cluster/portfolio/regime evaluators, layout sizing/duplication/reset, all Report cards, and source-age persistence.
+Add absolute-distance/transition/catalyst/cluster/portfolio/regime evaluators, layout sizing/duplication/reset, all Report cards, and source-age persistence.
 
 ### Release C — Higher-order analytics
 Add factor proxies, user-selectable benchmarks/scenarios, strategy-shape flow clustering, macro transmission graphs and multidimensional regime classification.
