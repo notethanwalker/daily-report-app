@@ -1,5 +1,5 @@
 "use client";
-import {useEffect,useRef,useState} from "react";
+import {useEffect,useState} from "react";
 import {createPortal} from "react-dom";
 import {AlertEventPanel,SecurityDrawer} from "./intelligence-extras";
 import PortfolioWorkspaceV3 from "./portfolio-workspace-v3";
@@ -15,11 +15,10 @@ import {AdvancedAlerts,TabDisclosureGuide} from "./intelligence-v2-panels";
 import {AdminUserPanel,applyUserVisibility,UserCustomizationPanel,useUserAccess} from "./user-customization";
 import {closeDropdowns,type NavigationTarget} from "./navigation-context";
 
-function AuthRefreshBridge(){const last=useRef("");useEffect(()=>{const read=()=>`${localStorage.getItem("dailyReportUserEmail")||""}|${localStorage.getItem("dailyReportUserToken")||""}`;last.current=read();const id=setInterval(()=>{const next=read();if(next!==last.current){last.current=next;window.dispatchEvent(new Event("daily-report-auth-changed"))}},500);return()=>clearInterval(id)},[]);return null}
 const REPLACEMENTS=new Set(["Portfolio","Events","Opportunities","Research","Alerts","Macro","Large Flow"]);
 const VALID=/^[A-Z][A-Z0-9.\-]{0,9}$/;
 function inferActiveSymbol(){const a=document.activeElement as HTMLElement|null;if(!a)return undefined;const explicit=a.closest<HTMLElement>("[data-security-symbol]")?.dataset.securitySymbol;if(explicit&&VALID.test(explicit))return explicit;const root=a.closest<HTMLElement>(".portfolio-holding-v3,.opportunity-v3-card,.event-v2-item,.change-row,.flow-grid-table tr,.market-click-row");const text=(root?.querySelector("strong")?.textContent||"").trim().split(/\s|\//)[0].toUpperCase();return VALID.test(text)?text:undefined}
-function applyLegacyContext(target:NavigationTarget){if(!target.symbol)return;const s=target.symbol;const run=()=>{if(target.tab==="Markets"){const row=Array.from(document.querySelectorAll<HTMLElement>(".market-click-row")).find(r=>(r.querySelector("strong")?.textContent||"").trim()===s);if(row&&row.getAttribute("aria-expanded")!=="true")row.click();row?.scrollIntoView({block:"center",behavior:"smooth"})}if(target.tab==="Large Flow"){const input=document.querySelector<HTMLInputElement>(".flow-filter-v3 input");if(input){const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")?.set;setter?.call(input,target.filter||s);input.dispatchEvent(new Event("input",{bubbles:true}));input.dispatchEvent(new Event("change",{bubbles:true}))}}};setTimeout(run,60);setTimeout(run,220)}
+function applyLegacyContext(target:NavigationTarget){if(!target.symbol)return;const s=target.symbol;const run=()=>{if(target.tab==="Markets"){const row=Array.from(document.querySelectorAll<HTMLElement>(".market-click-row")).find(r=>(r.querySelector("strong")?.textContent||"").trim()===s);row?.click();row?.scrollIntoView({block:"center",behavior:"smooth"})}if(target.tab==="Large Flow"){const input=document.querySelector<HTMLInputElement>(".flow-filter-v3 input");if(input){const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")?.set;setter?.call(input,target.filter||s);input.dispatchEvent(new Event("input",{bubbles:true}));input.dispatchEvent(new Event("change",{bubbles:true}))}}};setTimeout(run,60);setTimeout(run,220)}
 
 export default function IntelligenceAugmentations(){
  const[baseActive,setBaseActive]=useState(""),[commandActive,setCommandActive]=useState(false),[mainTarget,setMainTarget]=useState<Element|null>(null),[tabTarget,setTabTarget]=useState<Element|null>(null),[navTarget,setNavTarget]=useState<Element|null>(null),[navContext,setNavContext]=useState<(NavigationTarget&{nonce:number})|null>(null);const{data:access,reload}=useUserAccess();
@@ -32,7 +31,7 @@ export default function IntelligenceAugmentations(){
  const upgraded=mainTarget?(commandActive?createPortal(<CommandCenterPanel/>,mainTarget):baseActive==="Portfolio"?createPortal(<PortfolioWorkspaceV3/>,mainTarget):baseActive==="Events"?createPortal(<EventsWorkspaceV4 navigation={navContext}/>,mainTarget):baseActive==="Opportunities"?createPortal(<OpportunitiesWorkspaceV4 navigation={navContext}/>,mainTarget):baseActive==="Research"?createPortal(<ResearchWorkspaceV4 navigation={navContext}/>,mainTarget):baseActive==="Alerts"?createPortal(<AdvancedAlerts/>,mainTarget):baseActive==="Macro"?createPortal(<MacroWorkspaceV4 navigation={navContext}/>,mainTarget):baseActive==="Large Flow"?createPortal(<LargeFlowWorkspaceV3/>,mainTarget):null):null;
  const nav=navTarget?createPortal(<GroupedNavigation nav={navTarget} active={baseActive} commandActive={commandActive} access={access} onCommand={()=>{closeDropdowns();setCommandActive(true)}}/>,navTarget):null;
  const alertHistory=mainTarget&&!commandActive&&baseActive==="Alerts"?createPortal(<AlertEventPanel/>,mainTarget):null;
- const guideTabs=new Set(["Report","Markets","World News","Regime","Theses"]);const guide=tabTarget&&!commandActive&&guideTabs.has(baseActive)?createPortal(<TabDisclosureGuide active={baseActive}/>,tabTarget):null;
+ const guideTabs=new Set(["Report","Markets","World News","Regime","Theses"]),guide=tabTarget&&!commandActive&&guideTabs.has(baseActive)?createPortal(<TabDisclosureGuide active={baseActive}/>,tabTarget):null;
  const settings=tabTarget&&!commandActive&&baseActive==="Settings"&&access?createPortal(<section className="augmentation-settings"><DataHealthV3/><UserCustomizationPanel access={access} onChanged={reload}/>{access.permissions.can_admin_users&&<AdminUserPanel/>}</section>,tabTarget):null;
- return <><AuthRefreshBridge/>{nav}{upgraded}{alertHistory}{guide}{settings}<SecurityDrawer/></>;
+ return <>{nav}{upgraded}{alertHistory}{guide}{settings}<SecurityDrawer/></>;
 }
