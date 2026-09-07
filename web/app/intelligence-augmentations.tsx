@@ -13,9 +13,10 @@ import GroupedNavigation from "./navigation-v3";
 import DataHealthV3 from "./data-health-v3";
 import {AdvancedAlerts,TabDisclosureGuide} from "./intelligence-v2-panels";
 import {AdminUserPanel,applyUserVisibility,UserCustomizationPanel,useUserAccess} from "./user-customization";
-import {DashboardLayoutsPanel,FlowClustersPanel,ImpactMapPanel,RegimeConfidencePanel,ReportComparePanel} from "./future-release-panels";
+import {FlowClustersPanel,ImpactMapPanel,RegimeConfidencePanel,ReportComparePanel} from "./future-release-panels";
 import {FactorProxyPanel,RegimeDimensionsPanel} from "./next-intelligence-panels";
-import DashboardLayoutRuntimeV2 from "./dashboard-layout-runtime-v2";
+import DashboardLayoutRuntimeV3 from "./dashboard-layout-runtime-v3";
+import DashboardLayoutEditorV2 from "./dashboard-layout-editor-v2";
 import FutureAlertTemplates from "./future-alert-templates";
 import {OpportunityChangeDigest,PortfolioIntelligenceAutoPanel} from "./future-release-wrappers";
 import {closeDropdowns,type NavigationTarget} from "./navigation-context";
@@ -40,6 +41,6 @@ export default function IntelligenceAugmentations(){
  const reportFuture=tabTarget&&!commandActive&&baseActive==="Report"?createPortal(<ReportComparePanel/>,tabTarget):null;
  const worldFuture=tabTarget&&!commandActive&&baseActive==="World News"?createPortal(<ImpactMapPanel/>,tabTarget):null;
  const regimeFuture=tabTarget&&!commandActive&&baseActive==="Regime"?createPortal(<><RegimeConfidencePanel/><RegimeDimensionsPanel/></>,tabTarget):null;
- const settings=tabTarget&&!commandActive&&baseActive==="Settings"&&access?createPortal(<section className="augmentation-settings"><DataHealthV3/><DashboardLayoutsPanel/><UserCustomizationPanel access={access} onChanged={reload}/>{access.permissions.can_admin_users&&<AdminUserPanel/>}</section>,tabTarget):null;
- return <><DashboardLayoutRuntimeV2/>{nav}{upgraded}{alertHistory}{guide}{reportFuture}{worldFuture}{regimeFuture}{settings}<SecurityDrawer/></>;
+ const settings=tabTarget&&!commandActive&&baseActive==="Settings"&&access?createPortal(<section className="augmentation-settings"><DataHealthV3/><DashboardLayoutEditorV2/><UserCustomizationPanel access={access} onChanged={reload}/>{access.permissions.can_admin_users&&<AdminUserPanel/>}</section>,tabTarget):null;
+ return <><DashboardLayoutRuntimeV3/>{nav}{upgraded}{alertHistory}{guide}{reportFuture}{worldFuture}{regimeFuture}{settings}<SecurityDrawer/></>;
 }
