@@ -9,9 +9,12 @@ from ..providers.twelve_data import SOURCE_URL, TwelveDataProvider
 from ..providers.yahoo_finance import YahooFinanceProvider
 from .alert_engine import evaluate_alerts
 from .calculations import build_market_snapshot
+from .market_data_pipeline import bootstrap_market_batch, sync_us_symbol_universe
 from .provider_orchestrator import FRESHNESS_POLICIES, ProviderOrchestrator, is_stale
 from .rotation import SECTORS
 from .validation import build_secondary_metrics, cross_check_market_snapshot
+
+_last_universe_sync = None
 
 
 def _user_symbols(db):
@@ -34,8 +37,6 @@ def _history_needs_refresh(db,symbol,now):
     if not latest:return True
     try:last=date.fromisoformat(str(latest.bar_date)[:10])
     except ValueError:return True
-    # Daily bars should advance continuously. On weekends/holidays a two-business-day
-    # cushion avoids pointless provider calls while still repairing stale histories.
     age=(now.date()-last).days
     return age>3 if now.weekday() in (0,1) else age>2
 
@@ -103,10 +104,26 @@ def process_queue(db,limit=4):
     return done
 
 
+def _run_free_market_bootstrap(db):
+    global _last_universe_sync
+    now=datetime.now(timezone.utc)
+    if _last_universe_sync is None or (now-_last_universe_sync).total_seconds()>=12*60*60:
+        try:
+            sync_us_symbol_universe(db)
+            _last_universe_sync=now
+        except Exception:
+            db.rollback()
+    try:
+        bootstrap_market_batch(db,limit=8)
+    except Exception:
+        db.rollback()
+
+
 def run_cycle():
     db=SessionLocal()
     try:
         enqueue_stale(db);process_queue(db,4)
+        _run_free_market_bootstrap(db)
         from ..routers.intelligence import _refresh_feature
         for symbol in _user_symbols(db):
             try:_refresh_feature(db,symbol)
