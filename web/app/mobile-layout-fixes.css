@@ -1,0 +1,137 @@
+/* Mobile-only layout hardening. Loaded last so it can safely override workspace-specific styles. */
+@media (max-width: 720px) {
+  /* Security/detail drawer tabs should read as a vertical menu on phones. */
+  .drawer-tabs {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6px;
+    overflow: visible;
+    padding: 0 14px 12px;
+  }
+  .drawer-tabs button {
+    width: 100%;
+    min-width: 0;
+    white-space: normal;
+    text-align: left;
+    padding: 10px 12px;
+    line-height: 1.25;
+  }
+
+  /* Toggle/menu groups inside tabs stack vertically instead of colliding. */
+  .view-toggle,
+  .suite-hero > .view-toggle,
+  .news-controls,
+  .report-actions,
+  .expanded-actions,
+  .health-pills,
+  .suite-meta {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .view-toggle > button,
+  .suite-hero > .view-toggle > button,
+  .news-controls > button,
+  .report-actions > button,
+  .expanded-actions > button,
+  .view-toggle > .btn,
+  .view-toggle > .toggle {
+    width: 100%;
+    min-width: 0;
+    white-space: normal;
+  }
+
+  /* Headers with actions become two clean rows on narrow screens. */
+  .row,
+  .section-head,
+  .report-utility,
+  .suite-hero,
+  .security-title,
+  .app-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .row > *,
+  .section-head > *,
+  .report-utility > *,
+  .suite-hero > *,
+  .security-title > *,
+  .app-header > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .status {
+    text-align: left;
+  }
+
+  /* Forms and action rows should never retain desktop inline widths after tab switches. */
+  .research-search,
+  .ticker-add-row,
+  .cash-form,
+  .form-pair {
+    width: 100%;
+    grid-template-columns: 1fr;
+    min-width: 0;
+    gap: 8px;
+  }
+  .research-search {
+    display: grid;
+  }
+  .research-search .search,
+  .research-search .btn,
+  .ticker-add-row .btn,
+  .cash-form .btn,
+  .form-pair .btn,
+  .suite-form .btn,
+  .suite-form input,
+  .suite-form select,
+  .suite-form textarea {
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* Keep cards/panels from preserving stale desktop minimum widths after remount/reload. */
+  .tab-panel,
+  .suite-panel,
+  .card,
+  .suite-grid-card,
+  .opportunity-card,
+  .ticker-add-card {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /* Dense button rows elsewhere may wrap, but never overlap. */
+  .chips,
+  .symbol-chips {
+    gap: 8px;
+    align-items: stretch;
+  }
+
+  /* Use stable touch sizing and let long labels wrap rather than clip. */
+  .btn,
+  .toggle,
+  button {
+    max-width: 100%;
+  }
+  .btn,
+  .toggle {
+    min-height: 42px;
+    line-height: 1.2;
+  }
+}
+
+@media (max-width: 430px) {
+  .container {
+    padding-left: calc(12px + env(safe-area-inset-left));
+    padding-right: calc(12px + env(safe-area-inset-right));
+  }
+  .card {
+    padding: 14px;
+  }
+  .brand-lockup h1 {
+    font-size: 26px;
+  }
+}
