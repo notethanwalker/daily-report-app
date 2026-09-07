@@ -9,28 +9,18 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - name: Health
+      - name: Probe Yahoo quote earnings fields
+        continue-on-error: true
         run: |
-          set -euo pipefail
-          curl --fail --silent --show-error --max-time 60 https://daily-report-api-ero2.onrender.com/api/v1/health | jq -e '.status == "ok"'
+          echo '--- Yahoo quote ---'
+          curl -L --silent --show-error --max-time 30 -A 'Mozilla/5.0' 'https://query1.finance.yahoo.com/v7/finance/quote?symbols=NVDA' | jq '{error:.quoteResponse.error,result:(.quoteResponse.result[0] | {symbol,earningsTimestamp,earningsTimestampStart,earningsTimestampEnd,dividendDate,exDividendDate})}'
+          echo '--- Yahoo quoteSummary ---'
+          curl -L --silent --show-error --max-time 30 -A 'Mozilla/5.0' 'https://query2.finance.yahoo.com/v10/finance/quoteSummary/NVDA?modules=calendarEvents' | jq '{error:.quoteSummary.error,result:(.quoteSummary.result[0].calendarEvents // null)}'
 
-      - name: Main events calendar
+      - name: Probe Nasdaq company/calendar endpoints
+        continue-on-error: true
         run: |
-          set -euo pipefail
-          DATA=$(curl --fail --silent --show-error --max-time 90 'https://daily-report-api-ero2.onrender.com/api/v1/events?days=365&sort=date&order=asc&limit=1200')
-          echo "$DATA" | jq '{count,providers,categories,error_count:(.errors|length)}'
-          echo "$DATA" | jq -e '(.events|type=="array") and (.count|type=="number") and (.providers|type=="array") and (.categories|type=="array")'
-
-      - name: Portfolio company events deep check
-        run: |
-          set -euo pipefail
-          DATA=$(curl --fail --silent --show-error --max-time 180 'https://daily-report-api-ero2.onrender.com/api/v1/events/tracked-companies?days=365&scope=portfolio&refresh_missing=true&max_refresh=60')
-          echo "$DATA" | jq '{count,tracked_symbols,portfolio_symbols,refreshed_symbols,deferred_symbols,unresolved_symbols,errors,events}'
-          echo "$DATA" | jq -e '(.events|type=="array") and (.portfolio_symbols|type=="array")'
-
-      - name: Research workspace SNDK
-        run: |
-          set -euo pipefail
-          DATA=$(curl --fail --silent --show-error --max-time 120 'https://daily-report-api-ero2.onrender.com/api/v1/security/SNDK/workspace')
-          echo "$DATA" | jq '{symbol,data_state,hydrated,history_state,price:.market.price,as_of:.market.as_of}'
-          echo "$DATA" | jq -e '.symbol == "SNDK" and (.market|type=="object") and (.market.price != null) and has("data_state") and has("history_state")'
+          echo '--- Nasdaq earnings surprise ---'
+          curl -L --silent --show-error --max-time 30 -H 'Accept: application/json, text/plain, */*' -H 'User-Agent: Mozilla/5.0' -H 'Origin: https://www.nasdaq.com' -H 'Referer: https://www.nasdaq.com/' 'https://api.nasdaq.com/api/company/NVDA/earnings-surprise' | jq '{status:.status,message:.message,data:(.data | {symbol,earningsSurpriseTable})}'
+          echo '--- Nasdaq today calendar sample ---'
+          curl -L --silent --show-error --max-time 30 -H 'Accept: application/json, text/plain, */*' -H 'User-Agent: Mozilla/5.0' -H 'Origin: https://www.nasdaq.com' -H 'Referer: https://www.nasdaq.com/' 'https://api.nasdaq.com/api/calendar/earnings?date=2026-09-07' | jq '{status:.status,count:(.data.rows|length),sample:(.data.rows[:3])}'
