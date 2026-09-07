@@ -1,2 +1,44 @@
 .macro-bars-card{padding:14px}.bar-metric-toggle{display:flex;gap:5px;flex-wrap:wrap}.bar-metric-toggle button{border:1px solid rgba(103,135,149,.18);background:rgba(9,16,21,.72);color:#7f929d;border-radius:8px;padding:6px 9px;font:inherit;font-size:9px;font-weight:750;cursor:pointer}.bar-metric-toggle button.active,.bar-metric-toggle button:hover{border-color:rgba(85,215,150,.35);color:#d9eee3;background:rgba(20,214,122,.08)}.macro-bar-list{display:grid;gap:7px;margin-top:12px}.macro-bar-row{display:grid;grid-template-columns:minmax(150px,220px) minmax(180px,1fr) 72px;gap:10px;align-items:center}.macro-bar-label{display:grid;grid-template-columns:52px 1fr;gap:8px;align-items:center;min-width:0}.macro-bar-label span{font-size:9px;color:#788a94;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.macro-bar-track{height:12px;border:1px solid rgba(94,125,139,.13);border-radius:999px;background:rgba(5,10,14,.7);overflow:hidden}.macro-bar-track i{display:block;height:100%;border-radius:999px;min-width:2px;transition:width .22s ease}.macro-bar-track .positive-bar{background:linear-gradient(90deg,rgba(37,173,108,.5),rgba(99,235,167,.9))}.macro-bar-track .negative-bar{background:linear-gradient(90deg,rgba(216,89,89,.88),rgba(145,48,48,.48))}.macro-bar-row>b{text-align:right;font-size:10px}.events-v3 .subtab-bar{scrollbar-width:thin}.events-v3 .inline-state{padding:18px}.event-meta{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.event-meta>span{font-size:9px;color:#788a94}
-@media(max-width:760px){.macro-bar-row{grid-template-columns:92px minmax(130px,1fr) 62px}.macro-bar-label{grid-template-columns:1fr}.macro-bar-label span{display:none}.bar-metric-toggle{width:100%}.bar-metric-toggle button{flex:1 1 auto}.events-v3 .subtab-bar{overflow-x:auto}}
+@media(max-width:760px){
+ .macro-bar-row{grid-template-columns:92px minmax(130px,1fr) 62px}.macro-bar-label{grid-template-columns:1fr}.macro-bar-label span{display:none}.bar-metric-toggle{width:100%}.bar-metric-toggle button{flex:1 1 auto}.events-v3 .subtab-bar{overflow-x:auto}
+ /* Mobile primary navigation: keep group buttons compact, but opened menus are true vertical dropdowns. */
+ .nav.nav-v3-ready{overflow:visible!important;min-height:48px;padding-block:3px;position:relative;z-index:60}
+ .nav-v3{width:100%;min-width:0;display:flex;flex-wrap:wrap;align-items:flex-start;gap:7px;overflow:visible}
+ .nav-command{flex:1 0 100%;justify-content:center;min-width:0}
+ .nav-group{display:block!important;position:relative;flex:1 1 calc(50% - 4px);min-width:135px;max-width:100%}
+ .nav-group>summary{width:100%;justify-content:space-between;min-width:0;overflow:hidden}
+ .nav-group>summary span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+ .nav-group[open]{display:block!important}
+ .nav-menu{position:absolute!important;top:calc(100% + 6px)!important;left:0!important;right:auto!important;z-index:120!important;display:grid!important;grid-template-columns:1fr!important;gap:3px!important;width:max-content!important;min-width:100%!important;max-width:min(82vw,280px)!important;padding:7px!important;border:1px solid rgba(113,146,161,.25)!important;border-radius:12px!important;background:linear-gradient(180deg,rgba(16,25,32,.995),rgba(7,13,18,.995))!important;box-shadow:0 18px 45px rgba(0,0,0,.56)!important;backdrop-filter:blur(18px)!important}
+ .nav-menu button{display:flex!important;width:100%!important;min-width:0!important;white-space:normal!important;padding:11px 12px!important;border:0!important;background:transparent!important;text-align:left!important;transform:none!important}
+ .nav-menu button.active{background:linear-gradient(90deg,rgba(20,214,122,.11),rgba(20,214,122,.02))!important}
+ /* Workspace subtabs wrap instead of becoming a single clipped strip. */
+ .subtab-bar{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px!important;overflow:visible!important;padding:6px!important;width:100%;min-width:0}
+ .subtab-bar button{width:100%;min-width:0;padding:9px 7px!important;white-space:normal!important;text-align:center;line-height:1.15;transform:none!important}
+ .subtab-bar.compact{grid-template-columns:repeat(2,minmax(0,1fr))}
+ /* Control rows must reserve their own height after tab changes/reloads. */
+ .suite-hero,.section-head,.flow-filter-v3,.report-utility{min-width:0;gap:12px!important}
+ .suite-hero,.section-head,.flow-filter-v3{flex-wrap:wrap!important;align-items:flex-start!important}
+ .suite-hero>div:first-child,.section-head>div:first-child,.flow-filter-v3>div:first-child{min-width:0;flex:1 1 220px}
+ .suite-hero>.btn,.section-head>.btn,.flow-filter-v3>.btn{flex:0 1 auto;max-width:100%}
+ .view-toggle,.report-actions,.expanded-actions,.news-controls,.sort-strip,.bar-metric-toggle,.metric-links{display:flex;flex-wrap:wrap!important;gap:7px!important;max-width:100%;min-width:0}
+ .view-toggle>button,.report-actions>button,.expanded-actions>button,.news-controls>button,.sort-strip>button,.bar-metric-toggle>button,.metric-links>button{max-width:100%;min-width:0}
+ .research-search{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;gap:8px!important;width:100%;min-width:0}
+ .v3-workspace{isolation:isolate}
+ .v3-workspace>.subtab-bar{position:relative;z-index:2;margin-bottom:2px}
+ .v3-workspace>.v3-stack,.v3-workspace>.command-stat-grid,.v3-workspace>.card{position:relative;z-index:1}
+}
+@media(max-width:430px){
+ .nav-group{flex-basis:calc(50% - 4px);min-width:0}
+ .nav-group>summary{padding-inline:10px;font-size:10px}
+ .nav-group>summary span{display:none}
+ .subtab-bar{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .subtab-bar.compact{grid-template-columns:1fr 1fr}
+ .view-toggle>button,.report-actions>button,.expanded-actions>button,.news-controls>button,.sort-strip>button{flex:1 1 auto}
+}
+@media(hover:none) and (pointer:coarse){
+ /* iOS can retain :hover after tapping; disable scale/lift effects so controls never collide. */
+ .nav-command:hover,.nav-group>summary:hover,.subtab-bar button:hover,.sort-strip button:hover,.v3-workspace>.card:hover,.v3-workspace .card:hover,.metric-explainer:hover,.reason-v3:hover,.leader-detail:hover,.portfolio-holding-v3:hover{transform:none!important}
+ .nav-command:active,.nav-group>summary:active,.subtab-bar button:active,.sort-strip button:active{transform:none!important}
+ .nav-menu button:hover{transform:none!important}
+}
