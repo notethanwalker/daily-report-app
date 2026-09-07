@@ -1,0 +1,36 @@
+name: Final Production Verification 3
+
+on:
+  push:
+    paths:
+      - .github/workflows/smoke-final-verification-3.yml
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Health
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 60 https://daily-report-api-ero2.onrender.com/api/v1/health | jq -e '.status == "ok"'
+
+      - name: Main calendar is populated without blocked BLS retries
+        run: |
+          set -euo pipefail
+          DATA=$(curl --fail --silent --show-error --max-time 60 'https://daily-report-api-ero2.onrender.com/api/v1/events?days=365&sort=date&order=asc&limit=1200')
+          echo "$DATA" | jq '{count,bls:[.providers[]|select(.provider=="BLS")],fred:[.providers[]|select(.provider=="FRED BLS calendar fallback")],cpi:[.events[]|select(.title|ascii_downcase|contains("consumer price index"))][0:2],jobs:[.events[]|select(.title|ascii_downcase|contains("employment situation"))][0:2],errors}'
+          echo "$DATA" | jq -e '(.count >= 65) and any(.providers[]; .provider=="BLS" and .count>0 and .status=="mirrored") and any(.providers[]; .provider=="FRED BLS calendar fallback" and .count>0) and any(.events[]; (.title|ascii_downcase|contains("consumer price index"))) and any(.events[]; (.title|ascii_downcase|contains("employment situation"))) and ([.errors[] | select(contains("BLS:"))] | length == 0) and ([.errors[] | select(contains("BLS HTML fallback"))] | length == 0)'
+
+      - name: Portfolio company catalysts populate
+        run: |
+          set -euo pipefail
+          DATA=$(curl --fail --silent --show-error --max-time 180 'https://daily-report-api-ero2.onrender.com/api/v1/events/tracked-companies?days=365&scope=portfolio&refresh_missing=true&max_refresh=60')
+          echo "$DATA" | jq '{count,portfolio_symbols,unresolved_symbols,errors,events:[.events[]|{symbol,event_date,title,date_status,window_start,window_end}]}'
+          echo "$DATA" | jq -e '(.count > 0) and any(.events[]; .symbol=="NVDA") and any(.events[]; .date_status=="estimated" or .date_status=="reported") and (.errors|length==0)'
+
+      - name: Research SNDK uses v4 workspace
+        run: |
+          set -euo pipefail
+          DATA=$(curl --fail --silent --show-error --max-time 120 'https://daily-report-api-ero2.onrender.com/api/v1/security/SNDK/workspace')
+          echo "$DATA" | jq '{symbol,data_state,hydrated,history_state,price:.market.price,as_of:.market.as_of}'
+          echo "$DATA" | jq -e '.symbol=="SNDK" and (.market.price!=null) and (.data_state=="stored" or .data_state=="hydrated_on_demand") and (.history_state|type=="object") and ((.history_state.bars // 0) >= 120)'
