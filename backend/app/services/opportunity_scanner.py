@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -23,6 +24,8 @@ class OpportunityThresholds:
 
 
 THRESHOLDS = OpportunityThresholds()
+MIN_PRICE = float(os.getenv("OPPORTUNITY_MIN_PRICE", "2"))
+MIN_AVG_DOLLAR_VOLUME_20D = float(os.getenv("OPPORTUNITY_MIN_AVG_DOLLAR_VOLUME_20D", "5000000"))
 
 
 def _f(value):
@@ -67,15 +70,9 @@ def _ma100_score(distance: float) -> float:
 
 
 def _confirmation_score(payload: dict) -> tuple[float, dict]:
-    """10% confirmation = 5% true 100MA slope + 5% true approach velocity."""
     slope = _f(payload.get("ma100_slope_20d_percent"))
     approach = _f(payload.get("approach_velocity_100_5d"))
-
-    # A roughly +2.5% 20-session rise in the 100MA reaches full trend credit;
-    # an equivalent decline reaches zero. Missing evidence is neutral, not positive.
     slope_score = 50.0 if slope is None else max(0.0, min(100.0, 50.0 + slope * 20.0))
-    # Positive approach means distance-to-MA contracted over the last five sessions.
-    # +/-5 percentage points spans the scoring range.
     approach_score = 50.0 if approach is None else max(0.0, min(100.0, 50.0 + approach * 10.0))
     confirmation = (slope_score + approach_score) / 2.0
     return confirmation, {
@@ -106,7 +103,6 @@ def _is_scannable(registry: SymbolRegistry | None, payload: dict, include_etfs: 
         return include_etfs
     if any(x in asset for x in ("stock", "equity", "common")):
         return True
-    # Nasdaq Trader registry membership is acceptable only when it is not explicitly an ETF.
     return bool(registry and (registry.provider_ids or {}).get("universe_source") == "Nasdaq Trader" and asset != "etf")
 
 
@@ -121,7 +117,7 @@ def scan_cached_market(
     weak: list[dict] = []
     near: list[dict] = []
     scanned = eligible = 0
-    etfs_excluded = 0
+    etfs_excluded = liquidity_excluded = 0
     newest = None
 
     for row in _latest_snapshot_rows(db):
@@ -137,7 +133,11 @@ def scan_cached_market(
         williams = _f(payload.get("williams_r_14"))
         ma100_distance = _f(payload.get("price_vs_ma100_percent"))
         price = _f(payload.get("price"))
+        avg_dollar_volume = _f(payload.get("average_dollar_volume_20d"))
         if williams is None or ma100_distance is None or price is None:
+            continue
+        if price < MIN_PRICE or avg_dollar_volume is None or avg_dollar_volume < MIN_AVG_DOLLAR_VOLUME_20D:
+            liquidity_excluded += 1
             continue
         eligible += 1
         bucket = _bucket(williams, ma100_distance)
@@ -162,6 +162,7 @@ def scan_cached_market(
             "change_percent": _f(payload.get("change_percent")),
             "seven_day_percent": _f(payload.get("seven_day_percent")),
             "thirty_day_percent": _f(payload.get("thirty_day_percent")),
+            "average_dollar_volume_20d": round(avg_dollar_volume, 2),
             "relative_volume": _f(payload.get("relative_volume")),
             "components": {
                 "williams": round(wscore, 1),
@@ -174,6 +175,8 @@ def scan_cached_market(
             "provider": payload.get("provider") or row.provider,
             "source_url": payload.get("source_url"),
             "technical_source": payload.get("technical_source"),
+            "canonical_history_source": payload.get("canonical_history_source"),
+            "latest_bar_source": payload.get("latest_bar_source") or payload.get("provider") or row.provider,
         }
         newest = row.retrieved_at if newest is None or row.retrieved_at > newest else newest
         {"strong": strong, "weak": weak, "near": near}[bucket].append(item)
@@ -190,13 +193,18 @@ def scan_cached_market(
             "strong": len(strong),
             "weak": len(weak),
             "etfs_excluded": etfs_excluded,
+            "liquidity_excluded": liquidity_excluded,
         },
         "include_etfs": include_etfs,
         "thresholds": THRESHOLDS.__dict__,
+        "liquidity_filter": {
+            "min_price": MIN_PRICE,
+            "min_average_dollar_volume_20d": MIN_AVG_DOLLAR_VOLUME_20D,
+        },
         "weights": {"williams": 60, "ma100_proximity": 30, "confirmation": 10},
         "confirmation_weights": {"ma100_slope": 5, "approach_velocity": 5},
         "last_cache_update": newest.isoformat() if newest else None,
-        "data_strategy": "Ranks one latest normalized snapshot per U.S. stock by default. ETFs are opt-in. Ranking performs zero provider calls; technicals come from canonical normalized OHLCV.",
+        "data_strategy": "Stooq manual archive is the canonical broad historical backbone. Newer daily/intraday bars may be appended from fallback providers. Ranking uses the normalized merged OHLCV cache and performs zero provider calls.",
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     if include_near:
