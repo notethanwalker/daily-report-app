@@ -131,7 +131,6 @@ def build_market_snapshot(raw: dict) -> dict:
     ma100_distance_5d_ago = _pct_change(close_5d_ago, ma100_5d_ago)
     approach_velocity_100_5d = None
     if ma100_distance_now is not None and ma100_distance_5d_ago is not None:
-        # Positive means the stock moved closer to the 100MA from where it was 5 sessions ago.
         approach_velocity_100_5d = ma100_distance_5d_ago - ma100_distance_now
     ma100_slope_20d_percent = _pct_change(ma100, ma100_20d_ago)
 
@@ -142,8 +141,15 @@ def build_market_snapshot(raw: dict) -> dict:
     supplied_history_high = max(supplied_highs) if supplied_highs else max(closes)
 
     current_volume = rows[-1]["volume"]
-    prior_volumes = [row["volume"] for row in rows[-21:-1] if row["volume"] is not None]
+    prior_20 = rows[-21:-1]
+    prior_volumes = [row["volume"] for row in prior_20 if row["volume"] is not None]
     average_volume = _mean(prior_volumes)
+    dollar_volumes = [
+        row["close"] * row["volume"]
+        for row in prior_20
+        if row["close"] is not None and row["volume"] is not None
+    ]
+    average_dollar_volume = _mean(dollar_volumes)
 
     return {
         "symbol": meta.get("symbol"),
@@ -175,6 +181,7 @@ def build_market_snapshot(raw: dict) -> dict:
         "williams_r_14": _williams_from_rows(rows, 14),
         "volume": current_volume,
         "average_volume_20d": average_volume,
+        "average_dollar_volume_20d": average_dollar_volume,
         "relative_volume": None if average_volume in (None, 0) or current_volume is None else current_volume / average_volume,
         "market_open": None,
         "as_of": rows[-1]["date"].isoformat(),
@@ -184,5 +191,5 @@ def build_market_snapshot(raw: dict) -> dict:
         "verification_status": "primary_only",
         "technical_source": "normalized_daily_bars" if raw.get("normalized") else "provider_history",
         "is_materialized_cache": bool(raw.get("normalized")),
-        "data_note": "Williams %R, moving averages, true 5-session 100MA approach velocity and true 20-session 100MA slope are derived from the same OHLCV history window.",
+        "data_note": "Williams %R, moving averages, true 5-session 100MA approach velocity, true 20-session 100MA slope and liquidity are derived from the same OHLCV history window.",
     }
