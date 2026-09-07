@@ -12,17 +12,19 @@ import ValuationWarmup from "./valuation-warmup";
 import {MacroLeadership} from "./macro-intelligence";
 import {MarketGrid} from "./market-metrics";
 import {ErrorState,LoadingState} from "./loading-state";
-import {AlertsPanel,ContextBar,DataHealthPanel,DensityControl,EventsPanel,OpportunitiesPanel,PortfolioPanel,RegimePanel,ResearchPanel,ThesisPanel,UserAccessPanel} from "./intelligence-suite";
+import {AlertsPanel,ContextBar,DataHealthPanel,DensityControl,EventsPanel,OpportunitiesPanel,PortfolioPanel,RegimePanel,ResearchPanel,ThesisPanel} from "./intelligence-suite";
+import {AccountSettings,AuthGate,type Account} from "./auth-shell";
 
-const API=process.env.NEXT_PUBLIC_API_BASE_URL||"https://daily-report-api-ero2.onrender.com";
+const API="/backend";
 const TABS=["Report","Markets","Portfolio","Opportunities","World News","Events","Large Flow","Macro","Regime","Research","Alerts","Theses","Settings"];
 type Market={symbol:string;price:number|null;change_percent:number|null;seven_day_percent:number|null;thirty_day_percent:number|null;ytd_percent:number|null;ma50?:number|null;ma100:number|null;ma200:number|null;price_vs_ma50_percent?:number|null;price_vs_ma100_percent?:number|null;price_vs_ma200_percent?:number|null;all_time_high?:number|null;price_vs_ath_percent?:number|null;williams_r_14?:number|null;pe_ratio?:number|null;peg_ratio?:number|null;price_to_sales_ratio?:number|null;market_cap?:number|null;sector?:string|null;relative_volume:number|null;volume:number|null;high_52_week:number|null;low_52_week:number|null;provider:string;source_url:string;as_of:string|null;verification_status:string};
 type News={title:string;url:string;domain?:string;source_country?:string;published_at?:string;topics?:string[];sectors?:string[];relevance_score?:number;why_it_matters?:string};
 type Rotation={methodology:string;sectors:any[];leaders:any[];laggards:any[];evidence:string[];possible_reasons:any[];technical_reasons?:any[];reasoning_methodology?:string;news_context?:any;tracking_status?:any};
 function errText(context:string,e:unknown){const raw=e instanceof Error?e.message:String(e||"Unknown error");if(raw.includes("timed out")||raw.includes("AbortError"))return `${context} timed out. Check the internet connection and retry.`;if(raw.includes("Failed to fetch")||raw.includes("NetworkError"))return `${context} could not reach the server. Check the internet connection.`;if(raw.includes("HTTP 502")||raw.includes("HTTP 503"))return `${context} is temporarily unavailable from the backend/provider.`;return `${context}: ${raw}`}
-function authHeaders(){if(typeof window==="undefined")return{};const email=localStorage.getItem("dailyReportUserEmail")||"";const token=localStorage.getItem("dailyReportUserToken")||"";return {...(email?{"X-User-Email":email}:{}),...(token?{"X-User-Token":token}:{})}}
 
-export default function Home(){
+export default function Home(){return <AuthGate>{account=><Dashboard account={account}/>}</AuthGate>}
+
+function Dashboard({account}:{account:Account}){
  const[tickers,setTickers]=useState<string[]>([]),[active,setActive]=useState("Report"),[status,setStatus]=useState("Connecting…"),[initializing,setInitializing]=useState(true),[initialError,setInitialError]=useState("");
  const[market,setMarket]=useState<Record<string,Market>>({}),[loading,setLoading]=useState<Record<string,boolean>>({}),[errors,setErrors]=useState<Record<string,string>>({});
  const[query,setQuery]=useState(""),[search,setSearch]=useState<any[]>([]),[searchError,setSearchError]=useState(""),[marketActionError,setMarketActionError]=useState("");
@@ -32,9 +34,9 @@ export default function Home(){
  const[currencies,setCurrencies]=useState<any>(null),[currencyError,setCurrencyError]=useState("");
  const[flowData,setFlowData]=useState<any>({events:[],provider:"SquawkFlow",usage:{}}),[flowLoading,setFlowLoading]=useState(false),[flowError,setFlowError]=useState("");
 
- async function json(url:string,options?:RequestInit){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),15000);try{const r=await fetch(url,{cache:"no-store",...options,headers:{...authHeaders(),...(options?.headers||{})},signal:controller.signal});let d:any;try{d=await r.json()}catch{throw new Error(`HTTP ${r.status}: invalid server response`)}if(!r.ok)throw new Error(d?.detail||`HTTP ${r.status}`);setStatus(current=>current==="Connection problem"?"Backend connected":current);return d}catch(e:any){if(e?.name==="AbortError")throw new Error("Request timed out after 15 seconds");throw e}finally{clearTimeout(timer)}}
+ async function json(url:string,options?:RequestInit){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),15000);try{const r=await fetch(url,{cache:"no-store",credentials:"include",...options,headers:{...(options?.headers||{})},signal:controller.signal});let d:any;try{d=await r.json()}catch{throw new Error(`HTTP ${r.status}: invalid server response`)}if(!r.ok)throw new Error(d?.detail||`HTTP ${r.status}`);setStatus(current=>current==="Connection problem"?"Backend connected":current);return d}catch(e:any){if(e?.name==="AbortError")throw new Error("Request timed out after 15 seconds");throw e}finally{clearTimeout(timer)}}
  async function init(){setInitializing(true);setInitialError("");setStatus("Connecting…");const [w,l]=await Promise.allSettled([json(`${API}/api/v1/user/watchlist`),json(`${API}/api/v1/user/markets/latest`)]);if(w.status==="fulfilled")setTickers(w.value.tickers||[]);if(l.status==="fulfilled"){const m:Record<string,Market>={};(l.value.markets||[]).forEach((x:Market)=>m[x.symbol]=x);setMarket(m)}const failures=[];if(w.status==="rejected")failures.push(errText("Watchlist",w.reason));if(l.status==="rejected")failures.push(errText("Market snapshots",l.reason));if(failures.length){setInitialError(failures.join(" "));setStatus(w.status==="rejected"&&l.status==="rejected"?"Connection problem":"Backend connected · partial data")}else setStatus("Backend connected");setInitializing(false);loadReport();loadMacro();loadCurrencies();loadFlow()}
- useEffect(()=>{init();const h=()=>init();window.addEventListener("daily-report-auth-changed",h);return()=>window.removeEventListener("daily-report-auth-changed",h)},[]);
+ useEffect(()=>{init()},[]);
  useEffect(()=>{const cards=Array.from(document.querySelectorAll<HTMLElement>(".reveal-card"));if(!cards.length)return;const observer=new IntersectionObserver(entries=>entries.forEach(entry=>{if(entry.isIntersecting){(entry.target as HTMLElement).classList.add("in-view");observer.unobserve(entry.target)}}),{threshold:.06,rootMargin:"0px 0px -18px 0px"});cards.forEach((card,index)=>{card.classList.remove("in-view");card.style.setProperty("--reveal-delay",`${Math.min(index%8,7)*42}ms`);observer.observe(card)});return()=>observer.disconnect()},[active,report,rotation,news,currencies,flowData]);
  useEffect(()=>{if(query.trim().length<2){setSearch([]);setSearchError("");return}const t=setTimeout(async()=>{setSearchError("");try{const d=await json(`${API}/api/v1/securities/search?q=${encodeURIComponent(query)}`);setSearch(d.results||[])}catch(e){setSearch([]);setSearchError(errText("Ticker search",e))}},450);return()=>clearTimeout(t)},[query]);
  function enrichMarket(s:string,d:Partial<Market>){setMarket(x=>x[s]?({...x,[s]:{...x[s],...d}}):x)}
@@ -49,7 +51,7 @@ export default function Home(){
  async function saveReport(){setReportError("");try{const d=await json(`${API}/api/v1/report/generate`,{method:"POST"});setReport(d);setReportStatus(`Saved report #${d.id}`)}catch(e){setReportError(errText("Saving report snapshot",e))}}
  function selectTab(t:string){if(t===active)return;setActive(t);if(t==="World News"&&!news.length&&!newsLoading)loadNews();if(t==="Macro"||t==="Regime"){if(!rotation&&!macroLoading)loadMacro();if(!currencies)loadCurrencies()}if(t==="Report"&&!report&&!reportLoading)loadReport();if(t==="Large Flow"&&!flowData.events?.length&&!flowLoading)loadFlow()}
  const topics=["All","AI & Semiconductors","Rates & Central Banks","Energy & Commodities","Trade & Geopolitics","Economy & Inflation"];
- if(initializing)return <main className="container startup-screen"><div className="brand-lockup"><div className="brand-mark">⌁</div><div><h1>Daily Report</h1><p className="muted">Market intelligence dashboard</p></div></div><LoadingState title="Starting Daily Report" detail="Connecting to the backend, loading your user watchlist, and restoring shared market snapshots."/></main>;
+ if(initializing)return <main className="container startup-screen"><div className="brand-lockup"><div className="brand-mark">⌁</div><div><h1>Daily Report</h1><p className="muted">Market intelligence dashboard</p></div></div><LoadingState title={`Welcome ${account.name||""}`} detail="Connecting to the backend, loading your watchlist, and restoring shared market snapshots."/></main>;
 
  return <main className="container"><header className="app-header"><div className="brand-lockup"><div className="brand-mark">⌁</div><div><h1>Daily Report</h1><p className="muted">Market intelligence dashboard</p></div></div><span className={`status ${status.startsWith("Backend connected")?"ok":""}`}>{status}</span></header>
  {initialError&&<ErrorState title="Initial data load was incomplete" detail={initialError} onRetry={init}/>}<nav className="nav">{TABS.map(t=><button key={t} className={active===t?"active":""} onClick={()=>selectTab(t)}>{t}</button>)}</nav><ContextBar market={market} rotation={rotation}/>
@@ -65,4 +67,4 @@ export default function Home(){
  {active==="Research"&&<ResearchPanel/>}
  {active==="Alerts"&&<AlertsPanel/>}
  {active==="Theses"&&<ThesisPanel/>}
- {active==="Settings"&&<section className="tab-panel"><UserAccessPanel/><DensityControl/><DataHealthPanel/><BackendStatus/></section>}</main>}
+ {active==="Settings"&&<section className="tab-panel"><AccountSettings account={account}/><DensityControl/><DataHealthPanel/><BackendStatus/></section>}</main>}

@@ -1,15 +1,17 @@
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from ..database import SessionLocal
 from ..models import FundamentalCache, HistoricalDailyBar, MarketSnapshot, PortfolioHolding, RefreshQueueItem, UserWatchlistItem, WatchlistItem
 from ..multiuser_models import PortfolioPosition
 from ..providers.twelve_data import SOURCE_URL, TwelveDataProvider
+from ..providers.yahoo_finance import YahooFinanceProvider
 from .alert_engine import evaluate_alerts
 from .calculations import build_market_snapshot
 from .provider_orchestrator import FRESHNESS_POLICIES, ProviderOrchestrator, is_stale
 from .rotation import SECTORS
+from .validation import build_secondary_metrics, cross_check_market_snapshot
 
 
 def _user_symbols(db):
@@ -25,24 +27,34 @@ def _enqueue(db,symbol,data_class,priority):
     if not exists:db.add(RefreshQueueItem(symbol=symbol,data_class=data_class,priority=priority,requested_by="scheduler"))
 
 
+def _history_needs_refresh(db,symbol,now):
+    count=db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol).count()
+    if count<120:return True
+    latest=db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol).order_by(HistoricalDailyBar.bar_date.desc()).first()
+    if not latest:return True
+    try:last=date.fromisoformat(str(latest.bar_date)[:10])
+    except ValueError:return True
+    # Daily bars should advance continuously. On weekends/holidays a two-business-day
+    # cushion avoids pointless provider calls while still repairing stale histories.
+    age=(now.date()-last).days
+    return age>3 if now.weekday() in (0,1) else age>2
+
+
 def enqueue_stale(db):
     now=datetime.now(timezone.utc);users=set(_user_symbols(db));macro=set(SECTORS)
-    # User/watchlist symbols receive the complete data stack.
     for symbol in sorted(users):
-        market=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol).order_by(MarketSnapshot.retrieved_at.desc()).first();fundamental=db.get(FundamentalCache,symbol);history_count=db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol).count()
+        market=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol).order_by(MarketSnapshot.retrieved_at.desc()).first();fundamental=db.get(FundamentalCache,symbol)
         if not market or is_stale(market.retrieved_at,"market",now):_enqueue(db,symbol,"market",FRESHNESS_POLICIES["market"].priority)
-        if history_count<120:_enqueue(db,symbol,"history",FRESHNESS_POLICIES["history"].priority)
+        if _history_needs_refresh(db,symbol,now):_enqueue(db,symbol,"history",FRESHNESS_POLICIES["history"].priority)
         if not fundamental or is_stale(fundamental.retrieved_at,"fundamentals",now):_enqueue(db,symbol,"fundamentals",FRESHNESS_POLICIES["fundamentals"].priority)
-    # Macro ETFs need market/history only. Avoid wasting fundamentals quota on ETFs.
     for symbol in sorted(macro-users):
-        market=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol).order_by(MarketSnapshot.retrieved_at.desc()).first();history_count=db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol).count()
+        market=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol).order_by(MarketSnapshot.retrieved_at.desc()).first()
         if not market or is_stale(market.retrieved_at,"market",now):_enqueue(db,symbol,"market",FRESHNESS_POLICIES["market"].priority)
-        if history_count<120:_enqueue(db,symbol,"history",FRESHNESS_POLICIES["history"].priority)
+        if _history_needs_refresh(db,symbol,now):_enqueue(db,symbol,"history",FRESHNESS_POLICIES["history"].priority)
     db.commit()
 
 
 def _market_refresh_allowed(now):
-    # 12-22 UTC covers the U.S. market window with buffer; overnight/weekends use stored close/history.
     return now.weekday()<5 and 12<=now.hour<=22
 
 
@@ -59,10 +71,19 @@ def _persist_history(db,symbol):
     return inserted
 
 
+def _verified_market_snapshot(symbol):
+    snap=build_market_snapshot(TwelveDataProvider().market_snapshot_raw(symbol))
+    try:
+        secondary=build_secondary_metrics(YahooFinanceProvider().daily_history(symbol))
+        snap.update(cross_check_market_snapshot(snap,secondary))
+    except Exception as exc:
+        snap["verification_status"]="primary_only"
+        snap["verification"]={"primary_provider":snap.get("provider"),"secondary_provider":"Yahoo Finance","error":"secondary_provider_unavailable","detail":str(exc)[:160]}
+    return snap
+
+
 def process_queue(db,limit=4):
     now=datetime.now(timezone.utc);q=db.query(RefreshQueueItem).filter(RefreshQueueItem.status=="queued")
-    # Previously, high-priority market rows could occupy the whole batch while the
-    # market was closed and starve history backfills. Exclude them before LIMIT.
     if not _market_refresh_allowed(now):q=q.filter(RefreshQueueItem.data_class!="market")
     rows=q.order_by(RefreshQueueItem.priority.desc(),RefreshQueueItem.created_at).limit(limit).all();done=[]
     for idx,row in enumerate(rows):
@@ -74,7 +95,7 @@ def process_queue(db,limit=4):
                 else:db.add(FundamentalCache(symbol=row.symbol,provider=str(payload.get("provider") or "Composite fundamentals"),payload=payload,retrieved_at=datetime.now(timezone.utc)))
             elif row.data_class=="history":_persist_history(db,row.symbol)
             else:
-                snap=build_market_snapshot(TwelveDataProvider().market_snapshot_raw(row.symbol));db.add(MarketSnapshot(symbol=row.symbol,as_of=str(snap.get("as_of") or ""),provider=str(snap.get("provider") or "Twelve Data"),payload=snap))
+                snap=_verified_market_snapshot(row.symbol);db.add(MarketSnapshot(symbol=row.symbol,as_of=str(snap.get("as_of") or ""),provider=str(snap.get("provider") or "Twelve Data"),payload=snap))
             row.status="complete";row.error=None;db.commit();done.append({"symbol":row.symbol,"data_class":row.data_class})
         except Exception as exc:
             db.rollback();row=db.get(RefreshQueueItem,row.id);row.status="failed";row.error=str(exc)[:500];db.commit()

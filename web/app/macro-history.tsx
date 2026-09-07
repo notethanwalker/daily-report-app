@@ -1,10 +1,10 @@
 "use client";
 import {useEffect,useMemo,useState} from "react";
-const API=process.env.NEXT_PUBLIC_API_BASE_URL||"https://daily-report-api-ero2.onrender.com";
+const API="/backend";
 const pct=(v:number|null|undefined)=>v==null?"—":`${v>=0?"+":""}${v.toFixed(2)}%`;
 export default function MacroHistory(){
  const[data,setData]=useState<any>(null),[status,setStatus]=useState("Loading 2026 history...");
- async function load(){setStatus("Loading 2026 history...");try{const r=await fetch(`${API}/api/v1/macro/history?year=2026`,{cache:"no-store"});const d=await r.json();if(!r.ok)throw new Error(d?.detail||`HTTP ${r.status}`);setData(d);setStatus(`${d.data_points||0} historical daily observations · updates each weekday`)}catch(e){setStatus(e instanceof Error?e.message:"History unavailable")}}
+ async function load(){setStatus("Loading 2026 history...");try{const r=await fetch(`${API}/api/v1/macro/history?year=2026`,{cache:"no-store",credentials:"include"});const d=await r.json();if(!r.ok)throw new Error(d?.detail||`HTTP ${r.status}`);setData(d);setStatus(`${d.data_points||0} historical daily observations · updates each weekday`)}catch(e){setStatus(e instanceof Error?e.message:"History unavailable")}}
  useEffect(()=>{load()},[]);
  const monthly=useMemo(()=>{if(!data?.rotation_timeline)return[];const groups:Record<string,any[]>={};for(const x of data.rotation_timeline){const m=x.date.slice(0,7);(groups[m]??=[]).push(x)}return Object.entries(groups).map(([month,rows])=>{const latest=rows[rows.length-1];const counts:Record<string,number>={};const lagCounts:Record<string,number>={};for(const r of rows){for(const l of r.leaders||[])counts[l.symbol]=(counts[l.symbol]||0)+1;for(const l of r.laggards||[])lagCounts[l.symbol]=(lagCounts[l.symbol]||0)+1}const leader=Object.entries(counts).sort((a,b)=>b[1]-a[1])[0];const laggard=Object.entries(lagCounts).sort((a,b)=>b[1]-a[1])[0];return{month,leader:leader?.[0]||"—",leaderDays:leader?.[1]||0,laggard:laggard?.[0]||"—",laggardDays:laggard?.[1]||0,spread:latest?.spread}})},[data]);
  const recent=monthly.slice(-2).reverse(),outliers=(data?.stock_outliers||[]).slice(0,16),significant=(data?.significant_rotation_days||[]).slice(0,12);

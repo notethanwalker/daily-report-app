@@ -65,6 +65,28 @@ def _calendar_value(calendar, *names):
 class YahooFinanceProvider:
     name = "Yahoo Finance"
 
+    def daily_history(self, symbol: str, period: str = "2y") -> dict:
+        """Return normalized daily closes for independent market-data verification.
+
+        Yahoo is used as a quota-free secondary check, not as the canonical market
+        source. Keeping this path separate prevents Alpha Vantage's small daily
+        allowance from determining whether a snapshot can be cross-checked.
+        """
+        s=symbol.strip().upper()
+        try:
+            frame=yf.Ticker(s).history(period=period,interval="1d",auto_adjust=False,actions=False)
+        except Exception as exc:
+            raise YahooFinanceError(f"Yahoo Finance history request failed for {s}") from exc
+        if frame is None or frame.empty or "Close" not in frame:
+            raise YahooFinanceError(f"Yahoo Finance returned no daily history for {s}")
+        rows=[]
+        for idx,row in frame.iterrows():
+            close=_float(row.get("Close"));volume=_float(row.get("Volume"))
+            dt=_date_text(idx)
+            if dt and close is not None:rows.append({"date":dt,"close":close,"volume":volume})
+        if len(rows)<2:raise YahooFinanceError(f"Yahoo Finance returned insufficient daily history for {s}")
+        return {"symbol":s,"rows":rows,"provider":self.name,"source_url":f"{SOURCE_ROOT}/{s}/history","retrieved_at":datetime.now(timezone.utc).isoformat()}
+
     def company_calendar(self, symbol: str) -> dict:
         s=symbol.strip().upper()
         try:
