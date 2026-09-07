@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Integer, String, UniqueConstraint, func
+from sqlalchemy import DateTime, Float, Index, Integer, JSON, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -8,7 +8,10 @@ from .database import Base
 
 class NormalizedDailyBar(Base):
     __tablename__ = "normalized_daily_bars"
-    __table_args__ = (UniqueConstraint("symbol", "bar_date", name="uq_normalized_daily_symbol_date"),)
+    __table_args__ = (
+        UniqueConstraint("symbol", "bar_date", name="uq_normalized_daily_symbol_date"),
+        Index("ix_normalized_daily_symbol_date", "symbol", "bar_date"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
@@ -21,3 +24,14 @@ class NormalizedDailyBar(Base):
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
     source_url: Mapped[str] = mapped_column(String(1024), nullable=False)
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True, nullable=False)
+
+
+class MarketPipelineState(Base):
+    """Small persistent state store for data-source health and bulk-ingestion observability."""
+    __tablename__ = "market_pipeline_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
