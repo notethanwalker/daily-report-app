@@ -7,6 +7,7 @@ from ..database import get_db
 from ..models import UserWatchlistItem
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from ..models import PortfolioHolding
+from ..services.market_data_pipeline import pipeline_status
 from ..services.opportunity_scanner import scan_cached_market
 from .intelligence import _opportunity_components, current_user
 
@@ -92,7 +93,14 @@ def market_opportunities(
     db: Session = Depends(get_db),
     user: str = Depends(current_user),
 ):
-    # user dependency intentionally enforces Opportunities access/account scope,
-    # while the normalized market cache itself remains safely shared by symbol.
     _ = user
     return scan_cached_market(db, include_near=include_near, limit_per_bucket=limit)
+
+
+@router.get("/data-pipeline")
+def opportunity_data_pipeline(
+    db: Session = Depends(get_db),
+    user: str = Depends(current_user),
+):
+    _ = user
+    return pipeline_status(db)
