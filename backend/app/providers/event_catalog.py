@@ -153,17 +153,26 @@ def _fred_fallback(start,end):
 def catalog(start,end):
     key=f"{start.isoformat()}:{end.isoformat()}";cached=_CACHE.get(key)
     if cached and time.time()-cached[0]<CACHE_SECONDS:return cached[1]
-    providers=[];events=[];errors=[];bls_ok=False
-    for name,loader in [("BLS",bls_events),("BEA",bea_events),("Federal Reserve",fed_events),("MacroRadar",macroradar_events)]:
+    providers=[];events=[];errors=[]
+
+    # Render is consistently blocked by BLS (403). Use the verified FRED mirror first so
+    # production requests do not waste 20 seconds on a known-failing network call.
+    try:
+        rows,fred_errors=_fred_fallback(start,end);events.extend(rows)
+        providers.append({"provider":"BLS","count":len(rows),"status":"mirrored" if rows else "unavailable"})
+        providers.append({"provider":"FRED BLS calendar fallback","count":len(rows),"status":"ok" if rows else "empty"})
+        errors.extend([f"FRED fallback: {x}" for x in fred_errors])
+    except Exception as exc:
+        errors.append(f"FRED BLS calendar fallback: {exc}")
+        providers.append({"provider":"BLS","count":0,"status":"unavailable"})
+        providers.append({"provider":"FRED BLS calendar fallback","count":0,"status":"unavailable"})
+
+    for name,loader in [("BEA",bea_events),("Federal Reserve",fed_events),("MacroRadar",macroradar_events)]:
         try:
-            rows=loader(start,end);events.extend(rows);providers.append({"provider":name,"count":len(rows),"status":"ok"});bls_ok=bls_ok or (name=="BLS" and bool(rows))
+            rows=loader(start,end);events.extend(rows);providers.append({"provider":name,"count":len(rows),"status":"ok"})
         except Exception as exc:
             errors.append(f"{name}: {exc}");providers.append({"provider":name,"count":0,"status":"unavailable"})
-    if not bls_ok:
-        try:
-            rows,fred_errors=_fred_fallback(start,end);events.extend(rows);providers.append({"provider":"FRED BLS calendar fallback","count":len(rows),"status":"ok" if rows else "empty"});errors.extend([f"FRED fallback: {x}" for x in fred_errors])
-        except Exception as exc:
-            errors.append(f"FRED BLS calendar fallback: {exc}");providers.append({"provider":"FRED BLS calendar fallback","count":0,"status":"unavailable"})
+
     dedup={}
     for e in events:
         key2=(e.get("event_date"),str(e.get("title") or "").lower(),e.get("symbol"));old=dedup.get(key2)
