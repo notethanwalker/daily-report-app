@@ -11,6 +11,7 @@ from . import auth_models as _auth_models
 from .auth_models import AuthAccount
 from . import v2_models as _v2_models
 from . import v3_models as _v3_models
+from . import intelligence_cache_models as _intelligence_cache_models
 from .routers.overrides import router as override_router
 from .routers.health_override import router as health_router
 from .routers.events_v3 import events as events_v3_handler, router as events_v3_router
@@ -23,6 +24,7 @@ from .routers.user_state import router as user_state_router
 from .routers.lifecycle import router as lifecycle_router
 from .routers.research_ext import router as research_router
 from .routers.research_v4 import security_workspace_v4, router as research_v4_router
+from .routers.security_intelligence_v5 import router as security_intelligence_v5_router
 from .routers.decision_support import router as decision_support_router
 from .routers.analytics_v3 import router as analytics_v3_router
 from .routers.macro_v3 import router as macro_v3_router
@@ -55,8 +57,6 @@ intelligence_router.routes=[r for r in intelligence_router.routes if not _is_get
 
 Base.metadata.create_all(bind=engine)
 
-# Bootstrap uses only encrypted/HMAC/password-hash values. The plaintext admin
-# email/password never live in source control or a deployment environment variable.
 _bootstrap_db=SessionLocal()
 try:
     _owner=bootstrap_admin(_bootstrap_db)
@@ -65,14 +65,10 @@ try:
             AuthAccount.role=="owner",AuthAccount.status=="approved",AuthAccount.enabled.is_(True)
         ).order_by(AuthAccount.created_at.asc()).first()
     if _owner:
-        # Existing authorization code uses OWNER_EMAIL as its subject key. From this
-        # point forward that value is an opaque user ID, not an email address.
         os.environ["OWNER_EMAIL"]=_owner.id
 finally:
     _bootstrap_db.close()
 
-# Disable legacy allowlist/bearer-token behavior inside older route dependencies.
-# Session middleware below injects a trusted opaque subject instead.
 os.environ["ALLOWED_USER_EMAILS"]=""
 os.environ["USER_ACCESS_TOKENS"]=""
 os.environ["USER_AUTH_ENABLED"]=""
@@ -89,6 +85,7 @@ app.include_router(user_state_router)
 app.include_router(lifecycle_router)
 app.include_router(research_router)
 app.include_router(research_v4_router)
+app.include_router(security_intelligence_v5_router)
 app.include_router(decision_support_router)
 app.include_router(analytics_v3_router)
 app.include_router(macro_v3_router)
