@@ -13,7 +13,8 @@ import GroupedNavigation from "./navigation-v3";
 import DataHealthV3 from "./data-health-v3";
 import {AdvancedAlerts,TabDisclosureGuide} from "./intelligence-v2-panels";
 import {AdminUserPanel,applyUserVisibility,UserCustomizationPanel,useUserAccess} from "./user-customization";
-import {DashboardLayoutRuntime,DashboardLayoutsPanel,FlowClustersPanel,ImpactMapPanel,RegimeConfidencePanel,ReportComparePanel} from "./future-release-panels";
+import {DashboardLayoutsPanel,FlowClustersPanel,ImpactMapPanel,RegimeConfidencePanel,ReportComparePanel} from "./future-release-panels";
+import DashboardLayoutRuntimeV2 from "./dashboard-layout-runtime-v2";
 import FutureAlertTemplates from "./future-alert-templates";
 import {OpportunityChangeDigest,PortfolioIntelligenceAutoPanel} from "./future-release-wrappers";
 import {closeDropdowns,type NavigationTarget} from "./navigation-context";
@@ -39,5 +40,5 @@ export default function IntelligenceAugmentations(){
  const worldFuture=tabTarget&&!commandActive&&baseActive==="World News"?createPortal(<ImpactMapPanel/>,tabTarget):null;
  const regimeFuture=tabTarget&&!commandActive&&baseActive==="Regime"?createPortal(<RegimeConfidencePanel/>,tabTarget):null;
  const settings=tabTarget&&!commandActive&&baseActive==="Settings"&&access?createPortal(<section className="augmentation-settings"><DataHealthV3/><DashboardLayoutsPanel/><UserCustomizationPanel access={access} onChanged={reload}/>{access.permissions.can_admin_users&&<AdminUserPanel/>}</section>,tabTarget):null;
- return <><DashboardLayoutRuntime/>{nav}{upgraded}{alertHistory}{guide}{reportFuture}{worldFuture}{regimeFuture}{settings}<SecurityDrawer/></>;
+ return <><DashboardLayoutRuntimeV2/>{nav}{upgraded}{alertHistory}{guide}{reportFuture}{worldFuture}{regimeFuture}{settings}<SecurityDrawer/></>;
 }
