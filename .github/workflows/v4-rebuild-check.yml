@@ -17,7 +17,7 @@ jobs:
         env:
           DATABASE_URL: sqlite:////tmp/daily-report-v4-check.db
         run: |
-          python -m py_compile backend/app/services/monthly_priority.py backend/app/services/classification_v4.py backend/app/services/feature_model_v4.py backend/app/services/rotation_model_v4.py backend/app/services/candidate_funnel_v4.py backend/app/services/score_history_v4.py backend/app/routers/research_v4.py backend/app/routers/stack_v4.py backend/app/start.py
+          python -m py_compile backend/app/v4_models.py backend/app/services/monthly_priority.py backend/app/services/classification_v4.py backend/app/services/feature_model_v4.py backend/app/services/opportunity_model.py backend/app/services/rotation_model_v4.py backend/app/services/candidate_funnel_v4.py backend/app/services/calibration_v4.py backend/app/services/score_history_v4.py backend/app/routers/research_v4.py backend/app/routers/stack_v4.py backend/app/start.py
       - name: Run complete backend test suite
         working-directory: backend
         env:
