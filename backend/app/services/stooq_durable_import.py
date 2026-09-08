@@ -17,7 +17,6 @@ from .market_data_pipeline import (
     _alias_maps,
     _nasdaq_registry,
     _snapshot_from_rows,
-    _upsert_bar_payloads,
     _set_state,
     prune_market_snapshots,
 )
@@ -25,8 +24,7 @@ from .market_data_pipeline import (
 CANONICAL_STATE_KEY = "stooq_manual_archive"
 COMPACT_FORMAT = "daily-report-stooq-opportunities-v1"
 DEFAULT_CHUNK_BYTES = int(os.getenv("STOOQ_DURABLE_CHUNK_BYTES", str(3 * 1024 * 1024)))
-DEFAULT_BATCH_SYMBOLS = int(os.getenv("STOOQ_DURABLE_BATCH_SYMBOLS", "500"))
-BAR_UPSERT_BATCH = int(os.getenv("STOOQ_DURABLE_BAR_BATCH", "5000"))
+DEFAULT_BATCH_SYMBOLS = int(os.getenv("STOOQ_DURABLE_BATCH_SYMBOLS", "1000"))
 
 
 def _now() -> str:
@@ -213,6 +211,51 @@ def _bar_payloads(data: dict, provider: str, source_url: str) -> list[dict]:
     return out
 
 
+def _copy_merge_bars(db: Session, bars: list[dict]) -> None:
+    if not bars:
+        return
+    db.execute(text("""
+        CREATE TEMP TABLE IF NOT EXISTS stooq_stage_bars (
+            symbol VARCHAR(20) NOT NULL,
+            bar_date VARCHAR(16) NOT NULL,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION NOT NULL,
+            volume DOUBLE PRECISION NOT NULL,
+            provider VARCHAR(64) NOT NULL,
+            source_url VARCHAR(1024) NOT NULL
+        ) ON COMMIT PRESERVE ROWS
+    """))
+    db.execute(text("TRUNCATE stooq_stage_bars"))
+    sa_conn = db.connection()
+    fairy = sa_conn.connection
+    driver = getattr(fairy, "driver_connection", fairy)
+    with driver.cursor() as cur:
+        with cur.copy("COPY stooq_stage_bars (symbol,bar_date,open,high,low,close,volume,provider,source_url) FROM STDIN") as copy:
+            for item in bars:
+                copy.write_row((
+                    item["symbol"], item["bar_date"], item.get("open"), item.get("high"), item.get("low"),
+                    item["close"], item.get("volume") or 0.0, item["provider"], item["source_url"],
+                ))
+    db.execute(text("""
+        INSERT INTO normalized_daily_bars
+            (symbol,bar_date,open,high,low,close,volume,provider,source_url,retrieved_at)
+        SELECT symbol,bar_date,open,high,low,close,volume,provider,source_url,NOW()
+        FROM stooq_stage_bars
+        ON CONFLICT (symbol,bar_date) DO UPDATE SET
+            open=EXCLUDED.open,
+            high=EXCLUDED.high,
+            low=EXCLUDED.low,
+            close=EXCLUDED.close,
+            volume=EXCLUDED.volume,
+            provider=EXCLUDED.provider,
+            source_url=EXCLUDED.source_url,
+            retrieved_at=NOW()
+    """))
+    db.execute(text("TRUNCATE stooq_stage_bars"))
+
+
 def process_batch(db: Session, batch_symbols: int | None = None) -> dict:
     ensure_tables(db)
     row = db.execute(text("""
@@ -274,9 +317,7 @@ def process_batch(db: Session, batch_symbols: int | None = None) -> dict:
             snap["is_materialized_cache"] = True
             snapshots.append(MarketSnapshot(symbol=canonical, as_of=str(snap.get("as_of") or ""), provider="Stooq compact package", payload=snap))
 
-    for start in range(0, len(bars), BAR_UPSERT_BATCH):
-        _upsert_bar_payloads(db, bars[start:start + BAR_UPSERT_BATCH])
-    db.flush()
+    _copy_merge_bars(db, bars)
     if snapshots:
         db.add_all(snapshots)
     matched_total += matched_batch
