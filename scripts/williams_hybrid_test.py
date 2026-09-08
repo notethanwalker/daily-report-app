@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Monthly Williams hybrid deployment experiment.
 from __future__ import annotations
 
 import argparse
@@ -24,7 +25,7 @@ def simulate_hybrid(rows: list[dict], start: str, end: str, valuation_price: flo
 
     shares = 0.0
     invested = 0.0
-    reserve = deque()  # [month, amount, original_amount]
+    reserve = deque()
     ledger = []
     max_cash = 0.0
 
@@ -32,16 +33,13 @@ def simulate_hybrid(rows: list[dict], start: str, end: str, valuation_price: flo
     for idx, month in enumerate(months):
         row = firsts[month]
         close = float(row['close'])
-        # immediate half DCA
         shares += immediate / close
         invested += immediate
         reserve.append([month, reserve_add, reserve_add])
 
-        # use latest COMPLETED monthly Williams signal (previous calendar month)
         prev_month = months[idx - 1] if idx > 0 else None
         wr = monthly_wr.get(prev_month) if prev_month else None
 
-        # tier target: cumulative fraction of current reserve to have deployed at each band
         fraction = 0.0
         if wr is not None:
             if wr <= -80:
@@ -53,9 +51,7 @@ def simulate_hybrid(rows: list[dict], start: str, end: str, valuation_price: flo
 
         cash_before = sum(x[1] for x in reserve)
         target_deploy = cash_before * fraction
-        deploy = 0.0
 
-        # forced deployment of lots that have waited at least wait_months
         current_ord = int(month[:4]) * 12 + int(month[5:7])
         forced = 0.0
         for lot in reserve:
@@ -65,6 +61,7 @@ def simulate_hybrid(rows: list[dict], start: str, end: str, valuation_price: flo
 
         amount_to_deploy = max(target_deploy, forced)
         remaining = amount_to_deploy
+        deploy = 0.0
         while remaining > 1e-9 and reserve:
             lot = reserve[0]
             take = min(lot[1], remaining)
