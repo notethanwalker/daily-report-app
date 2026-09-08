@@ -1,0 +1,57 @@
+name: Williams Priority Basket 2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/williams-priority-basket2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install market data client
+        run: python -m pip install --disable-pip-version-check yfinance
+      - name: Run full-period test
+        run: |
+          python scripts/williams_portfolio_priority.py \
+            --symbols AAPL,JPM,COST,HD,UNH,COHU,AMBA,IPGP,MRCY,ITRI \
+            --start 2017-01-01 \
+            --end 2026-09-04 \
+            --monthly-cash 10000 \
+            --tilts 0.25,0.5,0.75,1.0 \
+            --output williams_priority_basket2.json
+      - name: Run early-period validation
+        run: |
+          python scripts/williams_portfolio_priority.py \
+            --symbols AAPL,JPM,COST,HD,UNH,COHU,AMBA,IPGP,MRCY,ITRI \
+            --start 2017-01-01 \
+            --end 2021-12-31 \
+            --monthly-cash 10000 \
+            --tilts 0.25,0.5,0.75,1.0 \
+            --output williams_priority_basket2_2017_2021.json
+      - name: Run late-period validation
+        run: |
+          python scripts/williams_portfolio_priority.py \
+            --symbols AAPL,JPM,COST,HD,UNH,COHU,AMBA,IPGP,MRCY,ITRI \
+            --start 2022-01-01 \
+            --end 2026-09-04 \
+            --monthly-cash 10000 \
+            --tilts 0.25,0.5,0.75,1.0 \
+            --output williams_priority_basket2_2022_2026.json
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: williams-priority-basket2
+          path: |
+            williams_priority_basket2.json
+            williams_priority_basket2_2017_2021.json
+            williams_priority_basket2_2022_2026.json
+          retention-days: 30
