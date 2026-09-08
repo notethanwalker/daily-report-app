@@ -1,24 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import "./polish.css";
-import "./macro-flow.css";
-import "./pro-polish.css";
-import "./v18-polish.css";
-import "./intelligence-suite.css";
-import "./intelligence-extras.css";
-import "./portfolio-access.css";
-import "./intelligence-v2.css";
-import "./v3-workspaces.css";
-import "./v4-fixes.css";
 import "./auth.css";
-import "./mobile-layout-fixes.css";
-import "./future-release.css";
 import PwaRegister from "./pwa-register";
-import IntelligenceAugmentations from "./intelligence-augmentations";
 
 export const metadata: Metadata = {
   title: "Daily Report",
-  description: "Market intelligence dashboard",
+  description: "Market intelligence decision stack",
   applicationName: "Daily Report",
   appleWebApp: {
     capable: true,
@@ -36,5 +23,5 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return <html lang="en"><body><PwaRegister />{children}<IntelligenceAugmentations /></body></html>;
+  return <html lang="en"><body><PwaRegister />{children}</body></html>;
 }
