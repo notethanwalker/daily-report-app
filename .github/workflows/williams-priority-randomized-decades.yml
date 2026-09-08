@@ -1,0 +1,76 @@
+name: Williams Priority Randomized Decades
+
+on:
+  push:
+    paths:
+      - '.github/workflows/williams-priority-randomized-decades.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install market data client
+        run: python -m pip install --disable-pip-version-check yfinance
+      - name: Build seeded randomized baskets
+        shell: bash
+        run: |
+          python - <<'PY'
+          import random, json
+          current = ['AMD','AVGO','CRM','NOW','PANW','LRCX','KLAC','CDNS','SNPS','ANET','MU','ASML','TSM','AMAT','SHOP','NFLX','MELI','FTNT','TEAM','TTD','AAPL','MSFT','GOOGL','AMZN','META','QCOM','ADBE','INTU','ORCL','BKNG']
+          prior = ['AAPL','MSFT','GOOGL','AMZN','QCOM','ORCL','ADBE','INTU','AMAT','LRCX','KLAC','MU','ASML','TSM','CRM','NFLX','ISRG','BIIB','GILD','CELG','BIDU','SBUX','NKE','COST','UNH','MA','V','CTSH','ADSK','FISV']
+          out={}
+          for label, universe, seed in [('current',current,20260908),('prior',prior,20072016)]:
+              r=random.Random(seed)
+              out[label]=[r.sample(universe,10) for _ in range(5)]
+          print(json.dumps(out,indent=2))
+          open('random_baskets.json','w').write(json.dumps(out,indent=2))
+          PY
+      - name: Run 2017-2026 randomized baskets
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          b=json.load(open('random_baskets.json'))['current']
+          for i, syms in enumerate(b,1):
+              subprocess.check_call(['python','scripts/williams_portfolio_priority.py','--symbols',','.join(syms),'--start','2017-01-01','--end','2026-09-04','--monthly-cash','10000','--tilts','0.25,0.5,0.75,1.0','--output',f'current_{i}.json'])
+          PY
+      - name: Run 2007-2016 randomized baskets
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          b=json.load(open('random_baskets.json'))['prior']
+          for i, syms in enumerate(b,1):
+              subprocess.check_call(['python','scripts/williams_portfolio_priority.py','--symbols',','.join(syms),'--start','2007-01-01','--end','2016-12-30','--monthly-cash','10000','--tilts','0.25,0.5,0.75,1.0','--output',f'prior_{i}.json'])
+          PY
+      - name: Summarize
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, glob
+          baskets=json.load(open('random_baskets.json'))
+          summary={'baskets':baskets,'current':[],'prior':[]}
+          for group, patt in [('current','current_*.json'),('prior','prior_*.json')]:
+              for fn in sorted(glob.glob(patt)):
+                  d=json.load(open(fn))
+                  row={'file':fn,'symbols':d['symbols'],'equal_value':d['results']['equal']['portfolio_value']}
+                  for k in ['tilt_25','tilt_50','tilt_75','tilt_100']:
+                      row[k]=d['results'][k]['vs_equal_pct']
+                  summary[group].append(row)
+          print(json.dumps(summary,indent=2))
+          open('randomized_decades_summary.json','w').write(json.dumps(summary,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: williams-priority-randomized-decades
+          path: |
+            random_baskets.json
+            randomized_decades_summary.json
+            current_*.json
+            prior_*.json
+          retention-days: 30
