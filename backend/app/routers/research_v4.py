@@ -6,41 +6,18 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import FeatureSnapshot, FundamentalCache, HistoricalDailyBar, MarketSnapshot, SymbolRegistry
-from ..providers.twelve_data import TwelveDataProvider
-from ..services.calculations import build_market_snapshot
-from ..services.provider_orchestrator import is_stale
-from ..services.refresh_scheduler import _persist_history
+from ..models import FeatureSnapshot, FundamentalCache, HistoricalDailyBar, MarketSnapshot, RefreshQueueItem, SymbolRegistry
+from ..services.provider_orchestrator import FRESHNESS_POLICIES, is_stale
 from ..services.score_history_v4 import build_score_history
-from .intelligence import _latest_market, _opportunity_components, _recent_flow, _refresh_feature, _upsert_registry
+from .intelligence import _latest_market, _opportunity_components, _recent_flow
 
 router=APIRouter(prefix="/api/v1",tags=["research-v4"])
-
-
-def _store_market(db:Session,symbol:str)->dict:
-    snap=build_market_snapshot(TwelveDataProvider().market_snapshot_raw(symbol))
-    if snap.get("price") is None:
-        raise HTTPException(404,f"No market data available for {symbol}")
-    db.add(MarketSnapshot(symbol=symbol,as_of=str(snap.get("as_of") or ""),provider=str(snap.get("provider") or "Twelve Data"),payload=snap,retrieved_at=datetime.now(timezone.utc)))
-    _upsert_registry(db,symbol,snap)
-    db.commit()
-    return snap
+RESEARCH_ENRICH_CLASSES=("market","history","fundamentals","feature")
 
 
 def _history_state(db:Session,symbol:str)->dict:
     count=db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol).count()
     return {"status":"stored" if count>=120 else "partial" if count>0 else "unavailable","bars":count}
-
-
-def _hydrate_history(db:Session,symbol:str)->dict:
-    before=db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol).count()
-    if before>=120:return {"status":"stored","bars":before,"inserted":0}
-    try:
-        inserted=_persist_history(db,symbol);db.commit()
-        count=db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol==symbol).count()
-        return {"status":"hydrated","bars":count,"inserted":inserted}
-    except Exception as exc:
-        db.rollback();return {"status":"deferred","bars":before,"error":str(exc)[:240]}
 
 
 def _data_states(db: Session, symbol: str, history: dict) -> dict:
@@ -54,8 +31,28 @@ def _data_states(db: Session, symbol: str, history: dict) -> dict:
         if retrieved and is_stale(retrieved,kind,now):return "stored_stale"
         return "stored_current"
     hist="current" if (history.get("bars") or 0)>=120 else "partial" if (history.get("bars") or 0)>0 else "unavailable"
-    if history.get("status")=="deferred":hist="enrichment_deferred"
     return {"market":state(market,"market"),"fundamentals":state(fundamental,"fundamentals"),"features":"stored" if feature else "unavailable","history":hist}
+
+
+def _queue_state(db:Session,symbol:str)->list[dict]:
+    rows=db.query(RefreshQueueItem).filter(RefreshQueueItem.symbol==symbol,RefreshQueueItem.requested_by=="v4_research").order_by(RefreshQueueItem.created_at.desc()).limit(12).all()
+    return [{"data_class":x.data_class,"status":x.status,"error":x.error,"created_at":x.created_at.isoformat() if x.created_at else None,"updated_at":x.updated_at.isoformat() if x.updated_at else None} for x in rows]
+
+
+def _enqueue_research(db:Session,symbol:str)->list[str]:
+    added=[]
+    priorities={
+        "market":max(80,FRESHNESS_POLICIES["market"].priority),
+        "history":max(75,FRESHNESS_POLICIES["history"].priority),
+        "fundamentals":max(70,FRESHNESS_POLICIES["fundamentals"].priority),
+        "feature":60,
+    }
+    for data_class in RESEARCH_ENRICH_CLASSES:
+        exists=db.query(RefreshQueueItem).filter(RefreshQueueItem.symbol==symbol,RefreshQueueItem.data_class==data_class,RefreshQueueItem.status.in_(["queued","running"])).first()
+        if exists:continue
+        db.add(RefreshQueueItem(symbol=symbol,data_class=data_class,priority=priorities[data_class],requested_by="v4_research"));added.append(data_class)
+    if added:db.commit()
+    return added
 
 
 @router.get("/security/{symbol}/workspace")
@@ -78,11 +75,11 @@ def security_workspace_v4(symbol:str,db:Session=Depends(get_db)):
         "registry":{"name":reg.name,"asset_type":reg.asset_type,"exchange":reg.exchange,"sector":reg.sector,"industry":reg.industry,"themes":reg.themes} if reg else None,
         "features":feature.payload if feature else None,
         "score_history":score_history,
-        "hydrated":[],
         "history_state":history,
         "data_states":_data_states(db,s,history),
         "data_state":"stored" if any((m,feature,fundamental,reg)) else "unavailable",
-        "workspace_policy":"Read-only, cache-first entity view. Missing or stale data is surfaced explicitly; provider hydration requires the explicit enrich action.",
+        "enrichment_queue":_queue_state(db,s),
+        "workspace_policy":"Read-only, cache-first entity view. Missing or stale data is surfaced explicitly; enrichment is queued and processed by the shared bounded background worker.",
     }
 
 
@@ -90,16 +87,5 @@ def security_workspace_v4(symbol:str,db:Session=Depends(get_db)):
 def enrich_security_workspace_v4(symbol:str,db:Session=Depends(get_db)):
     s=symbol.strip().upper()
     if not s:raise HTTPException(400,"Symbol is required")
-    actions=[];errors=[]
-    try:
-        _store_market(db,s);actions.append("market")
-    except Exception as exc:
-        db.rollback();errors.append({"dataset":"market","error":str(exc)[:240]})
-    history=_hydrate_history(db,s)
-    if history.get("status")=="hydrated":actions.append("history")
-    elif history.get("status")=="deferred":errors.append({"dataset":"history","error":history.get("error")})
-    try:
-        _refresh_feature(db,s);actions.append("features")
-    except Exception as exc:
-        db.rollback();errors.append({"dataset":"features","error":str(exc)[:240]})
-    return {"symbol":s,"actions":actions,"errors":errors,"history":history,"policy":"Explicit bounded research hydration. Fundamentals remain handled by the shared enrichment pipeline."}
+    added=_enqueue_research(db,s)
+    return {"symbol":s,"jobs_added":added,"queue":_queue_state(db,s),"status":"queued" if added else "already_queued_or_running","policy":"Asynchronous bounded research enrichment. Provider work is never performed in the HTTP request path."}
