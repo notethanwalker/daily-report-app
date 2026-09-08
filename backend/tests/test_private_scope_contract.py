@@ -46,8 +46,9 @@ class PrivateScopeContract(unittest.TestCase):
         ):
             self.assertIn(specific,START);self.assertLess(START.index(specific),START.index(generic))
     def test_v4_background_maintenance_is_started(self):
-        self.assertIn('rotation_snapshot_loop',START);self.assertIn('feature_version_loop',START)
-        self.assertIn('asyncio.create_task(rotation_snapshot_loop())',START);self.assertIn('asyncio.create_task(feature_version_loop())',START)
+        self.assertIn('calibration_loop',START);self.assertIn('feature_version_loop',START)
+        self.assertIn('asyncio.create_task(calibration_loop())',START);self.assertIn('asyncio.create_task(feature_version_loop())',START)
+        self.assertNotIn('asyncio.create_task(rotation_snapshot_loop())',START)
     def test_thesis_draft_does_not_ship_with_live_example_values(self):
         self.assertNotIn('useState("AI infrastructure buildout")',THESIS_UI);self.assertNotIn('useState("AAOI,AXTI,SNDK,MU,NBIS,SMH")',THESIS_UI);self.assertIn('[title,setTitle]=useState("")',THESIS_UI);self.assertIn('[statement,setStatement]=useState("")',THESIS_UI)
 
