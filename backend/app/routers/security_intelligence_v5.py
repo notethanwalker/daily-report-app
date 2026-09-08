@@ -15,7 +15,6 @@ from ..providers.squawkflow import SquawkFlowProvider
 from ..providers.yahoo_finance import YahooFinanceProvider
 from ..providers.yahoo_options import YahooOptionsProvider
 from .events_v4 import _merge_calendar_into_cache, _recent_check
-from .research_v4 import _ensure_history
 
 router = APIRouter(prefix="/api/v1", tags=["security-intelligence-v5"])
 
@@ -145,7 +144,7 @@ def _catalysts(db: Session, symbol: str, refresh_missing: bool) -> dict:
 def _linked_news(db: Session, symbol: str) -> dict:
     reg = db.get(SymbolRegistry, symbol)
     name = (reg.name or "").strip() if reg else ""
-    query = f'("{symbol}" OR "{name}")' if name and name.upper() != symbol else f'"{symbol}"'
+    query = f'(\"{symbol}\" OR \"{name}\")' if name and name.upper() != symbol else f'\"{symbol}\"'
     try:
         data = GdeltProvider().search(query, max_records=24, timespan="7d")
         articles = data.get("articles") or []
@@ -164,14 +163,16 @@ def _linked_news(db: Session, symbol: str) -> dict:
 
 
 def _history(db: Session, symbol: str, days: int, refresh_missing: bool) -> dict:
-    if refresh_missing:
-        _ensure_history(db, symbol)
+    # Research v4 moved history hydration behind the shared bounded refresh queue.
+    # This legacy intelligence read now consumes only persisted bars; callers that
+    # need enrichment should use POST /api/v1/security/{symbol}/enrich.
     rows = db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol == symbol).order_by(HistoricalDailyBar.bar_date.desc()).limit(max(30, min(days, 730))).all()
     rows = list(reversed(rows))
     return {
         "bars": [{"date": r.bar_date, "close": r.close, "volume": r.volume, "provider": r.provider, "source_url": r.source_url} for r in rows],
         "count": len(rows),
         "retrieved_at": _now().isoformat(),
+        "refresh_policy": "stored_only; use the research enrichment queue for missing history",
     }
 
 
@@ -201,7 +202,6 @@ def security_intelligence(
         payload["news"] = _linked_news(db, s)
         stamps["news"] = _now().isoformat()
 
-    # History comes from the persistent daily-bar store and does not consume a news/options quota.
     payload["history"] = _history(db, s, history_days, refresh_missing)
     stamps["history"] = _now().isoformat()
     payload["section_retrieved_at"] = stamps
