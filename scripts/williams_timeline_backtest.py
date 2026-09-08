@@ -37,6 +37,51 @@ def fetch_stooq(symbol: str) -> list[dict]:
     return rows
 
 
+def fetch_yahoo(symbol: str) -> list[dict]:
+    import yfinance as yf
+
+    frame = yf.download(
+        symbol.strip().upper(),
+        start="1990-01-01",
+        interval="1d",
+        auto_adjust=True,
+        actions=False,
+        progress=False,
+        threads=False,
+    )
+    if frame is None or frame.empty:
+        raise RuntimeError(f"Yahoo returned no history for {symbol}")
+    rows = []
+    for dt, item in frame.iterrows():
+        def value(name):
+            v = item[name]
+            if hasattr(v, "iloc"):
+                v = v.iloc[0]
+            return float(v)
+        rows.append({
+            "date": dt.date().isoformat(),
+            "open": value("Open"),
+            "high": value("High"),
+            "low": value("Low"),
+            "close": value("Close"),
+            "volume": value("Volume"),
+        })
+    rows.sort(key=lambda r: r["date"])
+    if len(rows) < 14:
+        raise RuntimeError(f"Insufficient Yahoo history for {symbol}: {len(rows)} rows")
+    return rows
+
+
+def fetch_history(symbol: str) -> tuple[list[dict], str]:
+    errors = []
+    for name, loader in (("Yahoo Finance adjusted daily OHLC", fetch_yahoo), ("Stooq daily OHLC", fetch_stooq)):
+        try:
+            return loader(symbol), name
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+    raise RuntimeError("All history providers failed: " + " | ".join(errors))
+
+
 def williams(rows: list[dict], window: int) -> list[dict]:
     out = []
     for i, row in enumerate(rows):
@@ -69,7 +114,7 @@ def summary(contributions, invested, cash, shares, price):
 
 
 def run(symbol: str, start: str, end: str | None, contribution: float, threshold: float, window: int):
-    raw = fetch_stooq(symbol)
+    raw, source = fetch_history(symbol)
     end = end or raw[-1]["date"]
     series = williams(raw, window)
     eligible = [r for r in series if start <= r["date"] <= end]
@@ -118,7 +163,7 @@ def run(symbol: str, start: str, end: str | None, contribution: float, threshold
     result = {
         "test": "Williams Timeline Test",
         "symbol": symbol.upper(),
-        "source": "Stooq daily OHLC",
+        "source": source,
         "parameters": {"start": eligible[0]["date"], "end": eligible[-1]["date"], "monthly_contribution": contribution, "threshold": threshold, "window": window},
         "valuation": {"date": eligible[-1]["date"], "close": price},
         "strategy_1_monthly_dca": {**summary(total_contributions, dca_invested, 0.0, dca_shares, price), "transactions": dca_transactions},
