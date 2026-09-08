@@ -1,0 +1,57 @@
+name: Williams Timeline Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: Ticker symbol
+        required: true
+        default: NVDA
+      start:
+        description: Start date YYYY-MM-DD
+        required: true
+        default: 2017-01-01
+      end:
+        description: End date YYYY-MM-DD (blank = latest Stooq bar)
+        required: false
+        default: ''
+      threshold:
+        description: Williams threshold
+        required: true
+        default: '-80'
+      contribution:
+        description: Monthly contribution
+        required: true
+        default: '1000'
+  push:
+    paths:
+      - '.github/workflows/williams-backtest.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  run-backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run Williams Timeline backtest
+        shell: bash
+        run: |
+          SYMBOL="${{ github.event.inputs.symbol || 'NVDA' }}"
+          START="${{ github.event.inputs.start || '2017-01-01' }}"
+          END="${{ github.event.inputs.end }}"
+          THRESHOLD="${{ github.event.inputs.threshold || '-80' }}"
+          CONTRIBUTION="${{ github.event.inputs.contribution || '1000' }}"
+          ARGS=(--symbol "$SYMBOL" --start "$START" --threshold "$THRESHOLD" --contribution "$CONTRIBUTION" --output williams_backtest.json)
+          if [ -n "$END" ]; then ARGS+=(--end "$END"); fi
+          python scripts/williams_timeline_backtest.py "${ARGS[@]}"
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: williams-backtest-result
+          path: williams_backtest.json
+          retention-days: 30
