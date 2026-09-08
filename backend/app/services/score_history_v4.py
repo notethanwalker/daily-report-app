@@ -1,16 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import hashlib
-import json
 
 from sqlalchemy.orm import Session
 
 from ..models import FeatureSnapshot
-
-MODEL_VERSION = "opportunity-v3.1"
-COMPONENT_WEIGHTS = {"technical": .25, "valuation": .20, "sector": .15, "flow": .15, "momentum": .15, "risk": .10}
-MODEL_CONFIG_HASH = hashlib.sha256(json.dumps(COMPONENT_WEIGHTS, sort_keys=True).encode()).hexdigest()[:12]
+from .feature_model_v4 import COMPONENT_WEIGHTS, MODEL_CONFIG_HASH, MODEL_VERSION
 
 
 def _f(v, default=None):
@@ -98,6 +93,7 @@ def build_score_history(db: Session, symbol: str, limit: int = 90) -> dict:
     version_changed = bool(rows and len(rows) > 1 and _snapshot_version(latest) != _snapshot_version(previous))
     attributed = sum(x.get("buy_score_contribution_delta") or 0 for x in components)
     attribution_gap = None if change is None else change-attributed
+    attribution_valid = not version_changed and all(_snapshot_version(x.payload or {}).get("model_version") != "legacy_unversioned" for x in rows[:2]) if len(rows) >= 2 else False
     return {
         "symbol": s,
         "history": history,
@@ -108,10 +104,11 @@ def build_score_history(db: Session, symbol: str, limit: int = 90) -> dict:
         "largest_positive_drivers": positive,
         "largest_negative_drivers": negative,
         "raw_driver_changes": _drivers(latest, previous),
-        "attributed_score_change": None if change is None else round(attributed, 3),
-        "attribution_gap": None if attribution_gap is None else round(attribution_gap, 3),
+        "attributed_score_change": round(attributed, 3) if change is not None and attribution_valid else None,
+        "attribution_gap": round(attribution_gap, 3) if attribution_gap is not None and attribution_valid else None,
+        "attribution_valid": attribution_valid,
         "model_version_changed": version_changed,
         "current_model_spec": {"model_version": MODEL_VERSION, "model_config_hash": MODEL_CONFIG_HASH, "component_weights": COMPONENT_WEIGHTS},
-        "explanation": "Point-in-time snapshots are compared without future-data recomputation. Weighted component deltas provide exact attribution when both snapshots use the same formula. Raw inputs are supporting evidence, not direct causal attribution. Legacy snapshots are explicitly marked unversioned.",
+        "explanation": "Point-in-time snapshots are compared without future-data recomputation. Weighted component deltas are exact score attribution only when both snapshots carry the same versioned formula. Raw inputs are supporting evidence, not direct causal attribution. Legacy snapshots remain explicitly unversioned.",
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
