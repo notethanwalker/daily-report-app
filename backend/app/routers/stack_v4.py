@@ -64,62 +64,27 @@ def _macro_for_security(rotation: dict, symbol: str, market: dict, registry: Sym
     return by_name.get(str(proxy)) or by_name.get(str(sector)) or {}, proxy, basis
 
 
-def _tracked_opportunities(db: Session, symbols: list[str], rotation: dict) -> list[dict]:
-    rows = []
-    for s in symbols:
-        f = _latest_feature(db, s)
-        m = _latest_market(db, s)
-        reg = db.get(SymbolRegistry, s)
-        buy = float(f.get("buy_score") or 0)
-        macro, proxy, basis = _macro_for_security(rotation, s, m, reg)
-        pressure = float(macro.get("rotation_pressure") or 0)
-        conviction = max(0.0, min(100.0, float(macro.get("conviction") or 0)))
-        confidence_factor = conviction / 100.0 if macro.get("transition_ready", True) else min(conviction / 100.0, .45)
-        macro_adjustment = max(-10.0, min(10.0, pressure * 2.5)) * confidence_factor
-        raw_score = buy + macro_adjustment
-        rows.append({
-            "symbol": s,
-            "score": round(max(0.0, min(100.0, raw_score)), 2),
-            "raw_rank_score": round(raw_score, 2),
-            "base_buy_score": round(buy, 2),
-            "sector": (reg.sector if reg else None) or m.get("sector"),
-            "rotation_proxy": proxy,
-            "rotation_proxy_basis": basis,
-            "rotation_pressure": macro.get("rotation_pressure"),
-            "rotation_state": macro.get("state"),
-            "rotation_conviction": macro.get("conviction"),
-            "macro_confidence_factor": round(confidence_factor, 3),
-            "williams_feature": f.get("williams_r"),
-            "ma100_distance": f.get("ma100_distance"),
-            "as_of": f.get("as_of") or m.get("as_of"),
-            "price": m.get("price"),
-            "provider": m.get("provider"),
-            "model_version": f.get("model_version"),
-            "model_config_hash": f.get("model_config_hash"),
-        })
-    return sorted(rows, key=lambda x: x["raw_rank_score"], reverse=True)
-
-
 @router.get("/overview")
 def overview(db: Session = Depends(get_db), user: str = Depends(current_user)):
     symbols = _user_symbols(db, user)
-    rotation = build_rotation_model(db)
-    tracked = _tracked_opportunities(db, symbols, rotation)
     feature_count = db.query(FeatureSnapshot).count()
     market_count = db.query(MarketSnapshot).count()
     rotation_state = db.get(MarketPipelineState, ROTATION_HISTORY_KEY)
     rotation_history_days = len((rotation_state.payload or {}).get("daily", [])) if rotation_state else 0
+    # Deliberately summary-only: actual Macro, Opportunity and Research details
+    # live behind their narrower permission-protected endpoints.
     return {
-        "version": "4.3-dev",
+        "version": "4.4-dev",
         "pipeline": ["research", "macro", "opportunity", "deployment"],
         "provider_policy": ProviderOrchestrator().describe(),
         "sources": _source_registry(),
         "layers": {
-            "research": {"symbols": len(symbols), "stored_market_snapshots": market_count, "stored_feature_snapshots": feature_count, "status": "active-v4", "capabilities": ["markets", "portfolios", "security research", "fundamentals", "world news", "events", "large flow", "theses", "alerts", "versioned score history"]},
-            "macro": {"status": "active-v4", "sector_rows": len(rotation.get("rows", [])), "leaders": rotation.get("leaders", [])[:5], "early_rotation": rotation.get("early_rotation", [])[:5], "outflow_risk": rotation.get("outflow_risk", [])[:5], "state_counts": rotation.get("state_counts", {}), "rotation_history_days": rotation_history_days, "history_policy": rotation.get("history_policy"), "methodology": rotation.get("methodology"), "capabilities": ["sector/theme strength", "rotation acceleration/deceleration", "transition states", "persisted state history", "breadth", "regime", "currencies", "liquidity proxies"]},
-            "opportunity": {"status": "active-v4", "candidates": tracked[:10], "candidate_count": len(tracked), "methodology": "Tracked candidates combine versioned opportunity scores with confidence-weighted sector/theme rotation. Broad-market ranking is read-only; enrichment is a separate bounded action."},
+            "research": {"tracked_symbols": len(symbols), "stored_market_snapshots": market_count, "stored_feature_snapshots": feature_count, "status": "active-v4", "capabilities": ["markets", "portfolios", "security research", "fundamentals", "world news", "events", "large flow", "theses", "alerts", "versioned score history"]},
+            "macro": {"status": "active-v4", "rotation_history_days": rotation_history_days, "capabilities": ["sector/theme strength", "rotation acceleration/deceleration", "transition states", "persisted state history", "breadth", "regime", "currencies", "liquidity proxies"]},
+            "opportunity": {"status": "active-v4", "tracked_symbols": len(symbols), "methodology": "Detailed candidate data is permission-isolated. Broad-market ranking is cache-first/read-only; enrichment is a separate bounded action."},
             "deployment": {"status": "phase-1", "models": ["Williams Priority — new capital only"], "named_baskets": {"AI Buildout Basket": AI_BUILDOUT_BASKET}, "manual_quality_gate": True, "rebalancing_default": False},
         },
+        "overview_policy": "Summary metadata only. Detailed Research/Macro/Opportunity/Deployment data must be fetched from the layer-specific endpoint and pass that layer's permission check.",
     }
 
 
