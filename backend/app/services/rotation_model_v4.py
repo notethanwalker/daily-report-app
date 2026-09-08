@@ -6,7 +6,12 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from ..models import MarketSnapshot
+from ..normalized_market_models import MarketPipelineState
 from .rotation import SECTORS
+
+ROTATION_HISTORY_KEY = "v4_rotation_history"
+MIN_TRANSITION_OBSERVATIONS = 4
+MAX_ROTATION_HISTORY_DAYS = 400
 
 
 def _f(value, default=None):
@@ -52,7 +57,30 @@ def _state(level: float, delta: float, trend: float) -> tuple[str, str]:
     return "lagging_stable", "neutral_to_weak"
 
 
-def build_rotation_model(db: Session) -> dict:
+def _persist_history(db: Session, rows: list[dict], generated_at: str) -> None:
+    day = generated_at[:10]
+    state = db.get(MarketPipelineState, ROTATION_HISTORY_KEY)
+    payload = dict(state.payload or {}) if state else {}
+    history = list(payload.get("daily") or [])
+    record = {
+        "date": day,
+        "rows": [
+            {"symbol": r["symbol"], "name": r["name"], "rotation_score": r["rotation_score"], "rotation_pressure": r["rotation_pressure"], "state": r["state"], "forward_bias": r["forward_bias"], "conviction": r["conviction"]}
+            for r in rows
+        ],
+    }
+    history = [x for x in history if x.get("date") != day]
+    history.append(record)
+    history = sorted(history, key=lambda x: x.get("date", ""))[-MAX_ROTATION_HISTORY_DAYS:]
+    payload.update({"daily": history, "latest_date": day, "methodology_version": "rotation-v4.1"})
+    if state:
+        state.payload = payload
+    else:
+        db.add(MarketPipelineState(key=ROTATION_HISTORY_KEY, payload=payload))
+    db.commit()
+
+
+def build_rotation_model(db: Session, persist: bool = True) -> dict:
     rows = []
     for symbol, name in SECTORS.items():
         history = _daily_snapshots(db, symbol)
@@ -68,14 +96,21 @@ def build_rotation_model(db: Session) -> dict:
         delta_3 = level - old
         trend = ((_f(p.get("price_vs_ma100_percent"), 0.0) or 0.0) + (_f(p.get("price_vs_ma200_percent"), 0.0) or 0.0)) / 2
         state, forward_bias = _state(level, delta_3, trend)
-        direction_consistency = 0
         diffs = [b-a for a,b in zip(scores, scores[1:])]
+        direction_consistency = 0.0
         if diffs:
             sign = 1 if delta_3 >= 0 else -1
             direction_consistency = sum(1 for x in diffs[-3:] if (x >= 0 and sign > 0) or (x <= 0 and sign < 0)) / min(3, len(diffs))
-        depth = min(1.0, len(scores) / 4)
         trend_agrees = 1.0 if (level >= 0 and trend >= 0) or (level < 0 and trend < 0) else .5
-        conviction = min(100.0, 25 + min(abs(level) * 8, 30) + min(abs(delta_3) * 12, 25) + direction_consistency * 10 + depth * 5 + trend_agrees * 5)
+        raw_conviction = min(100.0, 25 + min(abs(level) * 8, 30) + min(abs(delta_3) * 12, 25) + direction_consistency * 10 + trend_agrees * 5)
+        history_quality = min(1.0, len(scores) / 8.0)
+        conviction = raw_conviction * (0.45 + 0.55 * history_quality)
+        transition_ready = len(scores) >= MIN_TRANSITION_OBSERVATIONS
+        if not transition_ready:
+            conviction = min(conviction, 45.0)
+            # Do not imply predictive transition confidence from one-off observations.
+            if forward_bias not in {"hold_leadership", "neutral_to_weak"}:
+                forward_bias = "insufficient_history"
         pressure = level + delta_3 * 1.25
         rows.append({
             "symbol": symbol,
@@ -87,6 +122,8 @@ def build_rotation_model(db: Session) -> dict:
             "state": state,
             "forward_bias": forward_bias,
             "conviction": round(conviction, 1),
+            "transition_ready": transition_ready,
+            "history_quality": round(history_quality, 2),
             "trend_context": round(trend, 2),
             "relative_volume": _f(p.get("relative_volume")),
             "observations": len(scores),
@@ -96,12 +133,16 @@ def build_rotation_model(db: Session) -> dict:
     states = defaultdict(int)
     for row in rows:
         states[row["state"]] += 1
+    generated_at = datetime.now(timezone.utc).isoformat()
+    if persist and rows:
+        _persist_history(db, rows, generated_at)
     return {
         "rows": rows,
         "leaders": rows[:8],
         "outflow_risk": sorted([x for x in rows if x["forward_bias"] in {"rotation_out_risk", "avoidance_bias"}], key=lambda x: x["rotation_pressure"])[:8],
         "early_rotation": sorted([x for x in rows if x["forward_bias"] in {"early_rotation_candidate", "watch_for_rotation"}], key=lambda x: x["conviction"], reverse=True)[:8],
         "state_counts": dict(states),
-        "methodology": "V4 rotation pressure extends the existing 1D/7D/30D + relative-volume rotation score with change across stored daily observations and 100/200MA trend context. It classifies leadership, weakening, lagging and improving states. Forward-bias labels are heuristic transition signals, not calibrated probabilities or direct fund-flow measurements.",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "history_policy": {"minimum_transition_observations": MIN_TRANSITION_OBSERVATIONS, "canonical_daily_history_key": ROTATION_HISTORY_KEY, "max_days": MAX_ROTATION_HISTORY_DAYS},
+        "methodology": "V4 rotation pressure extends the existing 1D/7D/30D + relative-volume score with stored-observation change and 100/200MA trend context. Sparse histories are confidence-capped and cannot emit predictive transition labels. One canonical daily state record is persisted for later forward-outcome calibration.",
+        "generated_at": generated_at,
     }
