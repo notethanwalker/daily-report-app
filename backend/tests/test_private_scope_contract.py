@@ -35,6 +35,19 @@ class PrivateScopeContract(unittest.TestCase):
         self.assertIn('prune_normalized_bars',PIPELINE)
         self.assertIn('refresh_tracked_market_snapshot',PIPELINE)
         self.assertIn('incremental per-symbol repair',PIPELINE)
+    def test_v4_layer_permissions_precede_generic_stack_permission(self):
+        generic='("/api/v1/stack","can_view_command_center")'
+        for specific in (
+            '("/api/v1/stack/research","can_view_research")',
+            '("/api/v1/stack/scores","can_view_research")',
+            '("/api/v1/stack/rotation","can_view_macro")',
+            '("/api/v1/stack/candidates","can_view_opportunities")',
+            '("/api/v1/stack/deployment","can_manage_portfolios")',
+        ):
+            self.assertIn(specific,START);self.assertLess(START.index(specific),START.index(generic))
+    def test_v4_background_maintenance_is_started(self):
+        self.assertIn('rotation_snapshot_loop',START);self.assertIn('feature_version_loop',START)
+        self.assertIn('asyncio.create_task(rotation_snapshot_loop())',START);self.assertIn('asyncio.create_task(feature_version_loop())',START)
     def test_thesis_draft_does_not_ship_with_live_example_values(self):
         self.assertNotIn('useState("AI infrastructure buildout")',THESIS_UI);self.assertNotIn('useState("AAOI,AXTI,SNDK,MU,NBIS,SMH")',THESIS_UI);self.assertIn('[title,setTitle]=useState("")',THESIS_UI);self.assertIn('[statement,setStatement]=useState("")',THESIS_UI)
 
