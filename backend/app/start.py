@@ -41,8 +41,10 @@ from .routers.auth import router as auth_router
 from .routers import portfolio_access as access_policy
 from .routers.portfolio_access import _permissions, router as portfolio_access_router
 from .services.auth_security import SESSION_COOKIE, account_from_session, bootstrap_admin
+from .services.feature_model_v4 import feature_version_loop
 from .services.refresh_scheduler import bulk_market_loop, scheduler_loop, yahoo_bootstrap_loop
 from .services.opportunity_incremental import opportunity_incremental_loop
+from .services.rotation_model_v4 import rotation_snapshot_loop
 from .services.stooq_worker import stooq_import_loop
 from .services.rotation import SECTORS
 from .services.macro_universe import EXPANDED_MACRO
@@ -81,7 +83,9 @@ app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/
 app.add_api_route("/api/v1/events",events_v3_handler,methods=["GET"],tags=["events-v3"],name="events_v3_authoritative");app.router.routes.insert(0,app.router.routes.pop())
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/markets/{symbol}","/api/v1/flow/recent")];app.include_router(reconciliation_router)
 
-PERMISSION_PATHS=(("/api/v1/command-center","can_view_command_center"),("/api/v1/stack","can_view_command_center"),("/api/v1/portfolios","can_manage_portfolios"),("/api/v1/opportunities","can_view_opportunities"),("/api/v1/events","can_view_events"),("/api/v1/flow","can_view_flow"),("/api/v1/macro","can_view_macro"),("/api/v1/analytics/","can_view_macro"),("/api/v1/security","can_view_research"),("/api/v1/alerts","can_manage_alerts"),("/api/v1/push","can_manage_alerts"),("/api/v1/theses","can_manage_theses"),("/api/v1/system/","can_view_settings"))
+# Most-specific prefixes must precede the generic /stack mapping or a Command
+# Center permission could accidentally authorize a narrower layer.
+PERMISSION_PATHS=(("/api/v1/stack/research","can_view_research"),("/api/v1/stack/scores","can_view_research"),("/api/v1/stack/rotation","can_view_macro"),("/api/v1/stack/candidates","can_view_opportunities"),("/api/v1/stack/deployment","can_manage_portfolios"),("/api/v1/stack","can_view_command_center"),("/api/v1/command-center","can_view_command_center"),("/api/v1/portfolios","can_manage_portfolios"),("/api/v1/opportunities","can_view_opportunities"),("/api/v1/events","can_view_events"),("/api/v1/flow","can_view_flow"),("/api/v1/macro","can_view_macro"),("/api/v1/analytics/","can_view_macro"),("/api/v1/security","can_view_research"),("/api/v1/alerts","can_manage_alerts"),("/api/v1/push","can_manage_alerts"),("/api/v1/theses","can_manage_theses"),("/api/v1/system/","can_view_settings"))
 PUBLIC_API_PATHS={"/api/v1/health"}
 
 def _cookie_from_scope(scope,name):
@@ -133,4 +137,4 @@ async def self_keepalive_loop():
 
 @app.on_event("startup")
 async def start_refresh_scheduler():
-    asyncio.create_task(scheduler_loop());asyncio.create_task(bulk_market_loop());asyncio.create_task(yahoo_bootstrap_loop());asyncio.create_task(opportunity_incremental_loop());asyncio.create_task(stooq_import_loop());asyncio.create_task(self_keepalive_loop())
+    asyncio.create_task(scheduler_loop());asyncio.create_task(bulk_market_loop());asyncio.create_task(yahoo_bootstrap_loop());asyncio.create_task(opportunity_incremental_loop());asyncio.create_task(stooq_import_loop());asyncio.create_task(rotation_snapshot_loop());asyncio.create_task(feature_version_loop());asyncio.create_task(self_keepalive_loop())
