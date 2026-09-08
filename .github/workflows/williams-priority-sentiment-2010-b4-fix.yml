@@ -1,0 +1,31 @@
+name: Williams Priority Sentiment 2010 Basket 4 Fix
+
+on:
+  push:
+    paths:
+      - '.github/workflows/williams-priority-sentiment-2010-b4-fix.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check yfinance
+      - name: Run article basket with unavailable DeVry omitted
+        run: python scripts/williams_portfolio_priority.py --symbols 'TEVA,ORLY,LINC,NEOG' --start '2010-01-01' --end '2016-12-30' --monthly-cash 10000 --tilts '0.25,0.5,0.75,1.0' --output result.json
+      - name: Print compact result
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('result.json')); r=d['results']
+          print('SENTIMENT_RESULT='+json.dumps({'id':'s2010_4','symbols':d['symbols'],'equal_value':r['equal']['portfolio_value'],'tilt_25':r['tilt_25']['vs_equal_pct'],'tilt_50':r['tilt_50']['vs_equal_pct'],'tilt_75':r['tilt_75']['vs_equal_pct'],'tilt_100':r['tilt_100']['vs_equal_pct']},separators=(',',':')))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: s2010_4_fixed
+          path: result.json
+          retention-days: 30
