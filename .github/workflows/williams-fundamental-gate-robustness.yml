@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - '.github/workflows/williams-fundamental-gate-robustness.yml'
+# rerun after SEC gzip decoder fix
 jobs:
   test:
     strategy:
