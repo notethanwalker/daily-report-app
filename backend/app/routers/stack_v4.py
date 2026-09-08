@@ -8,11 +8,14 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import FeatureSnapshot, FundamentalCache, MarketSnapshot, SymbolRegistry, Thesis, UserWatchlistItem
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
+from ..normalized_market_models import MarketPipelineState
 from ..providers.alpaca_market_data import AlpacaMarketDataProvider
 from ..services.candidate_funnel_v4 import build_candidate_funnel
+from ..services.classification_v4 import rotation_proxy_name
+from ..services.feature_model_v4 import version_payload
 from ..services.monthly_priority import deployment_plan
 from ..services.provider_orchestrator import ProviderOrchestrator
-from ..services.rotation_model_v4 import build_rotation_model
+from ..services.rotation_model_v4 import ROTATION_HISTORY_KEY, build_rotation_model
 from ..services.score_history_v4 import build_score_history
 from .intelligence import _recent_flow, current_user
 
@@ -30,7 +33,13 @@ def _user_symbols(db: Session, user: str) -> list[str]:
 
 def _latest_feature(db: Session, symbol: str) -> dict:
     row = db.query(FeatureSnapshot).filter(FeatureSnapshot.symbol == symbol).order_by(FeatureSnapshot.as_of.desc(), FeatureSnapshot.created_at.desc()).first()
-    return {**(row.payload or {}), "as_of": row.as_of} if row else {}
+    if not row:
+        return {}
+    payload = version_payload(row.payload or {})
+    if payload != (row.payload or {}):
+        row.payload = payload
+        db.commit()
+    return {**payload, "as_of": row.as_of}
 
 
 def _latest_market(db: Session, symbol: str) -> dict:
@@ -52,31 +61,45 @@ def _source_registry() -> list[dict]:
     ]
 
 
+def _macro_for_security(rotation: dict, symbol: str, market: dict, registry: SymbolRegistry | None) -> tuple[dict, str | None, str]:
+    by_name = {str(x.get("name") or ""): x for x in rotation.get("rows", [])}
+    sector = (registry.sector if registry else None) or market.get("sector")
+    industry = (registry.industry if registry else None) or market.get("industry")
+    themes = (registry.themes if registry else None) or market.get("themes")
+    proxy, basis = rotation_proxy_name(symbol, sector, industry, themes)
+    return by_name.get(str(proxy)) or by_name.get(str(sector)) or {}, proxy, basis
+
+
 def _tracked_opportunities(db: Session, symbols: list[str], rotation: dict) -> list[dict]:
-    rotation_by_name = {str(x.get("name") or ""): x for x in rotation.get("rows", [])}
     rows = []
     for s in symbols:
         f = _latest_feature(db, s)
         m = _latest_market(db, s)
+        reg = db.get(SymbolRegistry, s)
         buy = float(f.get("buy_score") or 0)
-        sector = m.get("sector")
-        macro = rotation_by_name.get(str(sector)) or {}
+        macro, proxy, basis = _macro_for_security(rotation, s, m, reg)
         pressure = float(macro.get("rotation_pressure") or 0)
-        score = buy + max(-10.0, min(10.0, pressure * 2.5))
+        raw_score = buy + max(-10.0, min(10.0, pressure * 2.5))
         rows.append({
             "symbol": s,
-            "score": round(score, 2),
+            "score": round(max(0.0, min(100.0, raw_score)), 2),
+            "raw_rank_score": round(raw_score, 2),
             "base_buy_score": round(buy, 2),
-            "sector": sector,
+            "sector": (reg.sector if reg else None) or m.get("sector"),
+            "rotation_proxy": proxy,
+            "rotation_proxy_basis": basis,
             "rotation_pressure": macro.get("rotation_pressure"),
             "rotation_state": macro.get("state"),
+            "rotation_conviction": macro.get("conviction"),
             "williams_feature": f.get("williams_r"),
             "ma100_distance": f.get("ma100_distance"),
             "as_of": f.get("as_of") or m.get("as_of"),
             "price": m.get("price"),
             "provider": m.get("provider"),
+            "model_version": f.get("model_version"),
+            "model_config_hash": f.get("model_config_hash"),
         })
-    return sorted(rows, key=lambda x: x["score"], reverse=True)
+    return sorted(rows, key=lambda x: x["raw_rank_score"], reverse=True)
 
 
 @router.get("/overview")
@@ -86,8 +109,10 @@ def overview(db: Session = Depends(get_db), user: str = Depends(current_user)):
     tracked = _tracked_opportunities(db, symbols, rotation)
     feature_count = db.query(FeatureSnapshot).count()
     market_count = db.query(MarketSnapshot).count()
+    rotation_state = db.get(MarketPipelineState, ROTATION_HISTORY_KEY)
+    rotation_history_days = len((rotation_state.payload or {}).get("daily", [])) if rotation_state else 0
     return {
-        "version": "4.1-dev",
+        "version": "4.2-dev",
         "pipeline": ["research", "macro", "opportunity", "deployment"],
         "provider_policy": ProviderOrchestrator().describe(),
         "sources": _source_registry(),
@@ -97,7 +122,7 @@ def overview(db: Session = Depends(get_db), user: str = Depends(current_user)):
                 "stored_market_snapshots": market_count,
                 "stored_feature_snapshots": feature_count,
                 "status": "active-v4",
-                "capabilities": ["markets", "portfolios", "security research", "fundamentals", "world news", "events", "large flow", "theses", "alerts", "score history"],
+                "capabilities": ["markets", "portfolios", "security research", "fundamentals", "world news", "events", "large flow", "theses", "alerts", "versioned score history"],
             },
             "macro": {
                 "status": "active-v4",
@@ -106,14 +131,16 @@ def overview(db: Session = Depends(get_db), user: str = Depends(current_user)):
                 "early_rotation": rotation.get("early_rotation", [])[:5],
                 "outflow_risk": rotation.get("outflow_risk", [])[:5],
                 "state_counts": rotation.get("state_counts", {}),
+                "rotation_history_days": rotation_history_days,
+                "history_policy": rotation.get("history_policy"),
                 "methodology": rotation.get("methodology"),
-                "capabilities": ["sector strength", "rotation acceleration/deceleration", "transition states", "breadth", "regime", "currencies", "liquidity proxies"],
+                "capabilities": ["sector/theme strength", "rotation acceleration/deceleration", "transition states", "persisted state history", "breadth", "regime", "currencies", "liquidity proxies"],
             },
             "opportunity": {
                 "status": "active-v4",
                 "candidates": tracked[:10],
                 "candidate_count": len(tracked),
-                "methodology": "Tracked candidates combine persisted opportunity scores with bounded sector-rotation pressure. The broad-market funnel is available separately and narrows the cached universe before expensive enrichment.",
+                "methodology": "Tracked candidates combine versioned opportunity scores with bounded sector/theme-rotation pressure. The broad-market funnel is cache-first, then queues only shortlisted names for deeper enrichment.",
             },
             "deployment": {
                 "status": "phase-1",
@@ -137,6 +164,14 @@ def rotation(db: Session = Depends(get_db), user: str = Depends(current_user)):
     return build_rotation_model(db)
 
 
+@router.get("/rotation/history")
+def rotation_history(days: int = Query(90, ge=1, le=400), db: Session = Depends(get_db), user: str = Depends(current_user)):
+    _ = user
+    state = db.get(MarketPipelineState, ROTATION_HISTORY_KEY)
+    daily = list((state.payload or {}).get("daily", [])) if state else []
+    return {"days": daily[-days:], "count": min(days, len(daily)), "methodology_version": (state.payload or {}).get("methodology_version") if state else None}
+
+
 @router.get("/candidates")
 def candidates(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), user: str = Depends(current_user)):
     _ = user
@@ -147,6 +182,7 @@ def candidates(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_d
 @router.get("/scores/{symbol}")
 def score_history(symbol: str, limit: int = Query(90, ge=2, le=365), db: Session = Depends(get_db), user: str = Depends(current_user)):
     _ = user
+    _latest_feature(db, symbol.strip().upper())
     return build_score_history(db, symbol, limit=limit)
 
 
@@ -160,7 +196,7 @@ def research_workspace(symbol: str, db: Session = Depends(get_db), user: str = D
     fundamentals_row = db.get(FundamentalCache, s)
     registry = db.get(SymbolRegistry, s)
     rotation_model = build_rotation_model(db)
-    macro = next((x for x in rotation_model.get("rows", []) if x.get("name") == market.get("sector")), None)
+    macro, proxy, basis = _macro_for_security(rotation_model, s, market, registry)
     theses = db.query(Thesis).filter(Thesis.user_email == user, Thesis.enabled.is_(True)).all()
     related_theses = []
     for t in theses:
@@ -176,10 +212,10 @@ def research_workspace(symbol: str, db: Session = Depends(get_db), user: str = D
         "latest_features": feature,
         "score_history": history,
         "flow_72h": _recent_flow(db, s),
-        "sector_rotation": macro,
+        "rotation_context": {"proxy": proxy, "basis": basis, "state": macro},
         "theses": related_theses,
         "data_state": {"market": bool(market), "fundamentals": bool(fundamentals_row), "feature_history_points": len(history.get("history", [])), "registry": bool(registry)},
-        "methodology": "Research workspace composes already-stored market, fundamentals, feature history, flow, thesis and sector-rotation context. It is cache-first and does not trigger a broad provider refresh simply by opening the workspace.",
+        "methodology": "Entity-centric workspace composes stored market, fundamentals, versioned feature history, flow, theses and the most-specific available sector/theme rotation context. It remains cache-first.",
     }
 
 
