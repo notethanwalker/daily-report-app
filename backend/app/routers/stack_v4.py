@@ -12,7 +12,7 @@ from ..normalized_market_models import MarketPipelineState
 from ..providers.alpaca_market_data import AlpacaMarketDataProvider
 from ..services.candidate_funnel_v4 import build_candidate_funnel, enqueue_deep_enrichment
 from ..services.classification_v4 import rotation_proxy_name
-from ..services.feature_model_v4 import version_payload
+from ..services.feature_model_v4 import presentation_payload
 from ..services.monthly_priority import deployment_plan
 from ..services.provider_orchestrator import ProviderOrchestrator
 from ..services.rotation_model_v4 import ROTATION_HISTORY_KEY, build_rotation_model
@@ -33,7 +33,7 @@ def _user_symbols(db: Session, user: str) -> list[str]:
 
 def _latest_feature(db: Session, symbol: str) -> dict:
     row = db.query(FeatureSnapshot).filter(FeatureSnapshot.symbol == symbol).order_by(FeatureSnapshot.as_of.desc(), FeatureSnapshot.created_at.desc()).first()
-    return {**version_payload(row.payload or {}), "as_of": row.as_of} if row else {}
+    return {**presentation_payload(row.payload or {}, row.as_of), "as_of": row.as_of} if row else {}
 
 
 def _latest_market(db: Session, symbol: str) -> dict:
@@ -71,8 +71,6 @@ def overview(db: Session = Depends(get_db), user: str = Depends(current_user)):
     market_count = db.query(MarketSnapshot).count()
     rotation_state = db.get(MarketPipelineState, ROTATION_HISTORY_KEY)
     rotation_history_days = len((rotation_state.payload or {}).get("daily", [])) if rotation_state else 0
-    # Deliberately summary-only: actual Macro, Opportunity and Research details
-    # live behind their narrower permission-protected endpoints.
     return {
         "version": "4.4-dev",
         "pipeline": ["research", "macro", "opportunity", "deployment"],
