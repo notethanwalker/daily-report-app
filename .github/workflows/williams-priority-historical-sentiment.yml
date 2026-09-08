@@ -31,7 +31,7 @@ jobs:
             ],
             '2017': [
               {'article':'Fortune — 6 Best Tech Stocks to Buy Now (May 18, 2017)','symbols':['GOOGL','TSLA','AMZN','AVGO','ADBE','NVDA']},
-              {'article':'Fortune — 4 Best Tech Stocks for 2017 (Dec 1, 2016 Investor Guide)','symbols':['LRCX','PANW','CHKP','MTN']},
+              {'article':'Forbes — These 5 Stocks Could Double Your Retirement Nest Egg (Jan 7, 2017)','symbols':['INTC','GM','FAF','AMT','SKT']},
               {'article':'Forbes — 5 Dividend Growth Stocks That Could Double in 5 Years (Sep 4, 2017)','symbols':['INTU','FRME','MA','LUV','RCL']},
               {'article':'Kiplinger — James K. Glassman 10 Stock Picks for 2017','symbols':['TTWO','HSIC','CVU','CRM','MU','SBUX','KHC','SPG','SNY','AMZN']},
               {'article':'Kiplinger — 10 Best Dividend-Paying Stocks for 2017','symbols':['ABBV','T','CVX','F','GM','IP','MRK','PFE','VZ','WFC']}
