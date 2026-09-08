@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -10,6 +12,17 @@ from ..providers.alpaca_market_data import AlpacaMarketDataProvider
 
 _CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
 CACHE_TTL_SECONDS = 6 * 60 * 60
+MODEL_VERSION = "williams-priority-v1.1"
+MODEL_CONFIG = {
+    "indicator": "Williams %R",
+    "lookback_months": 14,
+    "signal_period": "prior_completed_month",
+    "ranking": "more_negative_is_higher_priority",
+    "allocation": "linear_cross_sectional_rank",
+    "new_capital_only": True,
+    "rebalance_existing_holdings": False,
+}
+MODEL_CONFIG_HASH = hashlib.sha256(json.dumps(MODEL_CONFIG, sort_keys=True).encode()).hexdigest()[:12]
 
 
 def _yahoo_ohlc(symbol: str, period: str = "2y") -> dict:
@@ -55,6 +68,12 @@ def history(symbol: str) -> dict:
             data = _yahoo_ohlc(s)
     else:
         data = _yahoo_ohlc(s)
+    data = {
+        **data,
+        "retrieved_at": data.get("retrieved_at") or datetime.now(timezone.utc).isoformat(),
+        "data_start": (data.get("rows") or [{}])[0].get("date") if data.get("rows") else None,
+        "data_end": (data.get("rows") or [{}])[-1].get("date") if data.get("rows") else None,
+    }
     _CACHE[key] = (time.time(), data)
     return {**data, "cache": "miss"}
 
@@ -95,11 +114,23 @@ def williams_14_month(rows: list[dict]) -> dict | None:
     return {
         "williams_r": round(value, 4),
         "signal_month": window[-1]["month"],
+        "signal_date": window[-1]["date"],
+        "window_start_month": window[0]["month"],
+        "window_end_month": window[-1]["month"],
         "close": close,
         "highest_high": hh,
         "lowest_low": ll,
         "window_months": 14,
     }
+
+
+def _fingerprint(rows: list[dict]) -> str:
+    stable=[{
+        "symbol":x.get("symbol"),"signal_month":x.get("signal_month"),"williams_r":x.get("williams_r"),
+        "priority_rank":x.get("priority_rank"),"priority_weight":x.get("priority_weight"),"provider":x.get("provider"),
+        "data_end":x.get("data_end"),"model_version":MODEL_VERSION,"config_hash":MODEL_CONFIG_HASH,
+    } for x in rows]
+    return hashlib.sha256(json.dumps(stable,sort_keys=True,separators=(",",":")).encode()).hexdigest()[:20]
 
 
 def rank_basket(symbols: list[str]) -> dict:
@@ -111,22 +142,29 @@ def rank_basket(symbols: list[str]) -> dict:
             h = history(s)
             wr = williams_14_month(h["rows"])
             if wr is None:
-                unavailable.append({"symbol": s, "reason": "insufficient_completed_months", "provider": h.get("provider")})
+                unavailable.append({"symbol": s, "reason": "insufficient_completed_months", "provider": h.get("provider"),"data_start":h.get("data_start"),"data_end":h.get("data_end")})
                 continue
-            rows.append({"symbol": s, **wr, "provider": h.get("provider"), "source_url": h.get("source_url"), "cache": h.get("cache")})
+            rows.append({
+                "symbol": s, **wr, "provider": h.get("provider"), "source_url": h.get("source_url"), "cache": h.get("cache"),
+                "retrieved_at":h.get("retrieved_at"),"data_start":h.get("data_start"),"data_end":h.get("data_end"),
+            })
         except Exception as exc:
             unavailable.append({"symbol": s, "reason": str(exc)[:180]})
     ranked = sorted(rows, key=lambda x: x["williams_r"])
     n = len(ranked)
     denom = n * (n + 1) / 2 if n else 1
     for idx, row in enumerate(ranked):
-        # Most oversold receives highest priority rank and largest linear weight.
         priority_rank = n - idx
         row["priority_rank"] = priority_rank
         row["priority_weight"] = round(priority_rank / denom, 6)
     return {
         "eligible": ranked,
         "unavailable": unavailable,
+        "model_version":MODEL_VERSION,
+        "model_config_hash":MODEL_CONFIG_HASH,
+        "model_config":MODEL_CONFIG,
+        "input_fingerprint":_fingerprint(ranked),
+        "generated_at":datetime.now(timezone.utc).isoformat(),
         "methodology": "Prior completed 14-month Williams %R. More-negative values receive higher cross-sectional priority. Linear rank weights sum to 1 across eligible symbols. Existing holdings are not rebalanced.",
     }
 
@@ -138,4 +176,12 @@ def deployment_plan(symbols: list[str], capital: float) -> dict:
         row["suggested_dollars"] = round(max(0.0, capital) * row["priority_weight"], 2)
     ranked["capital"] = round(max(0.0, capital), 2)
     ranked["allocated"] = round(sum(x["suggested_dollars"] for x in eligible), 2)
+    ranked["lineage"]={
+        "model_version":MODEL_VERSION,
+        "model_config_hash":MODEL_CONFIG_HASH,
+        "input_fingerprint":ranked["input_fingerprint"],
+        "signal_policy":"prior completed month only",
+        "provider_preference":"Alpaca IEX when configured, Yahoo Finance fallback",
+        "constituent_inputs":[{"symbol":x["symbol"],"provider":x.get("provider"),"retrieved_at":x.get("retrieved_at"),"data_start":x.get("data_start"),"data_end":x.get("data_end"),"signal_date":x.get("signal_date"),"signal_month":x.get("signal_month"),"source_url":x.get("source_url")} for x in eligible],
+    }
     return ranked
