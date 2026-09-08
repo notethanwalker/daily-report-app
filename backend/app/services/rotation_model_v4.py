@@ -12,6 +12,7 @@ from .rotation import SECTORS
 ROTATION_HISTORY_KEY = "v4_rotation_history"
 MIN_TRANSITION_OBSERVATIONS = 4
 MAX_ROTATION_HISTORY_DAYS = 400
+STALE_INPUT_HOURS = 72
 
 
 def _f(value, default=None):
@@ -61,7 +62,7 @@ def _history_record(rows: list[dict], day: str) -> dict:
     return {
         "date": day,
         "rows": [
-            {"symbol": r["symbol"], "name": r["name"], "rotation_score": r["rotation_score"], "rotation_pressure": r["rotation_pressure"], "state": r["state"], "forward_bias": r["forward_bias"], "conviction": r["conviction"]}
+            {"symbol": r["symbol"], "name": r["name"], "rotation_score": r["rotation_score"], "rotation_pressure": r["rotation_pressure"], "state": r["state"], "forward_bias": r["forward_bias"], "conviction": r["conviction"], "stale_input": r["stale_input"]}
             for r in rows
         ],
     }
@@ -74,14 +75,12 @@ def _persist_history(db: Session, rows: list[dict], generated_at: str) -> bool:
     history = list(payload.get("daily") or [])
     record = _history_record(rows, day)
     previous_today = next((x for x in history if x.get("date") == day), None)
-    # Ordinary UI reads often recompute the exact same state. Do not emit a DB
-    # write unless the canonical daily record actually changed.
-    if previous_today == record and payload.get("methodology_version") == "rotation-v4.1":
+    if previous_today == record and payload.get("methodology_version") == "rotation-v4.2":
         return False
     history = [x for x in history if x.get("date") != day]
     history.append(record)
     history = sorted(history, key=lambda x: x.get("date", ""))[-MAX_ROTATION_HISTORY_DAYS:]
-    payload.update({"daily": history, "latest_date": day, "methodology_version": "rotation-v4.1"})
+    payload.update({"daily": history, "latest_date": day, "methodology_version": "rotation-v4.2"})
     if state:
         state.payload = payload
     else:
@@ -90,8 +89,15 @@ def _persist_history(db: Session, rows: list[dict], generated_at: str) -> bool:
     return True
 
 
+def _age_hours(dt: datetime, now: datetime) -> float:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - dt).total_seconds() / 3600.0)
+
+
 def build_rotation_model(db: Session, persist: bool = True) -> dict:
     rows = []
+    now = datetime.now(timezone.utc)
     for symbol, name in SECTORS.items():
         history = _daily_snapshots(db, symbol)
         if not history:
@@ -116,10 +122,15 @@ def build_rotation_model(db: Session, persist: bool = True) -> dict:
         history_quality = min(1.0, len(scores) / 8.0)
         conviction = raw_conviction * (0.45 + 0.55 * history_quality)
         transition_ready = len(scores) >= MIN_TRANSITION_OBSERVATIONS
+        data_age_hours = _age_hours(latest_row.retrieved_at, now)
+        stale_input = data_age_hours > STALE_INPUT_HOURS
         if not transition_ready:
             conviction = min(conviction, 45.0)
             if forward_bias not in {"hold_leadership", "neutral_to_weak"}:
                 forward_bias = "insufficient_history"
+        if stale_input:
+            conviction = min(conviction, 35.0)
+            forward_bias = "stale_input"
         pressure = level + delta_3 * 1.25
         rows.append({
             "symbol": symbol,
@@ -133,6 +144,8 @@ def build_rotation_model(db: Session, persist: bool = True) -> dict:
             "conviction": round(conviction, 1),
             "transition_ready": transition_ready,
             "history_quality": round(history_quality, 2),
+            "data_age_hours": round(data_age_hours, 1),
+            "stale_input": stale_input,
             "trend_context": round(trend, 2),
             "relative_volume": _f(p.get("relative_volume")),
             "observations": len(scores),
@@ -142,7 +155,7 @@ def build_rotation_model(db: Session, persist: bool = True) -> dict:
     states = defaultdict(int)
     for row in rows:
         states[row["state"]] += 1
-    generated_at = datetime.now(timezone.utc).isoformat()
+    generated_at = now.isoformat()
     persisted = _persist_history(db, rows, generated_at) if persist and rows else False
     return {
         "rows": rows,
@@ -151,7 +164,7 @@ def build_rotation_model(db: Session, persist: bool = True) -> dict:
         "early_rotation": sorted([x for x in rows if x["forward_bias"] in {"early_rotation_candidate", "watch_for_rotation"}], key=lambda x: x["conviction"], reverse=True)[:8],
         "state_counts": dict(states),
         "history_persisted_this_call": persisted,
-        "history_policy": {"minimum_transition_observations": MIN_TRANSITION_OBSERVATIONS, "canonical_daily_history_key": ROTATION_HISTORY_KEY, "max_days": MAX_ROTATION_HISTORY_DAYS, "write_policy": "upsert only when today's computed record changes"},
-        "methodology": "V4 rotation pressure extends the existing 1D/7D/30D + relative-volume score with stored-observation change and 100/200MA trend context. Sparse histories are confidence-capped and cannot emit predictive transition labels. Canonical daily state records are persisted idempotently for later forward-outcome calibration.",
+        "history_policy": {"minimum_transition_observations": MIN_TRANSITION_OBSERVATIONS, "canonical_daily_history_key": ROTATION_HISTORY_KEY, "max_days": MAX_ROTATION_HISTORY_DAYS, "stale_input_hours": STALE_INPUT_HOURS, "write_policy": "upsert only when today's computed record changes"},
+        "methodology": "V4 rotation pressure extends the existing 1D/7D/30D + relative-volume score with stored-observation change and 100/200MA trend context. Sparse or stale histories are confidence-capped and cannot emit actionable transition labels. Canonical daily state records are persisted idempotently for later forward-outcome calibration.",
         "generated_at": generated_at,
     }
