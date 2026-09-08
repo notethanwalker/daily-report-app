@@ -1,6 +1,10 @@
 name: Render Keepalive
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/render-keepalive.yml'
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
@@ -11,11 +15,17 @@ permissions:
 jobs:
   ping-render:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 355
     steps:
-      - name: Ping Daily Report API
+      - name: Keep Daily Report API awake
+        shell: bash
         run: |
-          curl --fail-with-body --location --max-time 90 \
-            --retry 2 --retry-delay 5 \
-            -A "daily-report-import-keepalive" \
-            https://daily-report-api-ero2.onrender.com/docs >/dev/null
+          set -u
+          for i in $(seq 1 70); do
+            date -u
+            curl --silent --show-error --location --max-time 90 \
+              --retry 3 --retry-delay 5 \
+              -A "daily-report-import-keepalive" \
+              https://daily-report-api-ero2.onrender.com/ >/dev/null || true
+            sleep 300
+          done
