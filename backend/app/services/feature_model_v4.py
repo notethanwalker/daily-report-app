@@ -10,6 +10,7 @@ from ..models import FeatureSnapshot, RefreshQueueItem
 MODEL_VERSION = "opportunity-v3.1"
 COMPONENT_WEIGHTS = {"technical": .25, "valuation": .20, "sector": .15, "flow": .15, "momentum": .15, "risk": .10}
 MODEL_CONFIG_HASH = hashlib.sha256(json.dumps(COMPONENT_WEIGHTS, sort_keys=True).encode()).hexdigest()[:12]
+MODEL_CUTOVER_DATE = "2026-09-08"
 VERSION_MAINTENANCE_SECONDS = 15 * 60
 FEATURE_MAINTENANCE_BATCH = 1000
 
@@ -19,6 +20,19 @@ def version_payload(payload: dict | None) -> dict:
     out.setdefault("model_version", MODEL_VERSION)
     out.setdefault("model_config_hash", MODEL_CONFIG_HASH)
     out.setdefault("model_component_weights", COMPONENT_WEIGHTS)
+    return out
+
+
+def presentation_payload(payload: dict | None, as_of: str | None) -> dict:
+    """Never imply a historical snapshot used the current formula unless it was
+    persisted under/after the explicit v4 cutover."""
+    out = dict(payload or {})
+    if out.get("model_version"):
+        return out
+    if str(as_of or "")[:10] >= MODEL_CUTOVER_DATE:
+        return version_payload(out)
+    out["model_version"] = "legacy_unversioned"
+    out["model_config_hash"] = None
     return out
 
 
@@ -55,26 +69,26 @@ def maintain_feature_snapshots() -> dict:
                         db.commit()
                     failed += 1
 
-        # Portable across SQLite/Postgres: bounded newest-first scan rather than
-        # dialect-specific JSON operators.
         rows = db.query(FeatureSnapshot).order_by(FeatureSnapshot.id.desc()).limit(FEATURE_MAINTENANCE_BATCH).all()
         for row in rows:
             if (row.payload or {}).get("model_version"):
+                continue
+            if str(row.as_of or "")[:10] < MODEL_CUTOVER_DATE:
                 continue
             row.payload = version_payload(row.payload or {})
             versioned += 1
         if versioned:
             db.commit()
-        return {"generated": generated, "versioned": versioned, "failed": failed}
+        return {"generated": generated, "versioned": versioned, "failed": failed, "cutover_date": MODEL_CUTOVER_DATE}
     except Exception:
         db.rollback()
-        return {"generated": generated, "versioned": versioned, "failed": failed + 1}
+        return {"generated": generated, "versioned": versioned, "failed": failed + 1, "cutover_date": MODEL_CUTOVER_DATE}
     finally:
         db.close()
 
 
 async def feature_version_loop():
-    """Completes v4 shortlist enrichment and versions snapshots off the read path."""
+    """Completes v4 shortlist enrichment and versions only post-cutover snapshots."""
     while True:
         await asyncio.to_thread(maintain_feature_snapshots)
         await asyncio.sleep(VERSION_MAINTENANCE_SECONDS)
