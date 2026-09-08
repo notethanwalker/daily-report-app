@@ -1,5 +1,6 @@
 import asyncio
 import os
+import urllib.request
 from http.cookies import SimpleCookie
 
 from starlette.responses import JSONResponse
@@ -114,6 +115,21 @@ async def authenticated_session_gate(request,call_next):
     finally:db.close()
     return await call_next(request)
 
+
+def _self_keepalive_request():
+    url=os.getenv("RENDER_EXTERNAL_URL") or "https://daily-report-api-ero2.onrender.com"
+    req=urllib.request.Request(url.rstrip("/")+"/",headers={"User-Agent":"daily-report-self-keepalive"})
+    with urllib.request.urlopen(req,timeout=30) as response:
+        response.read(1)
+
+async def self_keepalive_loop():
+    while True:
+        await asyncio.sleep(8*60)
+        try:
+            await asyncio.to_thread(_self_keepalive_request)
+        except Exception:
+            pass
+
 @app.on_event("startup")
 async def start_refresh_scheduler():
-    asyncio.create_task(scheduler_loop());asyncio.create_task(bulk_market_loop());asyncio.create_task(yahoo_bootstrap_loop());asyncio.create_task(opportunity_incremental_loop());asyncio.create_task(stooq_import_loop())
+    asyncio.create_task(scheduler_loop());asyncio.create_task(bulk_market_loop());asyncio.create_task(yahoo_bootstrap_loop());asyncio.create_task(opportunity_incremental_loop());asyncio.create_task(stooq_import_loop());asyncio.create_task(self_keepalive_loop())
