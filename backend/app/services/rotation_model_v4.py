@@ -98,6 +98,28 @@ def _age_hours(dt: datetime, now: datetime) -> float:
     return max(0.0, (now - dt).total_seconds() / 3600.0)
 
 
+def _observation_age_hours(row: MarketSnapshot, payload: dict, now: datetime) -> float:
+    """Use the older of retrieval freshness and provider observation freshness.
+    This prevents re-fetching an old bar from making stale market state look fresh."""
+    ages = [_age_hours(row.retrieved_at, now)]
+    raw = str(payload.get("as_of") or row.as_of or "").strip()
+    if raw:
+        try:
+            text = raw.replace("Z", "+00:00")
+            if len(text) == 10:
+                observed = datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
+            else:
+                observed = datetime.fromisoformat(text)
+                if observed.tzinfo is None:
+                    observed = observed.replace(tzinfo=timezone.utc)
+                else:
+                    observed = observed.astimezone(timezone.utc)
+            ages.append(_age_hours(observed, now))
+        except ValueError:
+            pass
+    return max(ages)
+
+
 def build_rotation_model(db: Session, persist: bool = False) -> dict:
     rows = []
     now = datetime.now(timezone.utc)
@@ -125,7 +147,7 @@ def build_rotation_model(db: Session, persist: bool = False) -> dict:
         history_quality = min(1.0, len(scores) / 8.0)
         conviction = raw_conviction * (0.45 + 0.55 * history_quality)
         transition_ready = len(scores) >= MIN_TRANSITION_OBSERVATIONS
-        data_age_hours = _age_hours(latest_row.retrieved_at, now)
+        data_age_hours = _observation_age_hours(latest_row, p, now)
         stale_input = data_age_hours > STALE_INPUT_HOURS
         if not transition_ready:
             conviction = min(conviction, 45.0)
@@ -168,7 +190,7 @@ def build_rotation_model(db: Session, persist: bool = False) -> dict:
         "state_counts": dict(states),
         "history_persisted_this_call": persisted,
         "history_policy": {"minimum_transition_observations": MIN_TRANSITION_OBSERVATIONS, "canonical_daily_history_key": ROTATION_HISTORY_KEY, "max_days": MAX_ROTATION_HISTORY_DAYS, "stale_input_hours": STALE_INPUT_HOURS, "capture_seconds": ROTATION_CAPTURE_SECONDS, "write_policy": "background upsert only when today's computed record changes"},
-        "methodology": "V4 rotation pressure extends the existing 1D/7D/30D + relative-volume score with stored-observation change and 100/200MA trend context. Sparse or stale histories are confidence-capped and cannot emit actionable transition labels. Canonical daily state records are persisted by a background capture loop rather than by UI reads.",
+        "methodology": "V4 rotation pressure extends the existing 1D/7D/30D + relative-volume score with stored-observation change and 100/200MA trend context. Sparse or stale histories are confidence-capped and cannot emit actionable transition labels. Freshness uses both provider observation time and retrieval time. Canonical daily state records are persisted by a background capture loop rather than by UI reads.",
         "generated_at": generated_at,
     }
 
