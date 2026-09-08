@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - 'scripts/williams_research_suite.py'
+      - 'scripts/williams_hybrid_test.py'
       - '.github/workflows/williams-research-report.yml'
 
 permissions:
@@ -29,9 +30,18 @@ jobs:
             --signal-end 2026-09-04 \
             --valuation-end 2026-09-08 \
             --output williams_research_report.json
-      - name: Upload report
+      - name: Run hybrid experiment
+        run: |
+          python scripts/williams_hybrid_test.py \
+            --symbols NVDA,MSFT,GOOGL,AMZN,META,CELH,CROX,ELF,ACLS,CAVA \
+            --start 2017-01-01 \
+            --end 2026-09-04 \
+            --output williams_hybrid_results.json
+      - name: Upload reports
         uses: actions/upload-artifact@v4
         with:
           name: williams-research-report
-          path: williams_research_report.json
+          path: |
+            williams_research_report.json
+            williams_hybrid_results.json
           retention-days: 30
