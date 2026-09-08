@@ -22,7 +22,7 @@ class PrivateScopeContract(unittest.TestCase):
         self.assertIn('@router.get("/tracked")',OPPORTUNITY_ROUTER);self.assertIn("UserWatchlistItem.user_email == user",OPPORTUNITY_ROUTER);self.assertIn("PortfolioHolding.user_email == user",OPPORTUNITY_ROUTER);self.assertIn("PortfolioDefinition.user_email == user",OPPORTUNITY_ROUTER);self.assertIn('@router.get("/market-scan")',OPPORTUNITY_ROUTER);self.assertIn("user: str = Depends(current_user)",OPPORTUNITY_ROUTER)
         self.assertIn('api("/api/v1/opportunities/tracked")',OPPORTUNITY_UI);self.assertIn('/api/v1/opportunities/market-scan?limit=200&include_etfs=',OPPORTUNITY_UI);self.assertNotIn('api("/api/v1/opportunities?limit=200")',OPPORTUNITY_UI)
     def test_market_scanner_reads_only_latest_snapshot_per_symbol(self):
-        self.assertIn('func.max(MarketSnapshot.id)',OPPORTUNITY_SERVICE);self.assertIn('Ranking performs zero provider calls',OPPORTUNITY_SERVICE)
+        self.assertIn('func.max(MarketSnapshot.id)',OPPORTUNITY_SERVICE);self.assertIn('zero provider calls',OPPORTUNITY_SERVICE.lower())
     def test_scanner_defaults_to_stocks_and_uses_real_confirmation(self):
         self.assertIn('include_etfs: bool = Query(default=False)',OPPORTUNITY_ROUTER)
         self.assertIn('approach_velocity_100_5d',OPPORTUNITY_SERVICE)
