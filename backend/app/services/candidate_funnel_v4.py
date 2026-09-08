@@ -41,7 +41,7 @@ def _setup_type(macro: dict) -> str:
     return "technical_only"
 
 
-def _enqueue_deep_enrichment(db: Session, symbols: list[str]) -> int:
+def enqueue_deep_enrichment(db: Session, symbols: list[str]) -> int:
     added = 0
     for symbol in symbols[:DEEP_ENRICHMENT_LIMIT]:
         for data_class in ("fundamentals",):
@@ -64,7 +64,7 @@ def _enqueue_deep_enrichment(db: Session, symbols: list[str]) -> int:
     return added
 
 
-def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50, enqueue_enrichment: bool = True) -> dict:
+def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50, enqueue_enrichment: bool = False) -> dict:
     scan = scan_cached_market(db, include_near=True, limit_per_bucket=max(limit * 4, 200), include_etfs=False)
     source_rows = []
     for bucket, base_bonus in (("strong", 8.0), ("weak", 4.0), ("near", 0.0)):
@@ -94,8 +94,6 @@ def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50, enqueue
             base_buy_source = "persisted_opportunity_model"
             enrichment = "full"
         else:
-            # Neutral fallback avoids counting scanner technicals twice before the
-            # richer opportunity model has actually been computed.
             base_buy = 50.0
             base_buy_source = "neutral_pending_enrichment"
             enrichment = "scanner_only"
@@ -139,19 +137,19 @@ def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50, enqueue
     ranked.sort(key=lambda x: x["raw_rank_score"], reverse=True)
     shortlist = ranked[:limit]
     deep_needed = [x["symbol"] for x in shortlist if x["needs_deep_enrichment"]][:DEEP_ENRICHMENT_LIMIT]
-    queued = _enqueue_deep_enrichment(db, deep_needed) if enqueue_enrichment and deep_needed else 0
+    queued = enqueue_deep_enrichment(db, deep_needed) if enqueue_enrichment and deep_needed else 0
     return {
         "stages": [
             {"name": "Universe", "input": scan.get("counts", {}).get("cached_symbols_scanned", 0), "output": scan.get("counts", {}).get("technically_eligible", 0), "rule": "Cached equities only; minimum price and average-dollar-volume filters."},
             {"name": "Technical setup", "input": scan.get("counts", {}).get("technically_eligible", 0), "output": len(source_rows), "rule": "Williams %R + approach to 100MA, preserving strong/weak/near buckets."},
             {"name": "Macro fit", "input": len(source_rows), "output": len(source_rows), "rule": "Attach most-specific sector/industry/theme rotation proxy. Rotation contribution is multiplied by model conviction/history quality."},
             {"name": "Rank", "input": len(source_rows), "output": len(shortlist), "rule": "55% scanner technical score, 25% persisted buy score (neutral 50 when missing), 15% confidence-weighted macro context, plus bounded liquidity/setup bonuses. Display score is normalized 0-100."},
-            {"name": "Deep enrichment queue", "input": len(shortlist), "output": len(deep_needed), "rule": f"At most {DEEP_ENRICHMENT_LIMIT} scanner-only finalists are queued for fundamentals enrichment; duplicate queued/running jobs are suppressed."},
+            {"name": "Deep enrichment shortlist", "input": len(shortlist), "output": len(deep_needed), "rule": f"At most {DEEP_ENRICHMENT_LIMIT} scanner-only finalists are eligible for fundamentals enrichment. GET ranking is read-only; queueing is an explicit action."},
         ],
         "candidates": shortlist,
         "deep_enrichment_symbols": deep_needed,
         "deep_enrichment_jobs_added": queued,
         "source_scan_counts": scan.get("counts", {}),
-        "methodology": "The funnel is candidate-first and cache-first. Scanner-only names receive a neutral nontechnical prior rather than double-counting their setup. Theme/industry rotation can override broad-sector context, and macro influence is confidence-weighted.",
+        "methodology": "The funnel is candidate-first and cache-first. Scanner-only names receive a neutral nontechnical prior rather than double-counting their setup. Theme/industry rotation can override broad-sector context, macro influence is confidence-weighted, and read endpoints do not enqueue work.",
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
