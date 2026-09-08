@@ -85,15 +85,24 @@ def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50, enqueue
         proxy_name, proxy_basis = rotation_proxy_name(symbol, sector, industry, themes)
         macro = rotation_by_name.get(str(proxy_name)) or rotation_by_name.get(str(sector)) or {}
         rotation_pressure = _f(macro.get("rotation_pressure"), 0.0)
-        conviction = _f(macro.get("conviction"), 0.0)
-        macro_fit = max(-15.0, min(15.0, rotation_pressure * 3.0))
-        base_buy = _f(feature.get("buy_score"), row.get("score") or 0.0)
+        conviction = max(0.0, min(100.0, _f(macro.get("conviction"), 0.0)))
+        confidence_factor = conviction / 100.0 if macro.get("transition_ready", True) else min(conviction / 100.0, .45)
+        macro_fit = max(-15.0, min(15.0, rotation_pressure * 3.0)) * confidence_factor
         technical = _f(row.get("score"), 0.0)
+        if feature:
+            base_buy = _f(feature.get("buy_score"), 50.0)
+            base_buy_source = "persisted_opportunity_model"
+            enrichment = "full"
+        else:
+            # Neutral fallback avoids counting scanner technicals twice before the
+            # richer opportunity model has actually been computed.
+            base_buy = 50.0
+            base_buy_source = "neutral_pending_enrichment"
+            enrichment = "scanner_only"
         liquidity = _f(row.get("average_dollar_volume_20d"), 0.0)
         liquidity_score = min(5.0, max(0.0, liquidity / 100_000_000 * 5.0))
         raw_score = technical * .55 + base_buy * .25 + (50 + macro_fit) * .15 + liquidity_score + bucket_bonus
         final_score = max(0.0, min(100.0, raw_score))
-        enrichment = "full" if feature else "scanner_only"
         ranked.append({
             "symbol": symbol,
             "name": row.get("name") or (reg.name if reg else None),
@@ -107,9 +116,11 @@ def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50, enqueue
             "raw_rank_score": round(raw_score, 2),
             "technical_score": round(technical, 1),
             "base_buy_score": round(base_buy, 1),
+            "base_buy_source": base_buy_source,
             "rotation_pressure": round(rotation_pressure, 3),
             "rotation_state": macro.get("state"),
             "rotation_conviction": round(conviction, 1),
+            "macro_confidence_factor": round(confidence_factor, 3),
             "williams_r_14": row.get("williams_r_14"),
             "price_vs_ma100_percent": row.get("price_vs_ma100_percent"),
             "average_dollar_volume_20d": row.get("average_dollar_volume_20d"),
@@ -121,8 +132,8 @@ def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50, enqueue
             "explain": {
                 "stage_1_universe": "Broad cached stock universe after price/liquidity filters",
                 "stage_2_technical": f"{row.get('bucket')} Williams/100MA setup",
-                "stage_3_macro": f"{proxy_name or 'unmapped'}: {macro.get('state') or 'rotation data unavailable'}",
-                "stage_4_score": "Technical setup remains dominant; existing buy score and sector/theme rotation refine ranking.",
+                "stage_3_macro": f"{proxy_name or 'unmapped'}: {macro.get('state') or 'rotation data unavailable'}; confidence factor {confidence_factor:.2f}",
+                "stage_4_score": "Technical setup remains dominant; persisted opportunity score is used only when available, otherwise a neutral 50 is used until enrichment completes.",
             },
         })
     ranked.sort(key=lambda x: x["raw_rank_score"], reverse=True)
@@ -133,14 +144,14 @@ def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50, enqueue
         "stages": [
             {"name": "Universe", "input": scan.get("counts", {}).get("cached_symbols_scanned", 0), "output": scan.get("counts", {}).get("technically_eligible", 0), "rule": "Cached equities only; minimum price and average-dollar-volume filters."},
             {"name": "Technical setup", "input": scan.get("counts", {}).get("technically_eligible", 0), "output": len(source_rows), "rule": "Williams %R + approach to 100MA, preserving strong/weak/near buckets."},
-            {"name": "Macro fit", "input": len(source_rows), "output": len(source_rows), "rule": "Attach most-specific available sector/industry/theme rotation proxy without discarding technically strong counter-rotation candidates."},
-            {"name": "Rank", "input": len(source_rows), "output": len(shortlist), "rule": "55% scanner technical score, 25% existing buy score, 15% macro context, plus bounded liquidity/setup bonuses. Display score is normalized 0-100; raw rank score is retained for ordering."},
+            {"name": "Macro fit", "input": len(source_rows), "output": len(source_rows), "rule": "Attach most-specific sector/industry/theme rotation proxy. Rotation contribution is multiplied by model conviction/history quality."},
+            {"name": "Rank", "input": len(source_rows), "output": len(shortlist), "rule": "55% scanner technical score, 25% persisted buy score (neutral 50 when missing), 15% confidence-weighted macro context, plus bounded liquidity/setup bonuses. Display score is normalized 0-100."},
             {"name": "Deep enrichment queue", "input": len(shortlist), "output": len(deep_needed), "rule": f"At most {DEEP_ENRICHMENT_LIMIT} scanner-only finalists are queued for fundamentals enrichment; duplicate queued/running jobs are suppressed."},
         ],
         "candidates": shortlist,
         "deep_enrichment_symbols": deep_needed,
         "deep_enrichment_jobs_added": queued,
         "source_scan_counts": scan.get("counts", {}),
-        "methodology": "The funnel is candidate-first and cache-first. It narrows the broad universe using the existing Williams/100MA scanner before richer scoring. Theme/industry rotation can override broad-sector context when the mapping is more decision-relevant.",
+        "methodology": "The funnel is candidate-first and cache-first. Scanner-only names receive a neutral nontechnical prior rather than double-counting their setup. Theme/industry rotation can override broad-sector context, and macro influence is confidence-weighted.",
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
