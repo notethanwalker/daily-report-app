@@ -84,6 +84,22 @@ def rotation_calibration_summary(db:Session,horizon_days:int=20)->dict:
         rel=(float(sf[-1].close)/ss-1)*100-(float(bf[-1].close)/bs-1)*100;groups.setdefault(r.state,[]).append(rel)
     return {"horizon_days":horizon_days,"benchmark_policy":CALIBRATION_BENCHMARKS,"states":{k:{"samples":len(v),"mean_relative_return_pct":round(sum(v)/len(v),3),"outperformance_rate":round(sum(1 for x in v if x>0)/len(v),3),"probability_label_eligible":len(v)>=30} for k,v in groups.items() if v},"skipped_non_equity_or_unmapped_rows":skipped,"model_version":ROTATION_MODEL_VERSION,"interpretation":"Equity sectors/themes are calibrated relative to category-appropriate equity benchmarks. Cross-asset groups are excluded until dedicated benchmark models exist. Probability language requires at least 30 observations per state."}
 
+
+def _score_band(score:float)->str:
+    if score>=85:return "85-100"
+    if score>=75:return "75-84.9"
+    if score>=65:return "65-74.9"
+    if score>=55:return "55-64.9"
+    return "<55"
+def _summary(values:list[tuple[float,float,float]])->dict:
+    rets=[x[0] for x in values];mfes=[x[1] for x in values];maes=[x[2] for x in values]
+    return {"samples":len(values),"mean_return_pct":round(sum(rets)/len(rets),3),"positive_rate":round(sum(1 for x in rets if x>0)/len(rets),3),"mean_mfe_pct":round(sum(mfes)/len(mfes),3),"mean_mae_pct":round(sum(maes)/len(maes),3),"probability_label_eligible":len(values)>=30}
+def candidate_calibration_summary(db:Session,horizon_days:int=20)->dict:
+    rows=db.query(CandidateObservationV4,CandidateOutcomeV4).join(CandidateOutcomeV4,CandidateObservationV4.id==CandidateOutcomeV4.candidate_id).filter(CandidateObservationV4.model_version==CANDIDATE_MODEL_VERSION,CandidateOutcomeV4.horizon_days==horizon_days,CandidateOutcomeV4.status=="complete").all();by_band={};by_setup={}
+    for c,o in rows:
+        tup=(float(o.return_pct or 0),float(o.max_favorable_excursion_pct or 0),float(o.max_adverse_excursion_pct or 0));by_band.setdefault(_score_band(c.funnel_score),[]).append(tup);by_setup.setdefault(c.setup_type,[]).append(tup)
+    return {"horizon_days":horizon_days,"model_version":CANDIDATE_MODEL_VERSION,"by_score_band":{k:_summary(v) for k,v in by_band.items()},"by_setup_type":{k:_summary(v) for k,v in by_setup.items()},"interpretation":"Prospective self-evaluation of frozen first-discovery candidate observations. Probability language should only be used for groups with at least 30 observations."}
+
 def capture_once()->dict:
     db=SessionLocal()
     try:
