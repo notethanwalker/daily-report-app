@@ -10,7 +10,7 @@ from ..models import FeatureSnapshot, FundamentalCache, MarketSnapshot, SymbolRe
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from ..normalized_market_models import MarketPipelineState
 from ..providers.alpaca_market_data import AlpacaMarketDataProvider
-from ..services.candidate_funnel_v4 import build_candidate_funnel
+from ..services.candidate_funnel_v4 import build_candidate_funnel, enqueue_deep_enrichment
 from ..services.classification_v4 import rotation_proxy_name
 from ..services.feature_model_v4 import version_payload
 from ..services.monthly_priority import deployment_plan
@@ -33,13 +33,7 @@ def _user_symbols(db: Session, user: str) -> list[str]:
 
 def _latest_feature(db: Session, symbol: str) -> dict:
     row = db.query(FeatureSnapshot).filter(FeatureSnapshot.symbol == symbol).order_by(FeatureSnapshot.as_of.desc(), FeatureSnapshot.created_at.desc()).first()
-    if not row:
-        return {}
-    payload = version_payload(row.payload or {})
-    if payload != (row.payload or {}):
-        row.payload = payload
-        db.commit()
-    return {**payload, "as_of": row.as_of}
+    return {**version_payload(row.payload or {}), "as_of": row.as_of} if row else {}
 
 
 def _latest_market(db: Session, symbol: str) -> dict:
@@ -79,7 +73,10 @@ def _tracked_opportunities(db: Session, symbols: list[str], rotation: dict) -> l
         buy = float(f.get("buy_score") or 0)
         macro, proxy, basis = _macro_for_security(rotation, s, m, reg)
         pressure = float(macro.get("rotation_pressure") or 0)
-        raw_score = buy + max(-10.0, min(10.0, pressure * 2.5))
+        conviction = max(0.0, min(100.0, float(macro.get("conviction") or 0)))
+        confidence_factor = conviction / 100.0 if macro.get("transition_ready", True) else min(conviction / 100.0, .45)
+        macro_adjustment = max(-10.0, min(10.0, pressure * 2.5)) * confidence_factor
+        raw_score = buy + macro_adjustment
         rows.append({
             "symbol": s,
             "score": round(max(0.0, min(100.0, raw_score)), 2),
@@ -91,6 +88,7 @@ def _tracked_opportunities(db: Session, symbols: list[str], rotation: dict) -> l
             "rotation_pressure": macro.get("rotation_pressure"),
             "rotation_state": macro.get("state"),
             "rotation_conviction": macro.get("conviction"),
+            "macro_confidence_factor": round(confidence_factor, 3),
             "williams_feature": f.get("williams_r"),
             "ma100_distance": f.get("ma100_distance"),
             "as_of": f.get("as_of") or m.get("as_of"),
@@ -112,43 +110,15 @@ def overview(db: Session = Depends(get_db), user: str = Depends(current_user)):
     rotation_state = db.get(MarketPipelineState, ROTATION_HISTORY_KEY)
     rotation_history_days = len((rotation_state.payload or {}).get("daily", [])) if rotation_state else 0
     return {
-        "version": "4.2-dev",
+        "version": "4.3-dev",
         "pipeline": ["research", "macro", "opportunity", "deployment"],
         "provider_policy": ProviderOrchestrator().describe(),
         "sources": _source_registry(),
         "layers": {
-            "research": {
-                "symbols": len(symbols),
-                "stored_market_snapshots": market_count,
-                "stored_feature_snapshots": feature_count,
-                "status": "active-v4",
-                "capabilities": ["markets", "portfolios", "security research", "fundamentals", "world news", "events", "large flow", "theses", "alerts", "versioned score history"],
-            },
-            "macro": {
-                "status": "active-v4",
-                "sector_rows": len(rotation.get("rows", [])),
-                "leaders": rotation.get("leaders", [])[:5],
-                "early_rotation": rotation.get("early_rotation", [])[:5],
-                "outflow_risk": rotation.get("outflow_risk", [])[:5],
-                "state_counts": rotation.get("state_counts", {}),
-                "rotation_history_days": rotation_history_days,
-                "history_policy": rotation.get("history_policy"),
-                "methodology": rotation.get("methodology"),
-                "capabilities": ["sector/theme strength", "rotation acceleration/deceleration", "transition states", "persisted state history", "breadth", "regime", "currencies", "liquidity proxies"],
-            },
-            "opportunity": {
-                "status": "active-v4",
-                "candidates": tracked[:10],
-                "candidate_count": len(tracked),
-                "methodology": "Tracked candidates combine versioned opportunity scores with bounded sector/theme-rotation pressure. The broad-market funnel is cache-first, then queues only shortlisted names for deeper enrichment.",
-            },
-            "deployment": {
-                "status": "phase-1",
-                "models": ["Williams Priority — new capital only"],
-                "named_baskets": {"AI Buildout Basket": AI_BUILDOUT_BASKET},
-                "manual_quality_gate": True,
-                "rebalancing_default": False,
-            },
+            "research": {"symbols": len(symbols), "stored_market_snapshots": market_count, "stored_feature_snapshots": feature_count, "status": "active-v4", "capabilities": ["markets", "portfolios", "security research", "fundamentals", "world news", "events", "large flow", "theses", "alerts", "versioned score history"]},
+            "macro": {"status": "active-v4", "sector_rows": len(rotation.get("rows", [])), "leaders": rotation.get("leaders", [])[:5], "early_rotation": rotation.get("early_rotation", [])[:5], "outflow_risk": rotation.get("outflow_risk", [])[:5], "state_counts": rotation.get("state_counts", {}), "rotation_history_days": rotation_history_days, "history_policy": rotation.get("history_policy"), "methodology": rotation.get("methodology"), "capabilities": ["sector/theme strength", "rotation acceleration/deceleration", "transition states", "persisted state history", "breadth", "regime", "currencies", "liquidity proxies"]},
+            "opportunity": {"status": "active-v4", "candidates": tracked[:10], "candidate_count": len(tracked), "methodology": "Tracked candidates combine versioned opportunity scores with confidence-weighted sector/theme rotation. Broad-market ranking is read-only; enrichment is a separate bounded action."},
+            "deployment": {"status": "phase-1", "models": ["Williams Priority — new capital only"], "named_baskets": {"AI Buildout Basket": AI_BUILDOUT_BASKET}, "manual_quality_gate": True, "rebalancing_default": False},
         },
     }
 
@@ -175,14 +145,21 @@ def rotation_history(days: int = Query(90, ge=1, le=400), db: Session = Depends(
 @router.get("/candidates")
 def candidates(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), user: str = Depends(current_user)):
     _ = user
-    rotation_model = build_rotation_model(db)
-    return build_candidate_funnel(db, rotation_model, limit=limit)
+    return build_candidate_funnel(db, build_rotation_model(db), limit=limit, enqueue_enrichment=False)
+
+
+@router.post("/candidates/enrich")
+def enrich_candidates(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), user: str = Depends(current_user)):
+    _ = user
+    funnel = build_candidate_funnel(db, build_rotation_model(db), limit=limit, enqueue_enrichment=False)
+    symbols = funnel.get("deep_enrichment_symbols", [])
+    added = enqueue_deep_enrichment(db, symbols)
+    return {"shortlist": symbols, "jobs_added": added, "limit": min(limit, 200), "policy": "Explicit mutation; at most 25 scanner-only finalists are queued and queued/running duplicates are suppressed."}
 
 
 @router.get("/scores/{symbol}")
 def score_history(symbol: str, limit: int = Query(90, ge=2, le=365), db: Session = Depends(get_db), user: str = Depends(current_user)):
     _ = user
-    _latest_feature(db, symbol.strip().upper())
     return build_score_history(db, symbol, limit=limit)
 
 
@@ -215,7 +192,7 @@ def research_workspace(symbol: str, db: Session = Depends(get_db), user: str = D
         "rotation_context": {"proxy": proxy, "basis": basis, "state": macro},
         "theses": related_theses,
         "data_state": {"market": bool(market), "fundamentals": bool(fundamentals_row), "feature_history_points": len(history.get("history", [])), "registry": bool(registry)},
-        "methodology": "Entity-centric workspace composes stored market, fundamentals, versioned feature history, flow, theses and the most-specific available sector/theme rotation context. It remains cache-first.",
+        "methodology": "Entity-centric workspace composes stored market, fundamentals, versioned feature history, flow, theses and the most-specific available sector/theme rotation context. It remains cache-first and read-only.",
     }
 
 
@@ -237,13 +214,4 @@ def deployment(
         selected = _user_symbols(db, user)
         basket_name = "Watchlist + Portfolio"
     result = deployment_plan(selected, capital)
-    return {
-        "model": "Williams Priority v1",
-        "basket": basket_name,
-        "symbols": selected,
-        "capital": capital,
-        "new_capital_only": True,
-        "existing_holdings_rebalanced": False,
-        "quality_gate": "manual",
-        **result,
-    }
+    return {"model": "Williams Priority v1", "basket": basket_name, "symbols": selected, "capital": capital, "new_capital_only": True, "existing_holdings_rebalanced": False, "quality_gate": "manual", **result}
