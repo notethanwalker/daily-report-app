@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import os
 import re
-from urllib.parse import urljoin
 
 import httpx
 from sqlalchemy import text
@@ -36,115 +34,67 @@ def _enqueue_bytes(db, raw: bytes, filename: str = "stooq_opportunities_package.
     return True
 
 
-def _interesting_strings(text_body: str) -> list[str]:
-    cleaned = html.unescape(text_body).replace("\\/", "/")
-    out: list[str] = []
-    for match in re.finditer(r'[^\n\r]{0,140}(?:download|presign|signed|\/api\/|shareId|publicId|file_id|fileId|objectKey|storageKey)[^\n\r]{0,220}', cleaned, flags=re.I):
-        value = re.sub(r'\s+', ' ', match.group(0)).strip()
-        if value and value not in out:
-            out.append(value[:700])
-        if len(out) >= 80:
-            break
-    return out
-
-
-def _candidate_urls(base_url: str, text_body: str) -> list[str]:
-    cleaned = html.unescape(text_body).replace("\\/", "/")
-    found: list[str] = []
-    patterns = [
-        r'https?://[^\s"\'<>]+',
-        r'(?:href|src)=["\']([^"\']+)["\']',
-        r'["\'](\/[^"\']*(?:download|file|object|storage|zip|api)[^"\']*)["\']',
-    ]
-    for pattern in patterns:
-        for match in re.findall(pattern, cleaned, flags=re.I):
-            value = match if isinstance(match, str) else match[0]
-            value = value.strip().rstrip(",);}")
-            if not value:
-                continue
-            url = urljoin(base_url, value)
-            if url.startswith("http") and url not in found:
-                found.append(url)
-    def score(url: str) -> tuple[int, int]:
-        low = url.lower()
-        s = 0
-        for term, weight in ((".zip", 100), ("download", 50), ("presign", 45), ("signed", 40), ("object", 30), ("storage", 25), ("file", 20), ("api", 10)):
-            if term in low:
-                s += weight
-        if low.endswith(".js"):
-            s -= 20
-        return (-s, len(url))
-    return sorted(found, key=score)
-
-
 def _recover_remote_share(db) -> bool:
     share_url = (os.getenv("STOOQ_RECOVERY_SHARE_URL") or "").strip()
     if not share_url:
         return False
     ensure_tables(db)
-    existing = db.execute(text("SELECT COUNT(*) FROM stooq_import_uploads WHERE status IN ('uploading','queued','importing')")).scalar() or 0
-    if existing:
+    active = db.execute(text("SELECT COUNT(*) FROM stooq_import_uploads WHERE status IN ('uploading','queued','importing')")).scalar() or 0
+    if active:
         return False
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/zip,application/octet-stream;q=0.9,*/*;q=0.8",
-    }
+    match = re.search(r"/(?:ja|en/)?f/([0-9A-Za-z_-]+)", share_url)
+    if not match:
+        match = re.search(r"/f/([0-9A-Za-z_-]+)", share_url)
+    if not match:
+        _save_recovery_state(db, {"status": "failed", "error": "Could not parse firestorage share id", "share_url": share_url})
+        return False
+    share_id = match.group(1)
+    headers = {"User-Agent": "Mozilla/5.0 Chrome/152", "Accept": "application/json,application/zip,application/octet-stream,*/*"}
     attempts = []
-    diagnostics: list[str] = []
-    candidate_preview: list[str] = []
-    try:
-        with httpx.Client(timeout=httpx.Timeout(30.0, read=180.0), follow_redirects=True, headers=headers) as client:
-            response = client.get(share_url)
-            attempts.append({"url": str(response.url), "status": response.status_code, "content_type": response.headers.get("content-type"), "bytes": len(response.content)})
-            response.raise_for_status()
-            if _enqueue_bytes(db, response.content):
-                _save_recovery_state(db, {"status": "queued", "source": str(response.url), "bytes": len(response.content), "attempts": attempts})
-                return True
-            body = response.text
-            diagnostics.extend(_interesting_strings(body))
-            candidates = _candidate_urls(str(response.url), body)
-            candidate_preview.extend(candidates[:50])
-            expanded = list(candidates[:50])
-            js_candidates = [u for u in candidates if u.lower().split("?", 1)[0].endswith(".js")][:40]
-            for candidate in js_candidates:
-                try:
-                    js = client.get(candidate)
-                    if js.status_code == 200 and len(js.content) < 5_000_000:
-                        for item in _interesting_strings(js.text):
-                            if item not in diagnostics:
-                                diagnostics.append(item)
-                                if len(diagnostics) >= 100:
-                                    break
-                        for nested in _candidate_urls(str(js.url), js.text):
-                            if nested not in expanded:
-                                expanded.append(nested)
-                            if nested not in candidate_preview and len(candidate_preview) < 100:
-                                candidate_preview.append(nested)
-                except Exception:
+    with httpx.Client(timeout=httpx.Timeout(30.0, read=240.0), follow_redirects=True, headers=headers) as client:
+        for api_base in ("https://api.firestorage.ai/dev/file", "https://api.firestorage.ai/prod/file"):
+            try:
+                listing_url = f"{api_base}/shares/{share_id}/files?maxResults=1000"
+                listing = client.get(listing_url)
+                attempts.append({"step": "list", "url": listing_url, "status": listing.status_code, "bytes": len(listing.content)})
+                if listing.status_code != 200:
                     continue
-            for candidate in expanded[:100]:
-                try:
-                    item = client.get(candidate)
-                    attempts.append({"url": str(item.url), "status": item.status_code, "content_type": item.headers.get("content-type"), "bytes": len(item.content)})
-                    if item.status_code == 200 and _enqueue_bytes(db, item.content):
-                        _save_recovery_state(db, {"status": "queued", "source": str(item.url), "bytes": len(item.content), "attempts": attempts[-12:]})
+                payload = listing.json()
+                files = list(payload.get("files") or [])
+                if not files:
+                    continue
+                files.sort(key=lambda item: (0 if str(item.get("name") or item.get("fileName") or "").lower().endswith(".zip") else 1))
+                for item in files:
+                    file_id = item.get("fileId") or item.get("file_id") or item.get("id")
+                    filename = item.get("name") or item.get("fileName") or "stooq_opportunities_package.zip"
+                    if not file_id:
+                        continue
+                    download_api = f"{api_base}/shares/{share_id}/files/{file_id}/download"
+                    signed = client.post(download_api)
+                    attempts.append({"step": "sign", "url": download_api, "status": signed.status_code, "bytes": len(signed.content), "file_id": str(file_id)})
+                    if signed.status_code != 200:
+                        continue
+                    signed_payload = signed.json()
+                    download_url = signed_payload.get("downloadUrl") or signed_payload.get("download_url") or signed_payload.get("url")
+                    if not download_url:
+                        continue
+                    blob = client.get(download_url)
+                    attempts.append({"step": "download", "status": blob.status_code, "bytes": len(blob.content), "content_type": blob.headers.get("content-type"), "file_id": str(file_id)})
+                    if blob.status_code == 200 and _enqueue_bytes(db, blob.content, str(filename)):
+                        _save_recovery_state(db, {
+                            "status": "queued",
+                            "share_id": share_id,
+                            "api_base": api_base,
+                            "file_id": str(file_id),
+                            "filename": str(filename),
+                            "bytes": len(blob.content),
+                            "attempts": attempts[-12:],
+                        })
                         return True
-                except Exception as exc:
-                    attempts.append({"url": candidate[:300], "error": str(exc)[:180]})
-            _save_recovery_state(db, {
-                "status": "not_resolved",
-                "share_url": share_url,
-                "candidate_count": len(expanded),
-                "candidates": candidate_preview[:100],
-                "diagnostics": diagnostics[:100],
-                "attempts": attempts[-20:],
-            })
-    except Exception as exc:
-        db.rollback()
-        try:
-            _save_recovery_state(db, {"status": "failed", "share_url": share_url, "error": str(exc)[:500], "attempts": attempts[-10:]})
-        except Exception:
-            db.rollback()
+            except Exception as exc:
+                db.rollback()
+                attempts.append({"api_base": api_base, "error": str(exc)[:500]})
+        _save_recovery_state(db, {"status": "failed", "share_id": share_id, "share_url": share_url, "attempts": attempts[-20:]})
     return False
 
 
@@ -187,11 +137,11 @@ def _mark_awaiting_reupload(db) -> None:
     if not row:
         return
     payload = dict(row.payload or {})
-    if payload.get("status") not in {"importing", "awaiting_reupload"} or payload.get("canonical"):
+    if payload.get("canonical"):
         return
     payload["status"] = "awaiting_reupload"
     payload["canonical"] = False
-    payload["reason"] = "legacy Render background import was interrupted and its ephemeral archive bytes were lost; durable recovery is awaiting source bytes"
+    payload["reason"] = "durable recovery source has not yet been queued"
     row.payload = payload
     db.commit()
 
@@ -215,8 +165,12 @@ async def stooq_import_loop() -> None:
                 delay = 5
             elif result.get("status") == "ready":
                 delay = 60
-        except Exception:
+        except Exception as exc:
             db.rollback()
+            try:
+                _save_recovery_state(db, {"status": "worker_error", "error": str(exc)[:500]})
+            except Exception:
+                db.rollback()
             delay = 30
         finally:
             db.close()
