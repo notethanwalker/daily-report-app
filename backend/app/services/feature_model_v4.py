@@ -24,71 +24,43 @@ def version_payload(payload: dict | None) -> dict:
 
 
 def presentation_payload(payload: dict | None, as_of: str | None) -> dict:
-    """Never imply a historical snapshot used the current formula unless it was
-    persisted under/after the explicit v4 cutover."""
     out = dict(payload or {})
-    if out.get("model_version"):
-        return out
-    if str(as_of or "")[:10] >= MODEL_CUTOVER_DATE:
-        return version_payload(out)
-    out["model_version"] = "legacy_unversioned"
-    out["model_config_hash"] = None
+    if out.get("model_version"): return out
+    if str(as_of or "")[:10] >= MODEL_CUTOVER_DATE: return version_payload(out)
+    out["model_version"] = "legacy_unversioned"; out["model_config_hash"] = None
     return out
 
 
 def maintain_feature_snapshots() -> dict:
-    db = SessionLocal()
-    versioned = generated = failed = 0
+    db = SessionLocal();versioned=generated=failed=0
     try:
-        completed = db.query(RefreshQueueItem).filter(
-            RefreshQueueItem.data_class == "fundamentals",
-            RefreshQueueItem.status == "complete",
-            RefreshQueueItem.requested_by == "v4_candidate_funnel",
-        ).order_by(RefreshQueueItem.updated_at.asc()).limit(25).all()
+        completed=db.query(RefreshQueueItem).filter(RefreshQueueItem.data_class=="fundamentals",RefreshQueueItem.status=="complete",RefreshQueueItem.requested_by=="v4_candidate_funnel").order_by(RefreshQueueItem.updated_at.asc()).limit(25).all()
         if completed:
-            from ..routers.intelligence import _refresh_feature
+            from .opportunity_model import refresh_feature
             for job in completed:
                 try:
-                    if _refresh_feature(db, job.symbol):
-                        generated += 1
-                        job = db.get(RefreshQueueItem, job.id)
-                        if job:
-                            job.requested_by = "v4_candidate_funnel_completed"
+                    if refresh_feature(db,job.symbol):
+                        generated+=1;job=db.get(RefreshQueueItem,job.id)
+                        if job:job.requested_by="v4_candidate_funnel_completed"
                         db.commit()
                     else:
-                        job.requested_by = "v4_candidate_funnel_feature_failed"
-                        job.error = "feature_generation:no_feature_payload"
-                        failed += 1
-                        db.commit()
+                        job.requested_by="v4_candidate_funnel_feature_failed";job.error="feature_generation:no_feature_payload";failed+=1;db.commit()
                 except Exception as exc:
-                    db.rollback()
-                    job = db.get(RefreshQueueItem, job.id)
-                    if job:
-                        job.requested_by = "v4_candidate_funnel_feature_failed"
-                        job.error = f"feature_generation:{str(exc)[:420]}"
-                        db.commit()
-                    failed += 1
-
-        rows = db.query(FeatureSnapshot).order_by(FeatureSnapshot.id.desc()).limit(FEATURE_MAINTENANCE_BATCH).all()
+                    db.rollback();job=db.get(RefreshQueueItem,job.id)
+                    if job:job.requested_by="v4_candidate_funnel_feature_failed";job.error=f"feature_generation:{str(exc)[:420]}";db.commit()
+                    failed+=1
+        rows=db.query(FeatureSnapshot).order_by(FeatureSnapshot.id.desc()).limit(FEATURE_MAINTENANCE_BATCH).all()
         for row in rows:
-            if (row.payload or {}).get("model_version"):
-                continue
-            if str(row.as_of or "")[:10] < MODEL_CUTOVER_DATE:
-                continue
-            row.payload = version_payload(row.payload or {})
-            versioned += 1
-        if versioned:
-            db.commit()
-        return {"generated": generated, "versioned": versioned, "failed": failed, "cutover_date": MODEL_CUTOVER_DATE}
+            if (row.payload or {}).get("model_version") or str(row.as_of or "")[:10] < MODEL_CUTOVER_DATE:continue
+            row.payload=version_payload(row.payload or {});versioned+=1
+        if versioned:db.commit()
+        return {"generated":generated,"versioned":versioned,"failed":failed,"cutover_date":MODEL_CUTOVER_DATE}
     except Exception:
-        db.rollback()
-        return {"generated": generated, "versioned": versioned, "failed": failed + 1, "cutover_date": MODEL_CUTOVER_DATE}
-    finally:
-        db.close()
+        db.rollback();return {"generated":generated,"versioned":versioned,"failed":failed+1,"cutover_date":MODEL_CUTOVER_DATE}
+    finally:db.close()
 
 
 async def feature_version_loop():
-    """Completes v4 shortlist enrichment and versions only post-cutover snapshots."""
     while True:
         await asyncio.to_thread(maintain_feature_snapshots)
         await asyncio.sleep(VERSION_MAINTENANCE_SECONDS)
