@@ -45,55 +45,27 @@ TYPED_VARIABLES={
     "persistent_flow":{"label":"Persistent options-flow cluster","unit":"observations","scope":"ticker","description":"Largest repeated stored contract-signature cluster in the trailing 72 hours; does not identify a participant."},
     "portfolio_position_weight":{"label":"Largest portfolio position","unit":"% portfolio","scope":"portfolio","description":"Current largest single-position weight in the selected private portfolio."},
     "regime_transition":{"label":"Regime transition","unit":"state change","scope":"global","description":"Fires once for each newly stored change in the confidence-weighted regime state."},
+    "opportunity_convergence":{"label":"Opportunity Convergence","unit":"staged setup","scope":"ticker","description":"Fires when Williams reset, 100MA approach from above, fundamental/theme quality, and confirmation filters converge into the Triggered state. States: Extended → Watching → Approaching → Triggered → Invalidated."},
 }
 
 
 def _legacy_value(db:Session,rule:AlertRule):
     if not rule.symbol:return None
-    m=_latest_market(db,rule.symbol) or {};o=_opportunity_components(db,rule.symbol,m) if m else None
-    flow=(o or {}).get("flow") or {}
-    mapping={
-        "price":m.get("price"),"change_1d":m.get("change_percent"),"change_7d":m.get("seven_day_percent"),"change_30d":m.get("thirty_day_percent"),
-        "williams":m.get("williams_r_14"),"relative_volume":m.get("relative_volume"),"ma50_distance":m.get("price_vs_ma50_percent"),
-        "ma100_distance":m.get("price_vs_ma100_percent"),"ma200_distance":m.get("price_vs_ma200_percent"),"ath_distance":m.get("price_vs_ath_percent"),
-        "pe":m.get("pe_ratio"),"ps":m.get("price_to_sales_ratio"),"peg":m.get("peg_ratio"),"buy_score":(o or {}).get("buy_score"),
-        "sell_score":(o or {}).get("sell_score"),"sector_score":(o or {}).get("sector_score"),"bullish_flow":flow.get("bullish_premium"),"bearish_flow":flow.get("bearish_premium"),
-    }
+    m=_latest_market(db,rule.symbol) or {};o=_opportunity_components(db,rule.symbol,m) if m else None;flow=(o or {}).get("flow") or {}
+    mapping={"price":m.get("price"),"change_1d":m.get("change_percent"),"change_7d":m.get("seven_day_percent"),"change_30d":m.get("thirty_day_percent"),"williams":m.get("williams_r_14"),"relative_volume":m.get("relative_volume"),"ma50_distance":m.get("price_vs_ma50_percent"),"ma100_distance":m.get("price_vs_ma100_percent"),"ma200_distance":m.get("price_vs_ma200_percent"),"ath_distance":m.get("price_vs_ath_percent"),"pe":m.get("pe_ratio"),"ps":m.get("price_to_sales_ratio"),"peg":m.get("peg_ratio"),"buy_score":(o or {}).get("buy_score"),"sell_score":(o or {}).get("sell_score"),"sector_score":(o or {}).get("sector_score"),"bullish_flow":flow.get("bullish_premium"),"bearish_flow":flow.get("bearish_premium")}
     return mapping.get(rule.kind)
 
 
 def current_value(db:Session,rule:AlertRule):
-    if rule.kind in TYPED_VARIABLES:
-        value,meta=evaluate_typed_value(db,rule.user_email,rule.kind,rule.symbol)
-        return value,meta
+    if rule.kind in TYPED_VARIABLES:return evaluate_typed_value(db,rule.user_email,rule.kind,rule.symbol)
     return _legacy_value(db,rule),{}
 
-
 class AlertBatchIn(BaseModel):
-    symbols:list[str]=Field(min_length=1,max_length=100)
-    kind:str
-    operator:Literal[">=","<=",">","<","=="]="<="
-    threshold:float
-    label:str=Field(min_length=1,max_length=256)
-    channels:dict[str,bool]=Field(default_factory=lambda:{"in_app":True,"push":True})
-    cooldown_minutes:int=Field(default=360,ge=15,le=10080)
-
+    symbols:list[str]=Field(min_length=1,max_length=100);kind:str;operator:Literal[">=","<=",">","<","=="]="<=";threshold:float;label:str=Field(min_length=1,max_length=256);channels:dict[str,bool]=Field(default_factory=lambda:{"in_app":True,"push":True});cooldown_minutes:int=Field(default=360,ge=15,le=10080)
 class TypedAlertIn(BaseModel):
-    kind:str
-    symbol:str|None=None
-    portfolio_id:int|None=None
-    operator:Literal[">=","<=",">","<","==","changed"]="<="
-    threshold:float|None=None
-    label:str=Field(min_length=1,max_length=256)
-    channels:dict[str,bool]=Field(default_factory=lambda:{"in_app":True,"push":False})
-    cooldown_minutes:int=Field(default=360,ge=15,le=10080)
-
-class SubscriptionIn(BaseModel):
-    subscription:dict
-    platform:str|None=None
-
-class SubscriptionDelete(BaseModel):
-    endpoint:str
+    kind:str;symbol:str|None=None;portfolio_id:int|None=None;operator:Literal[">=","<=",">","<","==","changed"]="<=";threshold:float|None=None;label:str=Field(min_length=1,max_length=256);channels:dict[str,bool]=Field(default_factory=lambda:{"in_app":True,"push":False});cooldown_minutes:int=Field(default=360,ge=15,le=10080)
+class SubscriptionIn(BaseModel):subscription:dict;platform:str|None=None
+class SubscriptionDelete(BaseModel):endpoint:str
 
 
 def _typed_target(db:Session,user:str,body:TypedAlertIn):
@@ -106,22 +78,18 @@ def _typed_target(db:Session,user:str,body:TypedAlertIn):
         return symbol
     if scope=="portfolio":
         if body.portfolio_id is None:raise HTTPException(400,"Portfolio is required for this alert")
-        _portfolio_or_404(db,user,body.portfolio_id)
-        return f"{PORTFOLIO_PREFIX}{body.portfolio_id}"
+        _portfolio_or_404(db,user,body.portfolio_id);return f"{PORTFOLIO_PREFIX}{body.portfolio_id}"
     return None
-
 
 @router.get("/alerts/v2")
 def alerts_v2(user:str=Depends(current_user),db:Session=Depends(get_db)):
-    _require(db,user,"can_manage_alerts")
-    rows=db.query(AlertRule).filter(AlertRule.user_email==user).order_by(AlertRule.created_at.desc()).all();out=[]
+    _require(db,user,"can_manage_alerts");rows=db.query(AlertRule).filter(AlertRule.user_email==user).order_by(AlertRule.created_at.desc()).all();out=[]
     for r in rows:
         pref=db.query(AlertDeliveryPreference).filter(AlertDeliveryPreference.alert_id==r.id).first();value,meta=current_value(db,r)
         if r.kind in TYPED_VARIABLES:triggered=typed_trigger(r.kind,value,r.operator,r.threshold)
         else:triggered=value is not None and r.threshold is not None and {">=":value>=r.threshold,"<=":value<=r.threshold,">":value>r.threshold,"<":value<r.threshold,"==":value==r.threshold}.get(r.operator,False)
         out.append({"id":r.id,"symbol":r.symbol,"kind":r.kind,"operator":r.operator,"threshold":r.threshold,"label":r.label,"enabled":r.enabled,"current_value":value,"current_meta":meta,"triggered":triggered,"typed":r.kind in TYPED_VARIABLES,"delivery":{"channels":(pref.channels if pref else {"in_app":True,"push":False}),"cooldown_minutes":pref.cooldown_minutes if pref else 360}})
     return {"alerts":out,"variables":SUPPORTED_VARIABLES,"typed_variables":TYPED_VARIABLES,"push":{"configured":bool(os.getenv("VAPID_PUBLIC_KEY") and os.getenv("VAPID_PRIVATE_KEY")),"subscriptions":db.query(PushSubscription).filter(PushSubscription.user_email==user,PushSubscription.enabled.is_(True)).count()}}
-
 
 @router.post("/alerts/v2")
 def create_alerts(body:AlertBatchIn,user:str=Depends(current_user),db:Session=Depends(get_db)):
@@ -131,31 +99,29 @@ def create_alerts(body:AlertBatchIn,user:str=Depends(current_user),db:Session=De
     for raw in body.symbols:
         symbol=raw.strip().upper()
         if not symbol:continue
-        row=AlertRule(user_email=user,symbol=symbol,kind=body.kind,operator=body.operator,threshold=body.threshold,label=body.label,enabled=True);db.add(row);db.flush()
-        db.add(AlertDeliveryPreference(alert_id=row.id,user_email=user,channels={"in_app":bool(body.channels.get("in_app",True)),"push":bool(body.channels.get("push",False))},cooldown_minutes=body.cooldown_minutes));created.append({"id":row.id,"symbol":symbol})
+        row=AlertRule(user_email=user,symbol=symbol,kind=body.kind,operator=body.operator,threshold=body.threshold,label=body.label,enabled=True);db.add(row);db.flush();db.add(AlertDeliveryPreference(alert_id=row.id,user_email=user,channels={"in_app":bool(body.channels.get("in_app",True)),"push":bool(body.channels.get("push",False))},cooldown_minutes=body.cooldown_minutes));created.append({"id":row.id,"symbol":symbol})
     db.commit();return {"created":created,"count":len(created)}
-
 
 @router.post("/alerts/v3/preview")
 def preview_typed_alert(body:TypedAlertIn,user:str=Depends(current_user),db:Session=Depends(get_db)):
-    _require(db,user,"can_manage_alerts");target=_typed_target(db,user,body)
-    value,meta=evaluate_typed_value(db,user,body.kind,target)
-    return {"kind":body.kind,"scope":TYPED_VARIABLES[body.kind]["scope"],"target":target,"current_value":value,"current_meta":meta,"would_trigger":typed_trigger(body.kind,value,body.operator,body.threshold)}
-
+    _require(db,user,"can_manage_alerts");target=_typed_target(db,user,body);value,meta=evaluate_typed_value(db,user,body.kind,target)
+    threshold=3.0 if body.kind=="opportunity_convergence" else body.threshold
+    return {"kind":body.kind,"scope":TYPED_VARIABLES[body.kind]["scope"],"target":target,"current_value":value,"current_meta":meta,"would_trigger":typed_trigger(body.kind,value,body.operator,threshold)}
 
 @router.post("/alerts/v3")
 def create_typed_alert(body:TypedAlertIn,user:str=Depends(current_user),db:Session=Depends(get_db)):
     _require(db,user,"can_manage_alerts");target=_typed_target(db,user,body)
     if body.kind=="regime_transition":operator="changed";threshold=None
+    elif body.kind=="opportunity_convergence":operator=">=";threshold=3.0
     else:
         operator=body.operator
         if body.threshold is None:raise HTTPException(400,"Threshold is required for this alert")
         threshold=body.threshold
-    row=AlertRule(user_email=user,symbol=target,kind=body.kind,operator=operator,threshold=threshold,label=body.label,enabled=True);db.add(row);db.flush()
-    db.add(AlertDeliveryPreference(alert_id=row.id,user_email=user,channels={"in_app":bool(body.channels.get("in_app",True)),"push":bool(body.channels.get("push",False))},cooldown_minutes=body.cooldown_minutes));db.commit()
-    value,meta=evaluate_typed_value(db,user,row.kind,row.symbol)
+    existing=db.query(AlertRule).filter(AlertRule.user_email==user,AlertRule.symbol==target,AlertRule.kind==body.kind,AlertRule.enabled.is_(True)).first()
+    if existing:
+        value,meta=evaluate_typed_value(db,user,existing.kind,existing.symbol);return {"id":existing.id,"status":"already_exists","kind":existing.kind,"target":existing.symbol,"current_value":value,"current_meta":meta}
+    row=AlertRule(user_email=user,symbol=target,kind=body.kind,operator=operator,threshold=threshold,label=body.label,enabled=True);db.add(row);db.flush();db.add(AlertDeliveryPreference(alert_id=row.id,user_email=user,channels={"in_app":bool(body.channels.get("in_app",True)),"push":bool(body.channels.get("push",False))},cooldown_minutes=body.cooldown_minutes));db.commit();value,meta=evaluate_typed_value(db,user,row.kind,row.symbol)
     return {"id":row.id,"status":"created","kind":row.kind,"target":row.symbol,"current_value":value,"current_meta":meta}
-
 
 @router.delete("/alerts/v2/{alert_id}")
 def delete_alert_v2(alert_id:int,user:str=Depends(current_user),db:Session=Depends(get_db)):
@@ -165,12 +131,10 @@ def delete_alert_v2(alert_id:int,user:str=Depends(current_user),db:Session=Depen
     if pref:db.delete(pref)
     db.delete(row);db.commit();return {"status":"removed"}
 
-
 @router.get("/push/config")
 def push_config(user:str=Depends(current_user),db:Session=Depends(get_db)):
     _require(db,user,"can_manage_alerts");public=os.getenv("VAPID_PUBLIC_KEY","")
     return {"configured":bool(public and os.getenv("VAPID_PRIVATE_KEY")),"public_key":public or None,"subscriptions":db.query(PushSubscription).filter(PushSubscription.user_email==user,PushSubscription.enabled.is_(True)).count(),"note":"Web Push works on installed iOS/iPadOS PWAs and compatible desktop/mobile browsers after notification permission is granted."}
-
 
 @router.post("/push/subscriptions")
 def save_subscription(body:SubscriptionIn,user:str=Depends(current_user),db:Session=Depends(get_db)):
@@ -180,7 +144,6 @@ def save_subscription(body:SubscriptionIn,user:str=Depends(current_user),db:Sess
     if row:row.user_email=user;row.subscription=body.subscription;row.platform=body.platform;row.enabled=True
     else:db.add(PushSubscription(user_email=user,endpoint_hash=digest,subscription=body.subscription,platform=body.platform,enabled=True))
     db.commit();return {"status":"subscribed"}
-
 
 @router.delete("/push/subscriptions")
 def delete_subscription(body:SubscriptionDelete,user:str=Depends(current_user),db:Session=Depends(get_db)):
