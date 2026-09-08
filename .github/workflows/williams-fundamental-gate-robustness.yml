@@ -3,7 +3,7 @@ on:
   push:
     paths:
       - '.github/workflows/williams-fundamental-gate-robustness.yml'
-# rerun after SEC gzip decoder fix
+# v2: end-date matched SEC fundamentals, revenue-anchored deterioration
 jobs:
   test:
     strategy:
@@ -30,7 +30,7 @@ jobs:
         with: {python-version: '3.12'}
       - run: python -m pip install --disable-pip-version-check yfinance
       - name: Run gated basket
-        run: python scripts/williams_portfolio_fundamental_gate.py --symbols '${{ matrix.symbols }}' --start '${{ matrix.start }}' --end '${{ matrix.end }}' --output result.json
+        run: python scripts/williams_portfolio_fundamental_gate_v2.py --symbols '${{ matrix.symbols }}' --start '${{ matrix.start }}' --end '${{ matrix.end }}' --output result.json
       - name: Compact result
         env: {BASKET_ID: '${{ matrix.id }}'}
         run: |
