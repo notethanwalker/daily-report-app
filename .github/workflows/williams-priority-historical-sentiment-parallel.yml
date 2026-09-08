@@ -1,0 +1,106 @@
+name: Williams Priority Historical Sentiment Parallel
+
+on:
+  push:
+    paths:
+      - '.github/workflows/williams-priority-historical-sentiment-parallel.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: s2010_1
+            period: '2010'
+            article: 'TheStreet — Five Market Generals (May 12, 2010)'
+            symbols: 'DECK,ISRG,CRM,CMG,AAPL'
+            start: '2010-01-01'
+            end: '2016-12-30'
+          - id: s2010_2
+            period: '2010'
+            article: 'TheStreet — 7 Sweet Stocks for the Next Selloff (Jun 3, 2010)'
+            symbols: 'CMG,AAPL,NFLX,DECK,ISRG,ESRX,CRM'
+            start: '2010-01-01'
+            end: '2016-12-30'
+          - id: s2010_3
+            period: '2010'
+            article: 'TheStreet — 5 Best Fast-Growth Stocks to Buy (Sep 23, 2010); OKS excluded, archive unavailable'
+            symbols: 'DLTR,WCN,NVO,MNRO'
+            start: '2010-01-01'
+            end: '2016-12-30'
+          - id: s2010_4
+            period: '2010'
+            article: 'TheStreet — Five Fast-Growth Companies to Own in 2010 (Jan 5, 2010)'
+            symbols: 'TEVA,ORLY,LINC,NEOG,ATGE'
+            start: '2010-01-01'
+            end: '2016-12-30'
+          - id: s2010_5
+            period: '2010'
+            article: 'Fortune/CNNMoney — 100 Fastest-Growing Companies 2010; continuous-history subset'
+            symbols: 'AAPL,SNEX,AMZN,FLR,BB,CYH,GILD,MA,BIIB,CTSH'
+            start: '2010-01-01'
+            end: '2016-12-30'
+          - id: s2017_1
+            period: '2017'
+            article: 'Fortune — 6 Best Tech Stocks to Buy Now (May 18, 2017)'
+            symbols: 'GOOGL,TSLA,AMZN,AVGO,ADBE,NVDA'
+            start: '2017-01-01'
+            end: '2026-09-04'
+          - id: s2017_2
+            period: '2017'
+            article: 'Forbes — These 5 Stocks Could Double Your Retirement Nest Egg (Jan 7, 2017)'
+            symbols: 'INTC,GM,FAF,AMT,SKT'
+            start: '2017-01-01'
+            end: '2026-09-04'
+          - id: s2017_3
+            period: '2017'
+            article: 'Forbes — 5 Dividend Growth Stocks That Could Double in 5 Years (Sep 4, 2017)'
+            symbols: 'INTU,FRME,MA,LUV,RCL'
+            start: '2017-01-01'
+            end: '2026-09-04'
+          - id: s2017_4
+            period: '2017'
+            article: 'Kiplinger — James K. Glassman 10 Stock Picks for 2017'
+            symbols: 'TTWO,HSIC,CVU,CRM,MU,SBUX,KHC,SPG,SNY,AMZN'
+            start: '2017-01-01'
+            end: '2026-09-04'
+          - id: s2017_5
+            period: '2017'
+            article: 'Kiplinger — 10 Best Dividend-Paying Stocks for 2017'
+            symbols: 'ABBV,T,CVX,F,GM,IP,MRK,PFE,VZ,WFC'
+            start: '2017-01-01'
+            end: '2026-09-04'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check yfinance
+      - name: Run basket
+        shell: bash
+        run: |
+          python scripts/williams_portfolio_priority.py --symbols '${{ matrix.symbols }}' --start '${{ matrix.start }}' --end '${{ matrix.end }}' --monthly-cash 10000 --tilts '0.25,0.5,0.75,1.0' --output result.json
+          python - <<'PY'
+          import json, os
+          d=json.load(open('result.json'))
+          r=d['results']
+          out={
+            'id':os.environ['BASKET_ID'],'period':os.environ['PERIOD'],'article':os.environ['ARTICLE'],'symbols':d['symbols'],
+            'equal_value':r['equal']['portfolio_value'],
+            'tilt_25':r['tilt_25']['vs_equal_pct'],'tilt_50':r['tilt_50']['vs_equal_pct'],
+            'tilt_75':r['tilt_75']['vs_equal_pct'],'tilt_100':r['tilt_100']['vs_equal_pct']
+          }
+          print('SENTIMENT_RESULT='+json.dumps(out,separators=(',',':')))
+          PY
+        env:
+          BASKET_ID: '${{ matrix.id }}'
+          PERIOD: '${{ matrix.period }}'
+          ARTICLE: '${{ matrix.article }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: '${{ matrix.id }}'
+          path: result.json
+          retention-days: 30
