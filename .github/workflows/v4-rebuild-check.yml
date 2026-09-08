@@ -1,0 +1,30 @@
+name: V4 Rebuild Check
+on:
+  push:
+    branches: [daily-report-v4-rebuild]
+  pull_request:
+    branches: [main]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+      - name: Import v4 backend modules
+        env:
+          DATABASE_URL: sqlite:////tmp/daily-report-v4-check.db
+        run: |
+          python -m py_compile backend/app/v4_models.py backend/app/services/monthly_priority.py backend/app/services/classification_v4.py backend/app/services/feature_model_v4.py backend/app/services/opportunity_model.py backend/app/services/rotation_model_v4.py backend/app/services/candidate_funnel_v4.py backend/app/services/calibration_v4.py backend/app/services/score_history_v4.py backend/app/routers/research_v4.py backend/app/routers/stack_v4.py backend/app/start.py
+      - name: Run complete backend test suite
+        working-directory: backend
+        env:
+          DATABASE_URL: sqlite:////tmp/daily-report-v4-check.db
+        run: python -m unittest discover -s tests -p "test_*.py"
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Build web
+        working-directory: web
+        run: npm install && npm run build

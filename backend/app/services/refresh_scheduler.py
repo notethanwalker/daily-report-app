@@ -1,7 +1,7 @@
 import asyncio
 import os
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func
 
@@ -31,6 +31,8 @@ from .validation import build_secondary_metrics, cross_check_market_snapshot
 _last_universe_sync = None
 _last_bulk_attempt = None
 _last_cleanup = None
+QUEUE_RUNNING_TIMEOUT_MINUTES = 30
+QUEUE_HISTORY_RETENTION_DAYS = 14
 
 
 def _user_symbols(db):
@@ -49,6 +51,32 @@ def _enqueue(db, symbol, data_class, priority):
     ).first()
     if not exists:
         db.add(RefreshQueueItem(symbol=symbol, data_class=data_class, priority=priority, requested_by="scheduler"))
+
+
+def recover_and_prune_queue(db):
+    """Recover jobs orphaned by a worker/process restart and bound queue-history growth.
+
+    A provider job should never legitimately remain in `running` for 30 minutes in the
+    current worker. Reclaimed rows retain an explicit diagnostic in `error` and are
+    retried through the normal bounded worker rather than executed inline.
+    """
+    now = datetime.now(timezone.utc)
+    stale_before = now - timedelta(minutes=QUEUE_RUNNING_TIMEOUT_MINUTES)
+    old_before = now - timedelta(days=QUEUE_HISTORY_RETENTION_DAYS)
+    stale = db.query(RefreshQueueItem).filter(
+        RefreshQueueItem.status == "running",
+        RefreshQueueItem.updated_at < stale_before,
+    ).all()
+    for row in stale:
+        row.status = "queued"
+        row.error = "reclaimed_stale_running_after_worker_timeout"
+    deleted = db.query(RefreshQueueItem).filter(
+        RefreshQueueItem.status.in_(["complete", "failed"]),
+        RefreshQueueItem.updated_at < old_before,
+    ).delete(synchronize_session=False)
+    if stale or deleted:
+        db.commit()
+    return {"reclaimed": len(stale), "pruned": int(deleted or 0)}
 
 
 def _history_needs_refresh(db, symbol, now):
@@ -132,14 +160,19 @@ def _verified_market_snapshot(db, symbol):
 
 
 def process_queue(db, limit=4):
+    recover_and_prune_queue(db)
     now = datetime.now(timezone.utc)
     q = db.query(RefreshQueueItem).filter(RefreshQueueItem.status == "queued")
     if not _market_refresh_allowed(now):
         q = q.filter(RefreshQueueItem.data_class != "market")
     rows = q.order_by(RefreshQueueItem.priority.desc(), RefreshQueueItem.created_at).limit(limit).all()
     done = []
+    supported = {"market", "history", "fundamentals"}
     for idx, row in enumerate(rows):
-        row.status = "running"; db.commit()
+        if row.data_class not in supported:
+            row.status = "failed"; row.error = f"unsupported_refresh_data_class:{row.data_class}"; db.commit()
+            continue
+        row.status = "running"; row.error = None; db.commit()
         try:
             if row.data_class == "fundamentals":
                 payload, _ = ProviderOrchestrator().fundamentals(row.symbol, allow_alpha=False)
@@ -185,8 +218,6 @@ def _broad_stock_eligible(row):
     if str(row.asset_type or "").lower() not in {"stock", "equity"}:
         return False
     name = str(row.name or "").lower()
-    # Nasdaq Trader's ETF flag removes ETFs; these name checks remove listed
-    # instruments that are not ordinary operating-company equity.
     blocked = (" warrant", " warrants", " unit", " units", " right", " rights", " preferred", " preference", " notes due", " bond", " fund")
     return not any(term in name for term in blocked)
 
@@ -305,8 +336,6 @@ def run_bulk_market_cycle():
         except Exception:
             db.rollback()
         result = bulk_refresh_us_market(db)
-        # Stooq's archive currently rejects the Render runtime. Do not wait 18h
-        # for the tiny per-symbol fallback: immediately advance the Yahoo batch bootstrap.
         if result.get("status") in {"degraded", "failed"}:
             result["yahoo_bootstrap"] = yahoo_broad_bootstrap_batch(db)
         return result
@@ -349,8 +378,6 @@ async def bulk_market_loop():
 
 
 async def yahoo_bootstrap_loop():
-    # Fast path for broad discovery. It runs independently so tracked-symbol
-    # refreshes remain responsive even while the broad cache is being populated.
     await asyncio.sleep(90)
     while True:
         await asyncio.to_thread(run_yahoo_bootstrap_cycle)
