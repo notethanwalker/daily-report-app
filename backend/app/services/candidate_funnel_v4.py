@@ -4,9 +4,12 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from ..models import FeatureSnapshot, MarketSnapshot, SymbolRegistry
+from ..models import FeatureSnapshot, MarketSnapshot, RefreshQueueItem, SymbolRegistry
 from .classification_v4 import rotation_proxy_name
 from .opportunity_scanner import scan_cached_market
+from .provider_orchestrator import FRESHNESS_POLICIES
+
+DEEP_ENRICHMENT_LIMIT = 25
 
 
 def _f(v, default=0.0):
@@ -26,7 +29,7 @@ def _latest_market(db: Session, symbol: str) -> dict:
     return dict(row.payload or {}) if row else {}
 
 
-def _setup_type(bucket: str, macro: dict) -> str:
+def _setup_type(macro: dict) -> str:
     bias = macro.get("forward_bias")
     state = macro.get("state")
     if bias in {"inflow_candidate", "hold_leadership"}:
@@ -38,7 +41,30 @@ def _setup_type(bucket: str, macro: dict) -> str:
     return "technical_only"
 
 
-def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50) -> dict:
+def _enqueue_deep_enrichment(db: Session, symbols: list[str]) -> int:
+    added = 0
+    for symbol in symbols[:DEEP_ENRICHMENT_LIMIT]:
+        for data_class in ("fundamentals",):
+            exists = db.query(RefreshQueueItem).filter(
+                RefreshQueueItem.symbol == symbol,
+                RefreshQueueItem.data_class == data_class,
+                RefreshQueueItem.status.in_(["queued", "running"]),
+            ).first()
+            if exists:
+                continue
+            db.add(RefreshQueueItem(
+                symbol=symbol,
+                data_class=data_class,
+                priority=max(70, FRESHNESS_POLICIES[data_class].priority),
+                requested_by="v4_candidate_funnel",
+            ))
+            added += 1
+    if added:
+        db.commit()
+    return added
+
+
+def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50, enqueue_enrichment: bool = True) -> dict:
     scan = scan_cached_market(db, include_near=True, limit_per_bucket=max(limit * 4, 200), include_etfs=False)
     source_rows = []
     for bucket, base_bonus in (("strong", 8.0), ("weak", 4.0), ("near", 0.0)):
@@ -76,7 +102,7 @@ def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50) -> dict
             "rotation_proxy": proxy_name,
             "rotation_proxy_basis": proxy_basis,
             "bucket": row.get("bucket"),
-            "setup_type": _setup_type(str(row.get("bucket") or ""), macro),
+            "setup_type": _setup_type(macro),
             "funnel_score": round(final_score, 2),
             "raw_rank_score": round(raw_score, 2),
             "technical_score": round(technical, 1),
@@ -101,17 +127,19 @@ def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50) -> dict
         })
     ranked.sort(key=lambda x: x["raw_rank_score"], reverse=True)
     shortlist = ranked[:limit]
-    deep_needed = [x["symbol"] for x in shortlist if x["needs_deep_enrichment"]]
+    deep_needed = [x["symbol"] for x in shortlist if x["needs_deep_enrichment"]][:DEEP_ENRICHMENT_LIMIT]
+    queued = _enqueue_deep_enrichment(db, deep_needed) if enqueue_enrichment and deep_needed else 0
     return {
         "stages": [
             {"name": "Universe", "input": scan.get("counts", {}).get("cached_symbols_scanned", 0), "output": scan.get("counts", {}).get("technically_eligible", 0), "rule": "Cached equities only; minimum price and average-dollar-volume filters."},
             {"name": "Technical setup", "input": scan.get("counts", {}).get("technically_eligible", 0), "output": len(source_rows), "rule": "Williams %R + approach to 100MA, preserving strong/weak/near buckets."},
             {"name": "Macro fit", "input": len(source_rows), "output": len(source_rows), "rule": "Attach most-specific available sector/industry/theme rotation proxy without discarding technically strong counter-rotation candidates."},
             {"name": "Rank", "input": len(source_rows), "output": len(shortlist), "rule": "55% scanner technical score, 25% existing buy score, 15% macro context, plus bounded liquidity/setup bonuses. Display score is normalized 0-100; raw rank score is retained for ordering."},
-            {"name": "Deep enrichment queue", "input": len(shortlist), "output": len(deep_needed), "rule": "Only shortlisted scanner-only names are candidates for expensive fundamentals/flow/news enrichment."},
+            {"name": "Deep enrichment queue", "input": len(shortlist), "output": len(deep_needed), "rule": f"At most {DEEP_ENRICHMENT_LIMIT} scanner-only finalists are queued for fundamentals enrichment; duplicate queued/running jobs are suppressed."},
         ],
         "candidates": shortlist,
         "deep_enrichment_symbols": deep_needed,
+        "deep_enrichment_jobs_added": queued,
         "source_scan_counts": scan.get("counts", {}),
         "methodology": "The funnel is candidate-first and cache-first. It narrows the broad universe using the existing Williams/100MA scanner before richer scoring. Theme/industry rotation can override broad-sector context when the mapping is more decision-relevant.",
         "generated_at": datetime.now(timezone.utc).isoformat(),
