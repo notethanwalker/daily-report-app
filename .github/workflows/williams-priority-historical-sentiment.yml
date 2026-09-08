@@ -25,7 +25,7 @@ jobs:
             '2010': [
               {'article':'TheStreet — Five Market Generals (May 12, 2010)','symbols':['DECK','ISRG','CRM','CMG','AAPL']},
               {'article':'TheStreet — 7 Sweet Stocks for the Next Selloff (Jun 3, 2010)','symbols':['CMG','AAPL','NFLX','DECK','ISRG','ESRX','CRM']},
-              {'article':'TheStreet — 5 Best Fast-Growth Stocks to Buy (Sep 23, 2010)','symbols':['DLTR','WCN','OKS','NVO','MNRO']},
+              {'article':'TheStreet — 5 Best Fast-Growth Stocks to Buy (Sep 23, 2010)','symbols':['DLTR','WCN','NVO','MNRO'],'unavailable':['OKS — historical daily data unavailable from Yahoo/Stooq; no substitute used']},
               {'article':'TheStreet — Five Fast-Growth Companies to Own in 2010 (Jan 5, 2010)','symbols':['TEVA','ORLY','LINC','NEOG','ATGE']},
               {'article':'Fortune/CNNMoney — 100 Fastest-Growing Companies 2010, largest-ranked names with continuous company histories','symbols':['AAPL','SNEX','AMZN','FLR','BB','CYH','GILD','MA','BIIB','CTSH']}
             ],
@@ -68,7 +68,7 @@ jobs:
           for group,patt in [('2010','sentiment_2010_*.json'),('2017','sentiment_2017_*.json')]:
               for i,fn in enumerate(sorted(glob.glob(patt)),1):
                   d=json.load(open(fn)); meta=baskets[group][i-1]
-                  row={'article':meta['article'],'symbols':d['symbols'],'equal_value':d['results']['equal']['portfolio_value']}
+                  row={'article':meta['article'],'symbols':d['symbols'],'unavailable':meta.get('unavailable',[]),'equal_value':d['results']['equal']['portfolio_value']}
                   for k in ['tilt_25','tilt_50','tilt_75','tilt_100']:
                       row[k]=d['results'][k]['vs_equal_pct']
                   out[group].append(row)
