@@ -1,0 +1,49 @@
+{
+  "test": "Williams Priority historical-sentiment robustness test",
+  "date_run": "2026-09-08",
+  "method": {
+    "monthly_cash": 10000,
+    "williams_window_months": 14,
+    "signal_timing": "prior completed month",
+    "allocation": "all monthly cash invested; equal-weight baseline plus cross-sectional Williams rank tilt; more oversold gets higher allocation",
+    "tilts": [0.25, 0.5, 0.75, 1.0]
+  },
+  "periods": {
+    "2010-2016": {
+      "months": 84,
+      "total_contributions": 840000,
+      "baskets": [
+        {"article":"TheStreet — Five Market Generals (2010-05-12)","symbols":["DECK","ISRG","CRM","CMG","AAPL"],"vs_equal_pct":{"25":0.6071,"50":1.2142,"75":1.8213,"100":2.4284}},
+        {"article":"TheStreet — 7 Sweet Stocks for the Next Selloff (2010-06-03)","symbols":["CMG","AAPL","NFLX","DECK","ISRG","ESRX","CRM"],"vs_equal_pct":{"25":1.8911,"50":3.7823,"75":5.6734,"100":7.5645}},
+        {"article":"TheStreet — 5 Best Fast-Growth Stocks to Buy (2010-09-23)","symbols_tested":["DLTR","WCN","NVO","MNRO"],"unavailable":["OKS — historical daily data unavailable from Yahoo/Stooq; no substitute used"],"vs_equal_pct":{"25":0.2864,"50":0.5728,"75":0.8592,"100":1.1456}},
+        {"article":"TheStreet — Five Fast-Growth Companies to Own in 2010 (2010-01-05)","symbols_tested":["TEVA","ORLY","LINC","NEOG"],"unavailable":["DeVry (DV; later successor ATGE) — required historical series unavailable from current providers; no substitute used"],"vs_equal_pct":{"25":-3.7662,"50":-7.5324,"75":-11.2986,"100":-15.0648}},
+        {"article":"Fortune/CNNMoney — 100 Fastest-Growing Companies 2010, biggest-company continuous-history subset","symbols_tested":["AAPL","SNEX","AMZN","FLR","BB","CYH","GILD","MA","BIIB","CTSH"],"selection_note":"continuous-history subset from the ranked contemporary list; this basket retains a data-availability/survivorship caveat","vs_equal_pct":{"25":-1.3306,"50":-2.6613,"75":-3.9919,"100":-5.3225}}
+      ],
+      "aggregate_vs_equal_pct":{"25":{"mean":-0.4624,"median":0.2864,"positive_baskets":3},"50":{"mean":-0.9249,"median":0.5728,"positive_baskets":3},"75":{"mean":-1.3873,"median":0.8592,"positive_baskets":3},"100":{"mean":-1.8498,"median":1.1456,"positive_baskets":3}}
+    },
+    "2017-2026-09-04": {
+      "months": 117,
+      "total_contributions": 1170000,
+      "baskets": [
+        {"article":"Fortune — Why Google and Amazon Top the List of the 6 Best Tech Stocks to Buy (2017-05-18)","symbols":["GOOGL","TSLA","AMZN","AVGO","ADBE","NVDA"],"vs_equal_pct":{"25":2.0454,"50":4.0908,"75":6.1361,"100":8.1815}},
+        {"article":"Forbes — These 5 Stocks Could Double Your Retirement Nest Egg (2017-01-07)","symbols":["INTC","GM","FAF","AMT","SKT"],"vs_equal_pct":{"25":2.6005,"50":5.2009,"75":7.8014,"100":10.4018}},
+        {"article":"Forbes — 5 Dividend Growth Stocks That Could Double In 5 Years (2017-09-04)","symbols":["INTU","FRME","MA","LUV","RCL"],"vs_equal_pct":{"25":-0.0533,"50":-0.1067,"75":-0.1600,"100":-0.2133}},
+        {"article":"Kiplinger — James K. Glassman's 10 Stock Picks for 2017","symbols":["TTWO","HSIC","CVU","CRM","MU","SBUX","KHC","SPG","SNY","AMZN"],"vs_equal_pct":{"25":0.1881,"50":0.3762,"75":0.5644,"100":0.7525}},
+        {"article":"Kiplinger — 10 Best Dividend-Paying Stocks for 2017","symbols":["ABBV","T","CVX","F","GM","IP","MRK","PFE","VZ","WFC"],"vs_equal_pct":{"25":0.3895,"50":0.7789,"75":1.1684,"100":1.5579}}
+      ],
+      "aggregate_vs_equal_pct":{"25":{"mean":1.0340,"median":0.3895,"positive_baskets":4},"50":{"mean":2.0680,"median":0.7789,"positive_baskets":4},"75":{"mean":3.1021,"median":1.1684,"positive_baskets":4},"100":{"mean":4.1361,"median":1.5579,"positive_baskets":4}}
+    }
+  },
+  "interpretation": {
+    "2010": "Article-derived historical sentiment substantially weakens the earlier curated-growth result. Full Williams tilt averages -1.8498% vs equal allocation, despite a positive median of 1.1456% and 3/5 positive baskets. Two baskets are strong counterexamples, especially the Jan-2010 fast-growth basket at -15.0648%.",
+    "2017": "The signal remains positive in the later period: full tilt averages +4.1361% vs equal with 4/5 positive baskets, close to the earlier randomized curated-growth result but with substantially broader contemporaneous stock selections.",
+    "overall": "Williams priority is not robustly positive across every historically plausible growth universe. Evidence is stronger for the 2017-current regime than for 2010-2016."
+  },
+  "caveats": [
+    "Article availability/searchability can introduce archival selection bias.",
+    "OKS and DeVry could not be tested with the available Yahoo/Stooq historical data and were omitted rather than replaced.",
+    "The Fortune/CNNMoney 2010 basket uses a continuous-history subset, creating a survivorship/data-availability caveat.",
+    "Several 2017 sources are dividend-growth or general stock-pick lists rather than pure high-growth style screens; this was retained intentionally to broaden contemporaneous sentiment and reduce our prior growth-universe bias.",
+    "This is not a survivorship-free CRSP/Compustat universe test."
+  ]
+}
