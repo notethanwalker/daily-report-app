@@ -11,6 +11,7 @@ MODEL_VERSION = "opportunity-v3.1"
 COMPONENT_WEIGHTS = {"technical": .25, "valuation": .20, "sector": .15, "flow": .15, "momentum": .15, "risk": .10}
 MODEL_CONFIG_HASH = hashlib.sha256(json.dumps(COMPONENT_WEIGHTS, sort_keys=True).encode()).hexdigest()[:12]
 VERSION_MAINTENANCE_SECONDS = 15 * 60
+FEATURE_MAINTENANCE_BATCH = 1000
 
 
 def version_payload(payload: dict | None) -> dict:
@@ -23,11 +24,8 @@ def version_payload(payload: dict | None) -> dict:
 
 def maintain_feature_snapshots() -> dict:
     db = SessionLocal()
-    versioned = generated = 0
+    versioned = generated = failed = 0
     try:
-        # Fundamentals requested by the v4 shortlist are only useful to the
-        # opportunity layer once a richer FeatureSnapshot is generated. The
-        # lazy import avoids a module-cycle during app startup.
         completed = db.query(RefreshQueueItem).filter(
             RefreshQueueItem.data_class == "fundamentals",
             RefreshQueueItem.status == "complete",
@@ -39,38 +37,38 @@ def maintain_feature_snapshots() -> dict:
                 try:
                     if _refresh_feature(db, job.symbol):
                         generated += 1
-                        job.requested_by = "v4_candidate_funnel_completed"
+                        job = db.get(RefreshQueueItem, job.id)
+                        if job:
+                            job.requested_by = "v4_candidate_funnel_completed"
+                        db.commit()
+                    else:
+                        job.requested_by = "v4_candidate_funnel_feature_failed"
+                        job.error = "feature_generation:no_feature_payload"
+                        failed += 1
                         db.commit()
                 except Exception as exc:
                     db.rollback()
                     job = db.get(RefreshQueueItem, job.id)
                     if job:
+                        job.requested_by = "v4_candidate_funnel_feature_failed"
                         job.error = f"feature_generation:{str(exc)[:420]}"
                         db.commit()
+                    failed += 1
 
-        rows = db.query(FeatureSnapshot).filter(~FeatureSnapshot.payload.has_key("model_version")).limit(1000).all()  # type: ignore[attr-defined]
+        # Portable across SQLite/Postgres: bounded newest-first scan rather than
+        # dialect-specific JSON operators.
+        rows = db.query(FeatureSnapshot).order_by(FeatureSnapshot.id.desc()).limit(FEATURE_MAINTENANCE_BATCH).all()
         for row in rows:
+            if (row.payload or {}).get("model_version"):
+                continue
             row.payload = version_payload(row.payload or {})
             versioned += 1
         if versioned:
             db.commit()
-        return {"generated": generated, "versioned": versioned}
+        return {"generated": generated, "versioned": versioned, "failed": failed}
     except Exception:
         db.rollback()
-        # JSON has_key support differs across SQLite/Postgres. Fall back to a
-        # portable bounded scan if the dialect cannot express the predicate.
-        try:
-            rows = db.query(FeatureSnapshot).order_by(FeatureSnapshot.id.desc()).limit(1000).all()
-            for row in rows:
-                if (row.payload or {}).get("model_version"):
-                    continue
-                row.payload = version_payload(row.payload or {})
-                versioned += 1
-            if versioned:
-                db.commit()
-        except Exception:
-            db.rollback()
-        return {"generated": generated, "versioned": versioned}
+        return {"generated": generated, "versioned": versioned, "failed": failed + 1}
     finally:
         db.close()
 
