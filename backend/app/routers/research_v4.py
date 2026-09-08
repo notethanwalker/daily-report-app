@@ -12,7 +12,9 @@ from ..services.score_history_v4 import build_score_history
 from .intelligence import _latest_market, _opportunity_components, _recent_flow
 
 router=APIRouter(prefix="/api/v1",tags=["research-v4"])
-RESEARCH_ENRICH_CLASSES=("market","history","fundamentals","feature")
+# These are the data classes supported by the existing bounded refresh worker.
+# Feature generation remains downstream of refreshed market/history/fundamental data.
+RESEARCH_ENRICH_CLASSES=("market","history","fundamentals")
 
 
 def _history_state(db:Session,symbol:str)->dict:
@@ -45,7 +47,6 @@ def _enqueue_research(db:Session,symbol:str)->list[str]:
         "market":max(80,FRESHNESS_POLICIES["market"].priority),
         "history":max(75,FRESHNESS_POLICIES["history"].priority),
         "fundamentals":max(70,FRESHNESS_POLICIES["fundamentals"].priority),
-        "feature":60,
     }
     for data_class in RESEARCH_ENRICH_CLASSES:
         exists=db.query(RefreshQueueItem).filter(RefreshQueueItem.symbol==symbol,RefreshQueueItem.data_class==data_class,RefreshQueueItem.status.in_(["queued","running"])).first()
@@ -88,4 +89,4 @@ def enrich_security_workspace_v4(symbol:str,db:Session=Depends(get_db)):
     s=symbol.strip().upper()
     if not s:raise HTTPException(400,"Symbol is required")
     added=_enqueue_research(db,s)
-    return {"symbol":s,"jobs_added":added,"queue":_queue_state(db,s),"status":"queued" if added else "already_queued_or_running","policy":"Asynchronous bounded research enrichment. Provider work is never performed in the HTTP request path."}
+    return {"symbol":s,"jobs_added":added,"queue":_queue_state(db,s),"status":"queued" if added else "already_queued_or_running","feature_policy":"Feature generation is downstream of refreshed shared datasets; arbitrary research requests do not bypass the bounded queue.","policy":"Asynchronous bounded research enrichment. Provider work is never performed in the HTTP request path."}
