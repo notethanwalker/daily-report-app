@@ -57,18 +57,27 @@ def _state(level: float, delta: float, trend: float) -> tuple[str, str]:
     return "lagging_stable", "neutral_to_weak"
 
 
-def _persist_history(db: Session, rows: list[dict], generated_at: str) -> None:
-    day = generated_at[:10]
-    state = db.get(MarketPipelineState, ROTATION_HISTORY_KEY)
-    payload = dict(state.payload or {}) if state else {}
-    history = list(payload.get("daily") or [])
-    record = {
+def _history_record(rows: list[dict], day: str) -> dict:
+    return {
         "date": day,
         "rows": [
             {"symbol": r["symbol"], "name": r["name"], "rotation_score": r["rotation_score"], "rotation_pressure": r["rotation_pressure"], "state": r["state"], "forward_bias": r["forward_bias"], "conviction": r["conviction"]}
             for r in rows
         ],
     }
+
+
+def _persist_history(db: Session, rows: list[dict], generated_at: str) -> bool:
+    day = generated_at[:10]
+    state = db.get(MarketPipelineState, ROTATION_HISTORY_KEY)
+    payload = dict(state.payload or {}) if state else {}
+    history = list(payload.get("daily") or [])
+    record = _history_record(rows, day)
+    previous_today = next((x for x in history if x.get("date") == day), None)
+    # Ordinary UI reads often recompute the exact same state. Do not emit a DB
+    # write unless the canonical daily record actually changed.
+    if previous_today == record and payload.get("methodology_version") == "rotation-v4.1":
+        return False
     history = [x for x in history if x.get("date") != day]
     history.append(record)
     history = sorted(history, key=lambda x: x.get("date", ""))[-MAX_ROTATION_HISTORY_DAYS:]
@@ -78,6 +87,7 @@ def _persist_history(db: Session, rows: list[dict], generated_at: str) -> None:
     else:
         db.add(MarketPipelineState(key=ROTATION_HISTORY_KEY, payload=payload))
     db.commit()
+    return True
 
 
 def build_rotation_model(db: Session, persist: bool = True) -> dict:
@@ -108,7 +118,6 @@ def build_rotation_model(db: Session, persist: bool = True) -> dict:
         transition_ready = len(scores) >= MIN_TRANSITION_OBSERVATIONS
         if not transition_ready:
             conviction = min(conviction, 45.0)
-            # Do not imply predictive transition confidence from one-off observations.
             if forward_bias not in {"hold_leadership", "neutral_to_weak"}:
                 forward_bias = "insufficient_history"
         pressure = level + delta_3 * 1.25
@@ -134,15 +143,15 @@ def build_rotation_model(db: Session, persist: bool = True) -> dict:
     for row in rows:
         states[row["state"]] += 1
     generated_at = datetime.now(timezone.utc).isoformat()
-    if persist and rows:
-        _persist_history(db, rows, generated_at)
+    persisted = _persist_history(db, rows, generated_at) if persist and rows else False
     return {
         "rows": rows,
         "leaders": rows[:8],
         "outflow_risk": sorted([x for x in rows if x["forward_bias"] in {"rotation_out_risk", "avoidance_bias"}], key=lambda x: x["rotation_pressure"])[:8],
         "early_rotation": sorted([x for x in rows if x["forward_bias"] in {"early_rotation_candidate", "watch_for_rotation"}], key=lambda x: x["conviction"], reverse=True)[:8],
         "state_counts": dict(states),
-        "history_policy": {"minimum_transition_observations": MIN_TRANSITION_OBSERVATIONS, "canonical_daily_history_key": ROTATION_HISTORY_KEY, "max_days": MAX_ROTATION_HISTORY_DAYS},
-        "methodology": "V4 rotation pressure extends the existing 1D/7D/30D + relative-volume score with stored-observation change and 100/200MA trend context. Sparse histories are confidence-capped and cannot emit predictive transition labels. One canonical daily state record is persisted for later forward-outcome calibration.",
+        "history_persisted_this_call": persisted,
+        "history_policy": {"minimum_transition_observations": MIN_TRANSITION_OBSERVATIONS, "canonical_daily_history_key": ROTATION_HISTORY_KEY, "max_days": MAX_ROTATION_HISTORY_DAYS, "write_policy": "upsert only when today's computed record changes"},
+        "methodology": "V4 rotation pressure extends the existing 1D/7D/30D + relative-volume score with stored-observation change and 100/200MA trend context. Sparse histories are confidence-capped and cannot emit predictive transition labels. Canonical daily state records are persisted idempotently for later forward-outcome calibration.",
         "generated_at": generated_at,
     }
