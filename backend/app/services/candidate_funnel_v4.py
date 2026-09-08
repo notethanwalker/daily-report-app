@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from ..models import FeatureSnapshot, MarketSnapshot, SymbolRegistry
+from .classification_v4 import rotation_proxy_name
 from .opportunity_scanner import scan_cached_market
 
 
@@ -25,6 +26,18 @@ def _latest_market(db: Session, symbol: str) -> dict:
     return dict(row.payload or {}) if row else {}
 
 
+def _setup_type(bucket: str, macro: dict) -> str:
+    bias = macro.get("forward_bias")
+    state = macro.get("state")
+    if bias in {"inflow_candidate", "hold_leadership"}:
+        return "macro_confirmed"
+    if bias in {"early_rotation_candidate", "watch_for_rotation"}:
+        return "early_rotation"
+    if state in {"lagging_deteriorating", "leading_weakening"}:
+        return "counter_trend_mean_reversion"
+    return "technical_only"
+
+
 def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50) -> dict:
     scan = scan_cached_market(db, include_near=True, limit_per_bucket=max(limit * 4, 200), include_etfs=False)
     source_rows = []
@@ -41,21 +54,31 @@ def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50) -> dict
         market = _latest_market(db, symbol)
         feature = _latest_feature(db, symbol)
         sector = (reg.sector if reg else None) or market.get("sector") or row.get("sector")
-        macro = rotation_by_name.get(str(sector)) or {}
+        industry = (reg.industry if reg else None) or market.get("industry")
+        themes = (reg.themes if reg else None) or market.get("themes")
+        proxy_name, proxy_basis = rotation_proxy_name(symbol, sector, industry, themes)
+        macro = rotation_by_name.get(str(proxy_name)) or rotation_by_name.get(str(sector)) or {}
         rotation_pressure = _f(macro.get("rotation_pressure"), 0.0)
-        conviction = _f(macro.get("conviction"), 50.0)
+        conviction = _f(macro.get("conviction"), 0.0)
         macro_fit = max(-15.0, min(15.0, rotation_pressure * 3.0))
         base_buy = _f(feature.get("buy_score"), row.get("score") or 0.0)
         technical = _f(row.get("score"), 0.0)
         liquidity = _f(row.get("average_dollar_volume_20d"), 0.0)
         liquidity_score = min(5.0, max(0.0, liquidity / 100_000_000 * 5.0))
-        final_score = technical * .55 + base_buy * .25 + (50 + macro_fit) * .15 + liquidity_score + bucket_bonus
+        raw_score = technical * .55 + base_buy * .25 + (50 + macro_fit) * .15 + liquidity_score + bucket_bonus
+        final_score = max(0.0, min(100.0, raw_score))
+        enrichment = "full" if feature else "scanner_only"
         ranked.append({
             "symbol": symbol,
             "name": row.get("name") or (reg.name if reg else None),
             "sector": sector,
+            "industry": industry,
+            "rotation_proxy": proxy_name,
+            "rotation_proxy_basis": proxy_basis,
             "bucket": row.get("bucket"),
+            "setup_type": _setup_type(str(row.get("bucket") or ""), macro),
             "funnel_score": round(final_score, 2),
+            "raw_rank_score": round(raw_score, 2),
             "technical_score": round(technical, 1),
             "base_buy_score": round(base_buy, 1),
             "rotation_pressure": round(rotation_pressure, 3),
@@ -67,23 +90,29 @@ def build_candidate_funnel(db: Session, rotation: dict, limit: int = 50) -> dict
             "price": row.get("price"),
             "as_of": row.get("as_of"),
             "provider": row.get("provider"),
+            "enrichment_status": enrichment,
+            "needs_deep_enrichment": enrichment != "full",
             "explain": {
                 "stage_1_universe": "Broad cached stock universe after price/liquidity filters",
                 "stage_2_technical": f"{row.get('bucket')} Williams/100MA setup",
-                "stage_3_macro": macro.get("state") or "sector unavailable",
-                "stage_4_score": "Technical setup remains dominant; existing buy score and sector rotation refine ranking.",
+                "stage_3_macro": f"{proxy_name or 'unmapped'}: {macro.get('state') or 'rotation data unavailable'}",
+                "stage_4_score": "Technical setup remains dominant; existing buy score and sector/theme rotation refine ranking.",
             },
         })
-    ranked.sort(key=lambda x: x["funnel_score"], reverse=True)
+    ranked.sort(key=lambda x: x["raw_rank_score"], reverse=True)
+    shortlist = ranked[:limit]
+    deep_needed = [x["symbol"] for x in shortlist if x["needs_deep_enrichment"]]
     return {
         "stages": [
             {"name": "Universe", "input": scan.get("counts", {}).get("cached_symbols_scanned", 0), "output": scan.get("counts", {}).get("technically_eligible", 0), "rule": "Cached equities only; minimum price and average-dollar-volume filters."},
             {"name": "Technical setup", "input": scan.get("counts", {}).get("technically_eligible", 0), "output": len(source_rows), "rule": "Williams %R + approach to 100MA, preserving strong/weak/near buckets."},
-            {"name": "Macro fit", "input": len(source_rows), "output": len(source_rows), "rule": "Attach sector rotation pressure/state without discarding technically strong counter-rotation candidates."},
-            {"name": "Rank", "input": len(source_rows), "output": min(limit, len(ranked)), "rule": "55% scanner technical score, 25% existing buy score, 15% macro context, plus liquidity and setup-tier bonuses."},
+            {"name": "Macro fit", "input": len(source_rows), "output": len(source_rows), "rule": "Attach most-specific available sector/industry/theme rotation proxy without discarding technically strong counter-rotation candidates."},
+            {"name": "Rank", "input": len(source_rows), "output": len(shortlist), "rule": "55% scanner technical score, 25% existing buy score, 15% macro context, plus bounded liquidity/setup bonuses. Display score is normalized 0-100; raw rank score is retained for ordering."},
+            {"name": "Deep enrichment queue", "input": len(shortlist), "output": len(deep_needed), "rule": "Only shortlisted scanner-only names are candidates for expensive fundamentals/flow/news enrichment."},
         ],
-        "candidates": ranked[:limit],
+        "candidates": shortlist,
+        "deep_enrichment_symbols": deep_needed,
         "source_scan_counts": scan.get("counts", {}),
-        "methodology": "The funnel is intentionally candidate-first and cache-first. It narrows the broad universe using the existing Williams/100MA scanner before applying richer scoring, which avoids brute-force provider calls across thousands of random tickers.",
+        "methodology": "The funnel is candidate-first and cache-first. It narrows the broad universe using the existing Williams/100MA scanner before richer scoring. Theme/industry rotation can override broad-sector context when the mapping is more decision-relevant.",
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
