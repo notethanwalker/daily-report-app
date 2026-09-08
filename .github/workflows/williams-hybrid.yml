@@ -1,0 +1,35 @@
+name: Williams Hybrid Test
+
+on:
+  push:
+    paths:
+      - 'scripts/williams_hybrid_test.py'
+      - '.github/workflows/williams-hybrid.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install market data client
+        run: python -m pip install --disable-pip-version-check yfinance
+      - name: Run hybrid test
+        run: |
+          python scripts/williams_hybrid_test.py \
+            --symbols NVDA,MSFT,GOOGL,AMZN,META,CELH,CROX,ELF,ACLS,CAVA \
+            --start 2017-01-01 \
+            --end 2026-09-04 \
+            --output williams_hybrid_results.json
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: williams-hybrid-results
+          path: williams_hybrid_results.json
+          retention-days: 30
