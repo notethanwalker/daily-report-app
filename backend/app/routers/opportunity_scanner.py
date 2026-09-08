@@ -21,8 +21,10 @@ from ..services.stooq_durable_import import (
     status as durable_upload_status,
     write_chunk as write_durable_chunk,
 )
+from ..services.stooq_import_guard import install_refresh_guard
 from .intelligence import _opportunity_components, current_user
 
+install_refresh_guard()
 router = APIRouter(prefix="/api/v1/opportunities", tags=["opportunity-scanner"])
 
 
