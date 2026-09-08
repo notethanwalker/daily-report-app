@@ -1,0 +1,45 @@
+name: Williams Fundamental Gate Robustness
+on:
+  push:
+    paths:
+      - '.github/workflows/williams-fundamental-gate-robustness.yml'
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {id: s2010_1, start: '2010-01-01', end: '2016-12-30', symbols: 'DECK,ISRG,CRM,CMG,AAPL'}
+          - {id: s2010_2, start: '2010-01-01', end: '2016-12-30', symbols: 'CMG,AAPL,NFLX,DECK,ISRG,ESRX,CRM'}
+          - {id: s2010_3, start: '2010-01-01', end: '2016-12-30', symbols: 'DLTR,WCN,NVO,MNRO'}
+          - {id: s2010_4, start: '2010-01-01', end: '2016-12-30', symbols: 'TEVA,ORLY,LINC,NEOG'}
+          - {id: s2010_5, start: '2010-01-01', end: '2016-12-30', symbols: 'AAPL,SNEX,AMZN,FLR,BB,CYH,GILD,MA,BIIB,CTSH'}
+          - {id: s2017_1, start: '2017-01-01', end: '2026-09-04', symbols: 'GOOGL,TSLA,AMZN,AVGO,ADBE,NVDA'}
+          - {id: s2017_2, start: '2017-01-01', end: '2026-09-04', symbols: 'INTC,GM,FAF,AMT,SKT'}
+          - {id: s2017_3, start: '2017-01-01', end: '2026-09-04', symbols: 'INTU,FRME,MA,LUV,RCL'}
+          - {id: s2017_4, start: '2017-01-01', end: '2026-09-04', symbols: 'TTWO,HSIC,CVU,CRM,MU,SBUX,KHC,SPG,SNY,AMZN'}
+          - {id: s2017_5, start: '2017-01-01', end: '2026-09-04', symbols: 'ABBV,T,CVX,F,GM,IP,MRK,PFE,VZ,WFC'}
+          - {id: prev_mega_growth, start: '2017-01-01', end: '2026-09-04', symbols: 'NVDA,AMZN,GOOGL,MSFT,AAPL'}
+          - {id: prev_ai_semis, start: '2017-01-01', end: '2026-09-04', symbols: 'NVDA,MU,AVGO,AMD,TSM'}
+          - {id: prev_2010_compounders, start: '2010-01-01', end: '2016-12-30', symbols: 'AAPL,AMZN,CRM,ISRG,CMG'}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python -m pip install --disable-pip-version-check yfinance
+      - name: Run gated basket
+        run: python scripts/williams_portfolio_fundamental_gate.py --symbols '${{ matrix.symbols }}' --start '${{ matrix.start }}' --end '${{ matrix.end }}' --output result.json
+      - name: Compact result
+        env: {BASKET_ID: '${{ matrix.id }}'}
+        run: |
+          python - <<'PY'
+          import json,os
+          d=json.load(open('result.json'))
+          print('GATE_RESULT='+json.dumps({'id':os.environ['BASKET_ID'],'symbols':d['symbols'],'comparison':d['comparison'],'block_months':d['block_months'],'insufficient_months':d['insufficient_months']},separators=(',',':')))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.id }}
+          path: result.json
+          retention-days: 30
