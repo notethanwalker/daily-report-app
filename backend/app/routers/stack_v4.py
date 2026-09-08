@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import FeatureSnapshot, MarketSnapshot, UserWatchlistItem
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
+from ..providers.alpaca_market_data import AlpacaMarketDataProvider
 from ..services.monthly_priority import deployment_plan
+from ..services.provider_orchestrator import ProviderOrchestrator
 from .decision_support import _macro_rows
 from .intelligence import current_user
 
@@ -32,6 +36,20 @@ def _latest_market(db: Session, symbol: str) -> dict:
     return {**(row.payload or {}), "retrieved_at": row.retrieved_at.isoformat()} if row else {}
 
 
+def _source_registry() -> list[dict]:
+    return [
+        {"provider": "Twelve Data", "role": "shared market snapshots/history", "configured": bool(os.getenv("TWELVE_DATA_API_KEY")), "authoritative": "shared snapshot when configured"},
+        {"provider": "Alpaca IEX", "role": "independent OHLC/history and Williams research", "configured": AlpacaMarketDataProvider.configured(), "authoritative": False, "notes": "Free IEX feed is not consolidated SIP."},
+        {"provider": "Yahoo Finance", "role": "quota-free OHLC fallback and valuation coverage", "configured": True, "authoritative": False},
+        {"provider": "SEC EDGAR", "role": "public fundamental history", "configured": True, "authoritative": "fundamental-history source where taxonomy coverage exists"},
+        {"provider": "Alpha Vantage", "role": "quota-aware independent check / missing fundamentals", "configured": bool(os.getenv("ALPHA_VANTAGE_API_KEY")), "authoritative": False},
+        {"provider": "GDELT + Google News RSS", "role": "news intelligence", "configured": True, "authoritative": False},
+        {"provider": "Frankfurter / ECB", "role": "FX and currency context", "configured": True, "authoritative": "FX layer"},
+        {"provider": "Public economic calendars + Nasdaq", "role": "macro/company events", "configured": True, "authoritative": "event-specific public source"},
+        {"provider": "SquawkFlow observations", "role": "unusual options / large-flow observations", "configured": True, "authoritative": False},
+    ]
+
+
 def _opportunities(db: Session, symbols: list[str], macro: list[dict]) -> list[dict]:
     sector_score = {x["name"]: x["rotation_score"] for x in macro}
     rows = []
@@ -43,7 +61,6 @@ def _opportunities(db: Session, symbols: list[str], macro: list[dict]) -> list[d
         ma100 = f.get("ma100_distance")
         sector = m.get("sector")
         macro_score = float(sector_score.get(sector, 0))
-        # Transparent v4 phase-1 composite. Existing buy score remains dominant while macro fit adds context.
         composite = buy + max(-10.0, min(10.0, macro_score)) * 0.75
         rows.append({
             "symbol": s,
@@ -70,6 +87,8 @@ def overview(db: Session = Depends(get_db), user: str = Depends(current_user)):
     return {
         "version": "4.0-dev",
         "pipeline": ["research", "macro", "opportunity", "deployment"],
+        "provider_policy": ProviderOrchestrator().describe(),
+        "sources": _source_registry(),
         "layers": {
             "research": {
                 "symbols": len(symbols),
@@ -100,6 +119,11 @@ def overview(db: Session = Depends(get_db), user: str = Depends(current_user)):
             },
         },
     }
+
+
+@router.get("/sources")
+def sources(user: str = Depends(current_user)):
+    return {"sources": _source_registry(), "policy": ProviderOrchestrator().describe()}
 
 
 @router.get("/deployment")
