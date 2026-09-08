@@ -1,4 +1,7 @@
+import os
 import unittest
+
+os.environ.setdefault("DATABASE_URL", "sqlite:////tmp/daily-report-v4-tests.db")
 
 from app.services.rotation_model_v4 import _state
 from app.services.opportunity_scanner import _bucket
