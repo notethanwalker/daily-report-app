@@ -12,7 +12,7 @@ on:
         required: true
         default: 2017-01-01
       end:
-        description: End date YYYY-MM-DD (blank = latest Stooq bar)
+        description: End date YYYY-MM-DD (blank = latest available bar)
         required: false
         default: ''
       threshold:
@@ -26,6 +26,7 @@ on:
   push:
     paths:
       - '.github/workflows/williams-backtest.yml'
+      - 'scripts/williams_timeline_backtest.py'
 
 permissions:
   contents: read
@@ -38,6 +39,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install free market-data client
+        run: python -m pip install --disable-pip-version-check yfinance
       - name: Run Williams Timeline backtest
         shell: bash
         run: |
