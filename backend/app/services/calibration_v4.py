@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime, timezone
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal
@@ -34,29 +35,30 @@ def _upsert_rotation(db:Session,rotation:dict)->int:
 
 
 def _insert_candidates_once(db:Session,funnel:dict)->int:
-    changed=0;today=date.today().isoformat()
+    changed=0
     for rank,c in enumerate((funnel.get("candidates") or [])[:MAX_CANDIDATES_PER_DAY],start=1):
-        symbol=str(c.get("symbol") or "").upper()
+        symbol=str(c.get("symbol") or "").upper();obs_date=str(c.get("as_of") or date.today().isoformat())[:10]
         if not symbol:continue
-        exists=db.query(CandidateObservationV4).filter(CandidateObservationV4.symbol==symbol,CandidateObservationV4.observation_date==today,CandidateObservationV4.model_version==CANDIDATE_MODEL_VERSION).first()
+        exists=db.query(CandidateObservationV4).filter(CandidateObservationV4.symbol==symbol,CandidateObservationV4.observation_date==obs_date,CandidateObservationV4.model_version==CANDIDATE_MODEL_VERSION).first()
         if exists:continue
-        db.add(CandidateObservationV4(symbol=symbol,observation_date=today,model_version=CANDIDATE_MODEL_VERSION,funnel_score=float(c.get("funnel_score") or 0),rank=rank,setup_type=str(c.get("setup_type") or "technical_only"),rotation_proxy=c.get("rotation_proxy"),price=float(c["price"]) if c.get("price") is not None else None,payload={**dict(c),"discovery_policy":"first qualifying observation of trading date; immutable thereafter"}));changed+=1
+        db.add(CandidateObservationV4(symbol=symbol,observation_date=obs_date,model_version=CANDIDATE_MODEL_VERSION,funnel_score=float(c.get("funnel_score") or 0),rank=rank,setup_type=str(c.get("setup_type") or "technical_only"),rotation_proxy=c.get("rotation_proxy"),price=float(c["price"]) if c.get("price") is not None else None,payload={**dict(c),"discovery_policy":"first qualifying observation for the underlying market-data date; immutable thereafter"}));changed+=1
     if changed:db.commit()
     return changed
 
 
-def _bars_after(db:Session,symbol:str,start_date:str,count:int):
-    return db.query(NormalizedDailyBar).filter(NormalizedDailyBar.symbol==symbol,NormalizedDailyBar.bar_date>=start_date).order_by(NormalizedDailyBar.bar_date.asc()).limit(count+8).all()
-
-def _base_close(db:Session,symbol:str,day:str)->float|None:
+def _bars_after(db:Session,symbol:str,start_date:str,count:int):return db.query(NormalizedDailyBar).filter(NormalizedDailyBar.symbol==symbol,NormalizedDailyBar.bar_date>=start_date).order_by(NormalizedDailyBar.bar_date.asc()).limit(count+8).all()
+def _base_close(db:Session,symbol:str,day:str):
     row=db.query(NormalizedDailyBar).filter(NormalizedDailyBar.symbol==symbol,NormalizedDailyBar.bar_date<=day).order_by(NormalizedDailyBar.bar_date.desc()).first();return float(row.close) if row else None
-
-def _forward_window(db:Session,symbol:str,day:str,horizon:int):
-    return [b for b in _bars_after(db,symbol,day,horizon+1) if b.bar_date>day][:horizon]
+def _forward_window(db:Session,symbol:str,day:str,horizon:int):return [b for b in _bars_after(db,symbol,day,horizon+1) if b.bar_date>day][:horizon]
 
 
-def update_candidate_outcomes(db:Session,limit:int=250)->dict:
-    candidates=db.query(CandidateObservationV4).order_by(CandidateObservationV4.observation_date.asc()).limit(limit).all();completed=waiting=0
+def _incomplete_candidates(db:Session,limit:int):
+    completed=db.query(CandidateOutcomeV4.candidate_id,func.count(CandidateOutcomeV4.id).label("n")).filter(CandidateOutcomeV4.status=="complete").group_by(CandidateOutcomeV4.candidate_id).having(func.count(CandidateOutcomeV4.id)>=len(OUTCOME_HORIZONS)).subquery()
+    return db.query(CandidateObservationV4).outerjoin(completed,CandidateObservationV4.id==completed.c.candidate_id).filter(completed.c.candidate_id.is_(None)).order_by(CandidateObservationV4.observation_date.asc()).limit(limit).all()
+
+
+def update_candidate_outcomes(db:Session,limit:int=500)->dict:
+    candidates=_incomplete_candidates(db,limit);completed=waiting=0
     for c in candidates:
         if c.price is None or c.price<=0:continue
         for horizon in OUTCOME_HORIZONS:
@@ -67,23 +69,20 @@ def update_candidate_outcomes(db:Session,limit:int=250)->dict:
                 waiting+=1
                 if not existing:db.add(CandidateOutcomeV4(candidate_id=c.id,symbol=c.symbol,horizon_days=horizon,status="pending"))
                 continue
-            last=window[-1];highs=[float(b.high if b.high is not None else b.close) for b in window];lows=[float(b.low if b.low is not None else b.close) for b in window]
-            ret=(float(last.close)/c.price-1)*100;mfe=(max(highs)/c.price-1)*100;mae=(min(lows)/c.price-1)*100
+            last=window[-1];highs=[float(b.high if b.high is not None else b.close) for b in window];lows=[float(b.low if b.low is not None else b.close) for b in window];ret=(float(last.close)/c.price-1)*100;mfe=(max(highs)/c.price-1)*100;mae=(min(lows)/c.price-1)*100
             if existing:existing.return_pct=ret;existing.max_favorable_excursion_pct=mfe;existing.max_adverse_excursion_pct=mae;existing.end_date=last.bar_date;existing.status="complete";existing.computed_at=datetime.now(timezone.utc)
             else:db.add(CandidateOutcomeV4(candidate_id=c.id,symbol=c.symbol,horizon_days=horizon,return_pct=ret,max_favorable_excursion_pct=mfe,max_adverse_excursion_pct=mae,end_date=last.bar_date,status="complete"))
             completed+=1
-    db.commit();return {"completed":completed,"waiting":waiting}
+    db.commit();return {"completed":completed,"waiting":waiting,"candidates_examined":len(candidates)}
 
 
 def rotation_calibration_summary(db:Session,horizon_days:int=20)->dict:
     rows=db.query(RotationSnapshotV4).filter(RotationSnapshotV4.model_version==ROTATION_MODEL_VERSION).order_by(RotationSnapshotV4.observation_date.asc()).all();groups={}
     for r in rows:
-        sector_start=_base_close(db,r.symbol,r.observation_date);bench_start=_base_close(db,BENCHMARK_SYMBOL,r.observation_date)
-        sf=_forward_window(db,r.symbol,r.observation_date,horizon_days);bf=_forward_window(db,BENCHMARK_SYMBOL,r.observation_date,horizon_days)
-        if not sector_start or not bench_start or len(sf)<horizon_days or len(bf)<horizon_days:continue
-        sector_ret=(float(sf[-1].close)/sector_start-1)*100;bench_ret=(float(bf[-1].close)/bench_start-1)*100;relative=sector_ret-bench_ret
-        groups.setdefault(r.state,[]).append(relative)
-    return {"horizon_days":horizon_days,"benchmark":BENCHMARK_SYMBOL,"states":{k:{"samples":len(v),"mean_relative_return_pct":round(sum(v)/len(v),3),"outperformance_rate":round(sum(1 for x in v if x>0)/len(v),3)} for k,v in groups.items() if v},"model_version":ROTATION_MODEL_VERSION,"interpretation":"Descriptive out-of-sample accumulation. Rates are not shown as calibrated probabilities until sample minimums are met."}
+        ss=_base_close(db,r.symbol,r.observation_date);bs=_base_close(db,BENCHMARK_SYMBOL,r.observation_date);sf=_forward_window(db,r.symbol,r.observation_date,horizon_days);bf=_forward_window(db,BENCHMARK_SYMBOL,r.observation_date,horizon_days)
+        if not ss or not bs or len(sf)<horizon_days or len(bf)<horizon_days:continue
+        rel=(float(sf[-1].close)/ss-1)*100-(float(bf[-1].close)/bs-1)*100;groups.setdefault(r.state,[]).append(rel)
+    return {"horizon_days":horizon_days,"benchmark":BENCHMARK_SYMBOL,"states":{k:{"samples":len(v),"mean_relative_return_pct":round(sum(v)/len(v),3),"outperformance_rate":round(sum(1 for x in v if x>0)/len(v),3),"probability_label_eligible":len(v)>=30} for k,v in groups.items() if v},"model_version":ROTATION_MODEL_VERSION,"interpretation":"Relative-to-SPY descriptive calibration. Probability language is disabled until a state has at least 30 independent-ish observations."}
 
 
 def capture_once()->dict:
@@ -92,7 +91,6 @@ def capture_once()->dict:
         rotation=build_rotation_model(db,persist=False);rw=_upsert_rotation(db,rotation);funnel=build_candidate_funnel(db,rotation,limit=MAX_CANDIDATES_PER_DAY,enqueue_enrichment=False);cw=_insert_candidates_once(db,funnel);outcomes=update_candidate_outcomes(db);return {"rotation_rows":rw,"candidate_rows":cw,"outcomes":outcomes}
     except Exception:db.rollback();raise
     finally:db.close()
-
 async def calibration_loop():
     while True:
         try:await asyncio.to_thread(capture_once)
