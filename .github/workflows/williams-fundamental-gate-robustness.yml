@@ -3,7 +3,7 @@ on:
   push:
     paths:
       - '.github/workflows/williams-fundamental-gate-robustness.yml'
-# v2: end-date matched SEC fundamentals, revenue-anchored deterioration
+# v3: end-date matched SEC fundamentals, merged equivalent historical tags
 jobs:
   test:
     strategy:
