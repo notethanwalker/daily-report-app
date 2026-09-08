@@ -32,6 +32,7 @@ from .routers.security_intelligence_v5 import router as security_intelligence_v5
 from .routers.decision_support import router as decision_support_router
 from .routers.opportunity_scanner import router as opportunity_scanner_router
 from .routers.stack_v4 import router as stack_v4_router
+from .routers.calibration_v4 import router as calibration_v4_router
 from .routers.stooq_internal import router as stooq_internal_router
 from .routers.analytics_v3 import router as analytics_v3_router
 from .routers.macro_v3 import router as macro_v3_router
@@ -53,16 +54,11 @@ from .services.macro_universe import EXPANDED_MACRO
 SECTORS.update(EXPANDED_MACRO)
 for symbol in EXPANDED_MACRO:
     if symbol not in stable.MACRO_BACKFILL_PRIORITY:stable.MACRO_BACKFILL_PRIORITY.append(symbol)
-
 if "Command Center" not in access_policy.ALL_TABS:access_policy.ALL_TABS.insert(0,"Command Center")
-access_policy.DEFAULT_PERMISSIONS["can_view_command_center"]=True
-access_policy.OWNER_PERMISSIONS["can_view_command_center"]=True
-access_policy.TAB_PERMISSION["Command Center"]="can_view_command_center"
-
+access_policy.DEFAULT_PERMISSIONS["can_view_command_center"]=True;access_policy.OWNER_PERMISSIONS["can_view_command_center"]=True;access_policy.TAB_PERMISSION["Command Center"]="can_view_command_center"
 def _is_get_route(route,*paths):return getattr(route,"path",None) in paths and "GET" in (getattr(route,"methods",set()) or set())
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/markets/{symbol}/fundamentals")]
 intelligence_router.routes=[r for r in intelligence_router.routes if not _is_get_route(r,"/events","/api/v1/events","/security/{symbol}/workspace","/api/v1/security/{symbol}/workspace")]
-
 Base.metadata.create_all(bind=engine)
 _bootstrap_db=SessionLocal()
 try:
@@ -71,14 +67,12 @@ try:
     if _owner:os.environ["OWNER_EMAIL"]=_owner.id
 finally:_bootstrap_db.close()
 os.environ["ALLOWED_USER_EMAILS"]="";os.environ["USER_ACCESS_TOKENS"]="";os.environ["USER_AUTH_ENABLED"]=""
-
-app.include_router(auth_router);app.include_router(override_router);app.include_router(health_router);app.include_router(fundamentals_v2_router);app.include_router(alerts_v2_router);app.include_router(portfolio_live_router);app.include_router(portfolio_access_router);app.include_router(intelligence_router);app.include_router(user_state_router);app.include_router(lifecycle_router);app.include_router(research_router);app.include_router(research_v4_router);app.include_router(security_intelligence_v5_router);app.include_router(decision_support_router);app.include_router(opportunity_scanner_router);app.include_router(stack_v4_router);app.include_router(stooq_internal_router);app.include_router(analytics_v3_router);app.include_router(macro_v3_router);app.include_router(events_v3_router);app.include_router(events_v4_router);app.include_router(future_release_router);app.include_router(next_intelligence_router)
+app.include_router(auth_router);app.include_router(override_router);app.include_router(health_router);app.include_router(fundamentals_v2_router);app.include_router(alerts_v2_router);app.include_router(portfolio_live_router);app.include_router(portfolio_access_router);app.include_router(intelligence_router);app.include_router(user_state_router);app.include_router(lifecycle_router);app.include_router(research_router);app.include_router(research_v4_router);app.include_router(security_intelligence_v5_router);app.include_router(decision_support_router);app.include_router(opportunity_scanner_router);app.include_router(stack_v4_router);app.include_router(calibration_v4_router);app.include_router(stooq_internal_router);app.include_router(analytics_v3_router);app.include_router(macro_v3_router);app.include_router(events_v3_router);app.include_router(events_v4_router);app.include_router(future_release_router);app.include_router(next_intelligence_router)
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/security/{symbol}/workspace")]
 app.add_api_route("/api/v1/security/{symbol}/workspace",security_workspace_v4,methods=["GET"],tags=["research-v4"],name="security_workspace_v4_authoritative");app.router.routes.insert(0,app.router.routes.pop())
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/events")]
 app.add_api_route("/api/v1/events",events_v3_handler,methods=["GET"],tags=["events-v3"],name="events_v3_authoritative");app.router.routes.insert(0,app.router.routes.pop())
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/markets/{symbol}","/api/v1/flow/recent")];app.include_router(reconciliation_router)
-
 PERMISSION_PATHS=(("/api/v1/stack/research","can_view_research"),("/api/v1/stack/scores","can_view_research"),("/api/v1/stack/rotation","can_view_macro"),("/api/v1/stack/candidates","can_view_opportunities"),("/api/v1/stack/deployment","can_manage_portfolios"),("/api/v1/stack","can_view_command_center"),("/api/v1/command-center","can_view_command_center"),("/api/v1/portfolios","can_manage_portfolios"),("/api/v1/opportunities","can_view_opportunities"),("/api/v1/events","can_view_events"),("/api/v1/flow","can_view_flow"),("/api/v1/macro","can_view_macro"),("/api/v1/analytics/","can_view_macro"),("/api/v1/security","can_view_research"),("/api/v1/alerts","can_manage_alerts"),("/api/v1/push","can_manage_alerts"),("/api/v1/theses","can_manage_theses"),("/api/v1/system/","can_view_settings"))
 PUBLIC_API_PATHS={"/api/v1/health"}
 def _cookie_from_scope(scope,name):
