@@ -1,26 +1,25 @@
 from __future__ import annotations
 
 import os
+import secrets
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..auth_models import AuthAccount
-from ..database import SessionLocal, get_db
+from ..database import get_db
 from ..models import PortfolioHolding, UserWatchlistItem
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from ..normalized_market_models import MarketPipelineState
 from ..services.market_data_pipeline import pipeline_status
 from ..services.opportunity_scanner import scan_cached_market
-from ..services.stooq_manual_import import import_stooq_archive
-from ..services.stooq_upload_session import (
-    cleanup_archive_bytes,
-    create_upload,
-    finalize_upload,
-    mark_imported,
-    upload_status,
-    write_chunk,
+from ..services.stooq_durable_import import (
+    create_upload as create_durable_upload,
+    finalize_upload as finalize_durable_upload,
+    process_batch as process_durable_batch,
+    status as durable_upload_status,
+    write_chunk as write_durable_chunk,
 )
 from .intelligence import _opportunity_components, current_user
 
@@ -38,22 +37,16 @@ def _require_owner(db: Session, user: str) -> None:
         raise HTTPException(status_code=403, detail="Owner access required")
 
 
+def _require_import_token(request: Request) -> None:
+    expected = os.getenv("STOOQ_IMPORT_TOKEN") or ""
+    provided = request.headers.get("x-stooq-import-token") or ""
+    if not expected or not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=403, detail="Invalid Stooq import token")
+
+
 def _state(db: Session, key: str) -> dict:
     row = db.get(MarketPipelineState, key)
     return dict(row.payload or {}) if row else {}
-
-
-def _run_stooq_import(upload_id: str, archive_path: str, archive_name: str) -> None:
-    db = SessionLocal()
-    try:
-        result = import_stooq_archive(db, archive_path, archive_name=archive_name)
-        mark_imported(upload_id, result=result)
-    except Exception as exc:
-        db.rollback()
-        mark_imported(upload_id, error=str(exc)[:1000])
-    finally:
-        db.close()
-        cleanup_archive_bytes(upload_id)
 
 
 def _tracked_symbols(db: Session, user: str) -> list[str]:
@@ -118,14 +111,8 @@ def tracked_opportunities(db: Session = Depends(get_db), user: str = Depends(cur
             "retrieved_at": market.get("retrieved_at"),
             "technical_source": market.get("technical_source"),
         })
-    rows.sort(
-        key=lambda x: max(float(x.get("buy_score") or 0), float(x.get("sell_score") or 0)),
-        reverse=True,
-    )
-    counts = {
-        k: sum(1 for r in rows if r["signal"] == k)
-        for k in ("strong_buy", "buy", "neutral", "sell", "strong_sell")
-    }
+    rows.sort(key=lambda x: max(float(x.get("buy_score") or 0), float(x.get("sell_score") or 0)), reverse=True)
+    counts = {k: sum(1 for r in rows if r["signal"] == k) for k in ("strong_buy", "buy", "neutral", "sell", "strong_sell")}
     return {
         "rows": rows,
         "counts": counts,
@@ -143,12 +130,7 @@ def market_opportunities(
     user: str = Depends(current_user),
 ):
     _ = user
-    return scan_cached_market(
-        db,
-        include_near=include_near,
-        limit_per_bucket=limit,
-        include_etfs=include_etfs,
-    )
+    return scan_cached_market(db, include_near=include_near, limit_per_bucket=limit, include_etfs=include_etfs)
 
 
 @router.get("/data-pipeline")
@@ -161,30 +143,20 @@ def opportunity_data_pipeline(db: Session = Depends(get_db), user: str = Depends
     result["incremental_freshness"] = incremental
     result["canonical_history_ready"] = canonical.get("status") == "ready" and bool(canonical.get("canonical"))
     result["effective_history_policy"] = {
-        "historical_authority": "Stooq manual archive",
-        "incremental_daily_freshness": "Yahoo Finance",
+        "historical_authority": "Stooq durable manual archive",
+        "incremental_daily_freshness": "Yahoo Finance after canonical import",
         "tracked_symbol_freshness": "Twelve Data with Yahoo verification",
     }
     return result
 
 
 @router.post("/stooq-archive/init")
-def init_stooq_archive_upload(
-    payload: StooqUploadInit,
-    db: Session = Depends(get_db),
-    user: str = Depends(current_user),
-):
+def init_stooq_archive_upload(payload: StooqUploadInit, db: Session = Depends(get_db), user: str = Depends(current_user)):
     _require_owner(db, user)
     try:
-        session = create_upload(payload.filename, payload.total_bytes)
+        return create_durable_upload(db, payload.filename, payload.total_bytes)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {
-        "upload_id": session["upload_id"],
-        "chunk_bytes": session["chunk_bytes"],
-        "total_bytes": session["total_bytes"],
-        "status": session["status"],
-    }
 
 
 @router.put("/stooq-archive/{upload_id}/chunk")
@@ -201,45 +173,70 @@ async def upload_stooq_archive_chunk(
     if not body or len(body) > max_chunk:
         raise HTTPException(status_code=400, detail=f"Chunk must be between 1 and {max_chunk} bytes")
     try:
-        state = write_chunk(upload_id, offset, body)
+        return write_durable_chunk(db, upload_id, offset, body)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {
-        "upload_id": upload_id,
-        "received_bytes": state.get("received_bytes", 0),
-        "total_bytes": state["total_bytes"],
-        "status": state["status"],
-    }
 
 
 @router.get("/stooq-archive/{upload_id}")
-def stooq_archive_upload_status(
-    upload_id: str,
-    db: Session = Depends(get_db),
-    user: str = Depends(current_user),
-):
+def stooq_archive_upload_status(upload_id: str, db: Session = Depends(get_db), user: str = Depends(current_user)):
     _require_owner(db, user)
     try:
-        return upload_status(upload_id)
+        return durable_upload_status(db, upload_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/stooq-archive/{upload_id}/finalize", status_code=202)
-def finalize_stooq_archive_upload(
-    upload_id: str,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    user: str = Depends(current_user),
-):
+def finalize_stooq_archive_upload(upload_id: str, db: Session = Depends(get_db), user: str = Depends(current_user)):
     _require_owner(db, user)
     try:
-        archive_path, manifest = finalize_upload(upload_id)
+        result = finalize_durable_upload(db, upload_id)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    background_tasks.add_task(_run_stooq_import, upload_id, archive_path, manifest.get("filename") or "d_us_txt.zip")
     return {
         "upload_id": upload_id,
-        "status": "queued_for_import",
-        "message": "Stooq archive upload completed; canonical-history import has started.",
+        "status": result["status"],
+        "message": "Stooq archive is durably queued in Postgres. The resumable importer will process it independently of web-service restarts.",
     }
+
+
+@router.post("/stooq-archive/process")
+def process_stooq_archive(request: Request, batch_symbols: int = Query(default=500, ge=1, le=2000), db: Session = Depends(get_db)):
+    _require_import_token(request)
+    try:
+        return process_durable_batch(db, batch_symbols=batch_symbols)
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(exc)[:1000]) from exc
+
+
+@router.post("/stooq-archive/token/init")
+def token_init_stooq_archive(payload: StooqUploadInit, request: Request, db: Session = Depends(get_db)):
+    _require_import_token(request)
+    try:
+        return create_durable_upload(db, payload.filename, payload.total_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/stooq-archive/token/{upload_id}/chunk")
+async def token_upload_stooq_archive_chunk(upload_id: str, request: Request, offset: int = Query(ge=0), db: Session = Depends(get_db)):
+    _require_import_token(request)
+    body = await request.body()
+    max_chunk = int(os.getenv("STOOQ_UPLOAD_MAX_CHUNK_BYTES", str(16 * 1024 * 1024)))
+    if not body or len(body) > max_chunk:
+        raise HTTPException(status_code=400, detail=f"Chunk must be between 1 and {max_chunk} bytes")
+    try:
+        return write_durable_chunk(db, upload_id, offset, body)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/stooq-archive/token/{upload_id}/finalize", status_code=202)
+def token_finalize_stooq_archive(upload_id: str, request: Request, db: Session = Depends(get_db)):
+    _require_import_token(request)
+    try:
+        return finalize_durable_upload(db, upload_id)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
