@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Reusable free-data Williams Timeline runner.
 from __future__ import annotations
 
 import argparse
