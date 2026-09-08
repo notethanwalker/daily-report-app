@@ -1,0 +1,61 @@
+name: Williams Priority 2007-2016 Corrected
+
+on:
+  push:
+    paths:
+      - '.github/workflows/williams-priority-2007-2016-corrected.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check yfinance
+      - name: Write locked corrected baskets
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          baskets=[
+            ['AAPL','SBUX','BIIB','MU','NKE','GILD','MSFT','UNH','AMZN','GOOGL'],
+            ['TSM','SBUX','BIDU','LRCX','MA','ORCL','ASML','MSFT','COST','ADBE'],
+            ['CTSH','ADBE','CRM','ADSK','BIDU','BIIB','LRCX','UNH','ORCL','MA'],
+            ['UNH','AMZN','ASML','AMAT','INTU','MA','ADBE','TSM','COST','KLAC'],
+            ['MSFT','AMZN','GOOGL','CRM','AAPL','ASML','ISRG','QCOM','LRCX','MU']
+          ]
+          open('prior_corrected_baskets.json','w').write(json.dumps(baskets,indent=2))
+          print(json.dumps(baskets,indent=2))
+          PY
+      - name: Run corrected 2007-2016 baskets
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          for i, syms in enumerate(json.load(open('prior_corrected_baskets.json')),1):
+              subprocess.check_call(['python','scripts/williams_portfolio_priority.py','--symbols',','.join(syms),'--start','2007-01-01','--end','2016-12-30','--monthly-cash','10000','--tilts','0.25,0.5,0.75,1.0','--output',f'prior_corrected_{i}.json'])
+          PY
+      - name: Summarize
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, glob
+          out=[]
+          for fn in sorted(glob.glob('prior_corrected_*.json')):
+              if fn=='prior_corrected_baskets.json': continue
+              d=json.load(open(fn))
+              out.append({'file':fn,'symbols':d['symbols'],'equal_value':d['results']['equal']['portfolio_value'],**{k:d['results'][k]['vs_equal_pct'] for k in ['tilt_25','tilt_50','tilt_75','tilt_100']}})
+          print(json.dumps(out,indent=2))
+          open('prior_corrected_summary.json','w').write(json.dumps(out,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: williams-priority-2007-2016-corrected
+          path: |
+            prior_corrected_baskets.json
+            prior_corrected_summary.json
+            prior_corrected_*.json
+          retention-days: 30
