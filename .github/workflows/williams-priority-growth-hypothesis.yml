@@ -1,0 +1,54 @@
+name: Williams Priority Growth Hypothesis
+
+on:
+  push:
+    paths:
+      - '.github/workflows/williams-priority-growth-hypothesis.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install market data client
+        run: python -m pip install --disable-pip-version-check yfinance
+      - name: Run growth basket 1 full
+        run: python scripts/williams_portfolio_priority.py --symbols AMD,AVGO,CRM,NOW,PANW,LRCX,KLAC,CDNS,SNPS,ANET --start 2017-01-01 --end 2026-09-04 --monthly-cash 10000 --tilts 0.25,0.5,0.75,1.0 --output growth1_full.json
+      - name: Run growth basket 1 early
+        run: python scripts/williams_portfolio_priority.py --symbols AMD,AVGO,CRM,NOW,PANW,LRCX,KLAC,CDNS,SNPS,ANET --start 2017-01-01 --end 2021-12-31 --monthly-cash 10000 --tilts 0.25,0.5,0.75,1.0 --output growth1_early.json
+      - name: Run growth basket 1 late
+        run: python scripts/williams_portfolio_priority.py --symbols AMD,AVGO,CRM,NOW,PANW,LRCX,KLAC,CDNS,SNPS,ANET --start 2022-01-01 --end 2026-09-04 --monthly-cash 10000 --tilts 0.25,0.5,0.75,1.0 --output growth1_late.json
+      - name: Run growth basket 2 full
+        run: python scripts/williams_portfolio_priority.py --symbols MU,ASML,TSM,AMAT,SHOP,NFLX,MELI,FTNT,TEAM,TTD --start 2017-01-01 --end 2026-09-04 --monthly-cash 10000 --tilts 0.25,0.5,0.75,1.0 --output growth2_full.json
+      - name: Run growth basket 2 early
+        run: python scripts/williams_portfolio_priority.py --symbols MU,ASML,TSM,AMAT,SHOP,NFLX,MELI,FTNT,TEAM,TTD --start 2017-01-01 --end 2021-12-31 --monthly-cash 10000 --tilts 0.25,0.5,0.75,1.0 --output growth2_early.json
+      - name: Run growth basket 2 late
+        run: python scripts/williams_portfolio_priority.py --symbols MU,ASML,TSM,AMAT,SHOP,NFLX,MELI,FTNT,TEAM,TTD --start 2022-01-01 --end 2026-09-04 --monthly-cash 10000 --tilts 0.25,0.5,0.75,1.0 --output growth2_late.json
+      - name: Run non-growth basket full
+        run: python scripts/williams_portfolio_priority.py --symbols KO,PEP,PG,MCD,WMT,XOM,CVX,JNJ,IBM,VZ --start 2017-01-01 --end 2026-09-04 --monthly-cash 10000 --tilts 0.25,0.5,0.75,1.0 --output nongrowth_full.json
+      - name: Run non-growth basket early
+        run: python scripts/williams_portfolio_priority.py --symbols KO,PEP,PG,MCD,WMT,XOM,CVX,JNJ,IBM,VZ --start 2017-01-01 --end 2021-12-31 --monthly-cash 10000 --tilts 0.25,0.5,0.75,1.0 --output nongrowth_early.json
+      - name: Run non-growth basket late
+        run: python scripts/williams_portfolio_priority.py --symbols KO,PEP,PG,MCD,WMT,XOM,CVX,JNJ,IBM,VZ --start 2022-01-01 --end 2026-09-04 --monthly-cash 10000 --tilts 0.25,0.5,0.75,1.0 --output nongrowth_late.json
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: williams-priority-growth-hypothesis
+          path: |
+            growth1_full.json
+            growth1_early.json
+            growth1_late.json
+            growth2_full.json
+            growth2_early.json
+            growth2_late.json
+            nongrowth_full.json
+            nongrowth_early.json
+            nongrowth_late.json
+          retention-days: 30
