@@ -4,17 +4,28 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..providers.stooq import StooqError, StooqProvider
+from ..providers.alpaca_market_data import AlpacaMarketDataProvider
+from ..providers.stooq import StooqProvider
+from ..providers.yahoo_ohlcv import YahooOhlcvProvider
 from .security_intelligence_v5 import security_intelligence
 
 router = APIRouter(prefix="/api/v1", tags=["research"])
 
 
 def _history(symbol: str) -> dict:
-    try:
-        return StooqProvider().daily_history(symbol)
-    except StooqError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    errors = []
+    providers = []
+    if AlpacaMarketDataProvider.configured():
+        providers.append(AlpacaMarketDataProvider())
+    providers.extend([YahooOhlcvProvider(), StooqProvider()])
+    for provider in providers:
+        try:
+            if isinstance(provider, YahooOhlcvProvider):
+                return provider.daily_history(symbol, period="max")
+            return provider.daily_history(symbol)
+        except Exception as exc:
+            errors.append(f"{getattr(provider, 'name', provider.__class__.__name__)}: {exc}")
+    raise HTTPException(status_code=502, detail="All historical providers failed: " + " | ".join(errors))
 
 
 def _iso(value: str | None, fallback: str) -> str:
