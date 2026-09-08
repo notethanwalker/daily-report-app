@@ -12,7 +12,7 @@ from ..providers.alpaca_market_data import AlpacaMarketDataProvider
 
 _CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
 CACHE_TTL_SECONDS = 6 * 60 * 60
-MODEL_VERSION = "williams-priority-v1.1"
+MODEL_VERSION = "williams-priority-v1.2"
 MODEL_CONFIG = {
     "indicator": "Williams %R",
     "lookback_months": 14,
@@ -21,6 +21,8 @@ MODEL_CONFIG = {
     "allocation": "linear_cross_sectional_rank",
     "new_capital_only": True,
     "rebalance_existing_holdings": False,
+    "strict_universe": True,
+    "require_common_signal_month": True,
 }
 MODEL_CONFIG_HASH = hashlib.sha256(json.dumps(MODEL_CONFIG, sort_keys=True).encode()).hexdigest()[:12]
 
@@ -134,10 +136,10 @@ def _fingerprint(rows: list[dict]) -> str:
 
 
 def rank_basket(symbols: list[str]) -> dict:
-    symbols = list(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
+    requested = list(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))
     rows = []
     unavailable = []
-    for s in symbols:
+    for s in requested:
         try:
             h = history(s)
             wr = williams_14_month(h["rows"])
@@ -157,30 +159,66 @@ def rank_basket(symbols: list[str]) -> dict:
         priority_rank = n - idx
         row["priority_rank"] = priority_rank
         row["priority_weight"] = round(priority_rank / denom, 6)
+    signal_months = sorted({str(x.get("signal_month") or "") for x in ranked if x.get("signal_month")})
+    complete_universe = len(ranked) == len(requested) and not unavailable and bool(requested)
+    aligned_signal_month = len(signal_months) == 1
+    if not requested:
+        status = "blocked_empty_universe"
+    elif not complete_universe:
+        status = "blocked_incomplete_universe"
+    elif not aligned_signal_month:
+        status = "blocked_signal_misalignment"
+    else:
+        status = "ready"
     return {
+        "requested_symbols": requested,
         "eligible": ranked,
         "unavailable": unavailable,
+        "coverage_ratio": round(len(ranked) / len(requested), 4) if requested else 0.0,
+        "signal_months": signal_months,
+        "common_signal_month": signal_months[0] if aligned_signal_month and signal_months else None,
+        "allocation_status": status,
         "model_version":MODEL_VERSION,
         "model_config_hash":MODEL_CONFIG_HASH,
         "model_config":MODEL_CONFIG,
         "input_fingerprint":_fingerprint(ranked),
         "generated_at":datetime.now(timezone.utc).isoformat(),
-        "methodology": "Prior completed 14-month Williams %R. More-negative values receive higher cross-sectional priority. Linear rank weights sum to 1 across eligible symbols. Existing holdings are not rebalanced.",
+        "methodology": "Prior completed 14-month Williams %R. More-negative values receive higher cross-sectional priority. Linear rank weights sum to 1 across the complete requested universe. Allocation fails closed if any constituent is unavailable or if constituents do not share the same completed signal month. Existing holdings are not rebalanced.",
     }
 
 
 def deployment_plan(symbols: list[str], capital: float) -> dict:
     ranked = rank_basket(symbols)
     eligible = ranked["eligible"]
-    for row in eligible:
-        row["suggested_dollars"] = round(max(0.0, capital) * row["priority_weight"], 2)
-    ranked["capital"] = round(max(0.0, capital), 2)
-    ranked["allocated"] = round(sum(x["suggested_dollars"] for x in eligible), 2)
+    requested_capital = round(max(0.0, capital), 2)
+    if ranked["allocation_status"] != "ready":
+        for row in eligible:
+            row["suggested_dollars"] = 0.0
+        ranked["capital"] = requested_capital
+        ranked["allocated"] = 0.0
+        ranked["unallocated"] = requested_capital
+    else:
+        allocations=[]
+        for row in eligible:
+            allocations.append(round(requested_capital * row["priority_weight"], 2))
+        # Keep the plan cash-exact after cent rounding by assigning any residual
+        # to the highest-priority constituent.
+        residual=round(requested_capital-sum(allocations),2)
+        if allocations:
+            allocations[0]=round(allocations[0]+residual,2)
+        for row,dollars in zip(eligible,allocations):
+            row["suggested_dollars"] = dollars
+        ranked["capital"] = requested_capital
+        ranked["allocated"] = round(sum(allocations),2)
+        ranked["unallocated"] = round(requested_capital-ranked["allocated"],2)
     ranked["lineage"]={
         "model_version":MODEL_VERSION,
         "model_config_hash":MODEL_CONFIG_HASH,
         "input_fingerprint":ranked["input_fingerprint"],
-        "signal_policy":"prior completed month only",
+        "allocation_status":ranked["allocation_status"],
+        "coverage_ratio":ranked["coverage_ratio"],
+        "common_signal_month":ranked["common_signal_month"],
+        "signal_policy":"prior completed month only; complete and time-aligned universe required",
         "provider_preference":"Alpaca IEX when configured, Yahoo Finance fallback",
         "constituent_inputs":[{"symbol":x["symbol"],"provider":x.get("provider"),"retrieved_at":x.get("retrieved_at"),"data_start":x.get("data_start"),"data_end":x.get("data_end"),"signal_date":x.get("signal_date"),"signal_month":x.get("signal_month"),"source_url":x.get("source_url")} for x in eligible],
     }
