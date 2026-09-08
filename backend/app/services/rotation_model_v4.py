@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from ..database import SessionLocal
 from ..models import MarketSnapshot
 from ..normalized_market_models import MarketPipelineState
 from .rotation import SECTORS
@@ -13,6 +15,7 @@ ROTATION_HISTORY_KEY = "v4_rotation_history"
 MIN_TRANSITION_OBSERVATIONS = 4
 MAX_ROTATION_HISTORY_DAYS = 400
 STALE_INPUT_HOURS = 72
+ROTATION_CAPTURE_SECONDS = 60 * 60
 
 
 def _f(value, default=None):
@@ -95,7 +98,7 @@ def _age_hours(dt: datetime, now: datetime) -> float:
     return max(0.0, (now - dt).total_seconds() / 3600.0)
 
 
-def build_rotation_model(db: Session, persist: bool = True) -> dict:
+def build_rotation_model(db: Session, persist: bool = False) -> dict:
     rows = []
     now = datetime.now(timezone.utc)
     for symbol, name in SECTORS.items():
@@ -164,7 +167,20 @@ def build_rotation_model(db: Session, persist: bool = True) -> dict:
         "early_rotation": sorted([x for x in rows if x["forward_bias"] in {"early_rotation_candidate", "watch_for_rotation"}], key=lambda x: x["conviction"], reverse=True)[:8],
         "state_counts": dict(states),
         "history_persisted_this_call": persisted,
-        "history_policy": {"minimum_transition_observations": MIN_TRANSITION_OBSERVATIONS, "canonical_daily_history_key": ROTATION_HISTORY_KEY, "max_days": MAX_ROTATION_HISTORY_DAYS, "stale_input_hours": STALE_INPUT_HOURS, "write_policy": "upsert only when today's computed record changes"},
-        "methodology": "V4 rotation pressure extends the existing 1D/7D/30D + relative-volume score with stored-observation change and 100/200MA trend context. Sparse or stale histories are confidence-capped and cannot emit actionable transition labels. Canonical daily state records are persisted idempotently for later forward-outcome calibration.",
+        "history_policy": {"minimum_transition_observations": MIN_TRANSITION_OBSERVATIONS, "canonical_daily_history_key": ROTATION_HISTORY_KEY, "max_days": MAX_ROTATION_HISTORY_DAYS, "stale_input_hours": STALE_INPUT_HOURS, "capture_seconds": ROTATION_CAPTURE_SECONDS, "write_policy": "background upsert only when today's computed record changes"},
+        "methodology": "V4 rotation pressure extends the existing 1D/7D/30D + relative-volume score with stored-observation change and 100/200MA trend context. Sparse or stale histories are confidence-capped and cannot emit actionable transition labels. Canonical daily state records are persisted by a background capture loop rather than by UI reads.",
         "generated_at": generated_at,
     }
+
+
+async def rotation_snapshot_loop():
+    """Hourly, bounded, idempotent capture for future rotation calibration."""
+    while True:
+        db = SessionLocal()
+        try:
+            build_rotation_model(db, persist=True)
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+        await asyncio.sleep(ROTATION_CAPTURE_SECONDS)
