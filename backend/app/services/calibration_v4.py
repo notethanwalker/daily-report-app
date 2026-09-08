@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -13,11 +13,15 @@ from .candidate_funnel_v4 import build_candidate_funnel
 from .macro_universe import MACRO_CATEGORIES
 from .rotation_model_v4 import build_rotation_model
 
-ROTATION_MODEL_VERSION="rotation-v4.5"
-CANDIDATE_MODEL_VERSION="candidate-funnel-v4.4"
+ROTATION_MODEL_VERSION="rotation-v4.6"
+CANDIDATE_MODEL_VERSION="candidate-funnel-v4.5"
 CAPTURE_SECONDS=60*60
 OUTCOME_HORIZONS=(5,20,60)
 MAX_CANDIDATES_PER_DAY=100
+RETENTION_DAYS=1095
+MIN_PROBABILITY_SAMPLES=60
+MIN_PROBABILITY_DATES=30
+MIN_PROBABILITY_SPAN_DAYS=90
 CALIBRATION_BENCHMARKS={"U.S. Market":"SPY","Factors":"SPY","Sectors":"SPY","Technology Themes":"QQQ","Industrial / Infrastructure":"SPY","Consumer / Housing":"SPY","Healthcare Themes":"XLV"}
 
 
@@ -46,6 +50,7 @@ def _insert_candidates_once(db:Session,funnel:dict)->int:
     if changed:db.commit()
     return changed
 
+
 def _bars_after(db,symbol,start_date,count):return db.query(NormalizedDailyBar).filter(NormalizedDailyBar.symbol==symbol,NormalizedDailyBar.bar_date>=start_date).order_by(NormalizedDailyBar.bar_date.asc()).limit(count+8).all()
 def _base_close(db,symbol,day):
     row=db.query(NormalizedDailyBar).filter(NormalizedDailyBar.symbol==symbol,NormalizedDailyBar.bar_date<=day).order_by(NormalizedDailyBar.bar_date.desc()).first();return float(row.close) if row else None
@@ -53,6 +58,7 @@ def _forward_window(db,symbol,day,horizon):return [b for b in _bars_after(db,sym
 def _incomplete_candidates(db,limit):
     completed=db.query(CandidateOutcomeV4.candidate_id,func.count(CandidateOutcomeV4.id).label("n")).filter(CandidateOutcomeV4.status=="complete").group_by(CandidateOutcomeV4.candidate_id).having(func.count(CandidateOutcomeV4.id)>=len(OUTCOME_HORIZONS)).subquery()
     return db.query(CandidateObservationV4).outerjoin(completed,CandidateObservationV4.id==completed.c.candidate_id).filter(completed.c.candidate_id.is_(None)).order_by(CandidateObservationV4.observation_date.asc()).limit(limit).all()
+
 
 def update_candidate_outcomes(db:Session,limit:int=500)->dict:
     candidates=_incomplete_candidates(db,limit);completed=waiting=0
@@ -73,7 +79,23 @@ def update_candidate_outcomes(db:Session,limit:int=500)->dict:
     db.commit();return {"completed":completed,"waiting":waiting,"candidates_examined":len(candidates)}
 
 
+def prune_calibration_history(db:Session)->dict:
+    cutoff=(date.today()-timedelta(days=RETENTION_DAYS)).isoformat()
+    old_ids=[x[0] for x in db.query(CandidateObservationV4.id).filter(CandidateObservationV4.observation_date<cutoff).all()]
+    outcomes=0
+    if old_ids:outcomes=db.query(CandidateOutcomeV4).filter(CandidateOutcomeV4.candidate_id.in_(old_ids)).delete(synchronize_session=False)
+    candidates=db.query(CandidateObservationV4).filter(CandidateObservationV4.observation_date<cutoff).delete(synchronize_session=False)
+    rotation=db.query(RotationSnapshotV4).filter(RotationSnapshotV4.observation_date<cutoff).delete(synchronize_session=False)
+    if outcomes or candidates or rotation:db.commit()
+    return {"cutoff":cutoff,"candidate_outcomes":outcomes,"candidate_observations":candidates,"rotation_snapshots":rotation}
+
+
 def _benchmark_for(symbol:str)->str|None:return CALIBRATION_BENCHMARKS.get(MACRO_CATEGORIES.get(symbol,""))
+def _eligibility(dates:list[str],samples:int)->dict:
+    unique=sorted(set(dates));span=0
+    if len(unique)>=2:span=(date.fromisoformat(unique[-1])-date.fromisoformat(unique[0])).days
+    eligible=samples>=MIN_PROBABILITY_SAMPLES and len(unique)>=MIN_PROBABILITY_DATES and span>=MIN_PROBABILITY_SPAN_DAYS
+    return {"distinct_observation_dates":len(unique),"observation_span_days":span,"probability_label_eligible":eligible}
 def rotation_calibration_summary(db:Session,horizon_days:int=20)->dict:
     rows=db.query(RotationSnapshotV4).filter(RotationSnapshotV4.model_version==ROTATION_MODEL_VERSION).order_by(RotationSnapshotV4.observation_date.asc()).all();groups={};skipped=0
     for r in rows:
@@ -81,8 +103,11 @@ def rotation_calibration_summary(db:Session,horizon_days:int=20)->dict:
         if not benchmark:skipped+=1;continue
         ss=_base_close(db,r.symbol,r.observation_date);bs=_base_close(db,benchmark,r.observation_date);sf=_forward_window(db,r.symbol,r.observation_date,horizon_days);bf=_forward_window(db,benchmark,r.observation_date,horizon_days)
         if not ss or not bs or len(sf)<horizon_days or len(bf)<horizon_days:continue
-        rel=(float(sf[-1].close)/ss-1)*100-(float(bf[-1].close)/bs-1)*100;groups.setdefault(r.state,[]).append(rel)
-    return {"horizon_days":horizon_days,"benchmark_policy":CALIBRATION_BENCHMARKS,"states":{k:{"samples":len(v),"mean_relative_return_pct":round(sum(v)/len(v),3),"outperformance_rate":round(sum(1 for x in v if x>0)/len(v),3),"probability_label_eligible":len(v)>=30} for k,v in groups.items() if v},"skipped_non_equity_or_unmapped_rows":skipped,"model_version":ROTATION_MODEL_VERSION,"interpretation":"Equity sectors/themes are calibrated relative to category-appropriate equity benchmarks. Cross-asset groups are excluded until dedicated benchmark models exist. Probability language requires at least 30 observations per state."}
+        rel=(float(sf[-1].close)/ss-1)*100-(float(bf[-1].close)/bs-1)*100;groups.setdefault(r.state,[]).append((rel,r.observation_date))
+    states={}
+    for k,v in groups.items():
+        vals=[x[0] for x in v];dates=[x[1] for x in v];states[k]={"samples":len(vals),"mean_relative_return_pct":round(sum(vals)/len(vals),3),"outperformance_rate":round(sum(1 for x in vals if x>0)/len(vals),3),**_eligibility(dates,len(vals))}
+    return {"horizon_days":horizon_days,"benchmark_policy":CALIBRATION_BENCHMARKS,"states":states,"skipped_non_equity_or_unmapped_rows":skipped,"model_version":ROTATION_MODEL_VERSION,"probability_policy":{"minimum_samples":MIN_PROBABILITY_SAMPLES,"minimum_distinct_dates":MIN_PROBABILITY_DATES,"minimum_span_days":MIN_PROBABILITY_SPAN_DAYS},"interpretation":"Equity sectors/themes are calibrated relative to category-appropriate equity benchmarks. Cross-asset groups are excluded until dedicated benchmark models exist. Daily cross-sectional rows are correlated, so probability language requires both sample count and independent calendar depth."}
 
 
 def _score_band(score:float)->str:
@@ -91,19 +116,19 @@ def _score_band(score:float)->str:
     if score>=65:return "65-74.9"
     if score>=55:return "55-64.9"
     return "<55"
-def _summary(values:list[tuple[float,float,float]])->dict:
-    rets=[x[0] for x in values];mfes=[x[1] for x in values];maes=[x[2] for x in values]
-    return {"samples":len(values),"mean_return_pct":round(sum(rets)/len(rets),3),"positive_rate":round(sum(1 for x in rets if x>0)/len(rets),3),"mean_mfe_pct":round(sum(mfes)/len(mfes),3),"mean_mae_pct":round(sum(maes)/len(maes),3),"probability_label_eligible":len(values)>=30}
+def _summary(values:list[tuple[float,float,float,str]])->dict:
+    rets=[x[0] for x in values];mfes=[x[1] for x in values];maes=[x[2] for x in values];dates=[x[3] for x in values]
+    return {"samples":len(values),"mean_return_pct":round(sum(rets)/len(rets),3),"positive_rate":round(sum(1 for x in rets if x>0)/len(rets),3),"mean_mfe_pct":round(sum(mfes)/len(mfes),3),"mean_mae_pct":round(sum(maes)/len(maes),3),**_eligibility(dates,len(values))}
 def candidate_calibration_summary(db:Session,horizon_days:int=20)->dict:
     rows=db.query(CandidateObservationV4,CandidateOutcomeV4).join(CandidateOutcomeV4,CandidateObservationV4.id==CandidateOutcomeV4.candidate_id).filter(CandidateObservationV4.model_version==CANDIDATE_MODEL_VERSION,CandidateOutcomeV4.horizon_days==horizon_days,CandidateOutcomeV4.status=="complete").all();by_band={};by_setup={}
     for c,o in rows:
-        tup=(float(o.return_pct or 0),float(o.max_favorable_excursion_pct or 0),float(o.max_adverse_excursion_pct or 0));by_band.setdefault(_score_band(c.funnel_score),[]).append(tup);by_setup.setdefault(c.setup_type,[]).append(tup)
-    return {"horizon_days":horizon_days,"model_version":CANDIDATE_MODEL_VERSION,"by_score_band":{k:_summary(v) for k,v in by_band.items()},"by_setup_type":{k:_summary(v) for k,v in by_setup.items()},"interpretation":"Prospective self-evaluation of frozen first-discovery candidate observations. Probability language should only be used for groups with at least 30 observations."}
+        tup=(float(o.return_pct or 0),float(o.max_favorable_excursion_pct or 0),float(o.max_adverse_excursion_pct or 0),c.observation_date);by_band.setdefault(_score_band(c.funnel_score),[]).append(tup);by_setup.setdefault(c.setup_type,[]).append(tup)
+    return {"horizon_days":horizon_days,"model_version":CANDIDATE_MODEL_VERSION,"by_score_band":{k:_summary(v) for k,v in by_band.items()},"by_setup_type":{k:_summary(v) for k,v in by_setup.items()},"probability_policy":{"minimum_samples":MIN_PROBABILITY_SAMPLES,"minimum_distinct_dates":MIN_PROBABILITY_DATES,"minimum_span_days":MIN_PROBABILITY_SPAN_DAYS},"interpretation":"Prospective self-evaluation of frozen first-discovery candidate observations. Same-day candidates and overlapping forward windows are correlated; probability language requires sufficient distinct dates and calendar span in addition to raw sample count."}
 
 def capture_once()->dict:
     db=SessionLocal()
     try:
-        rotation=build_rotation_model(db,persist=False);rw=_upsert_rotation(db,rotation);funnel=build_candidate_funnel(db,rotation,limit=MAX_CANDIDATES_PER_DAY,enqueue_enrichment=False);cw=_insert_candidates_once(db,funnel);outcomes=update_candidate_outcomes(db);return {"rotation_rows":rw,"candidate_rows":cw,"outcomes":outcomes}
+        rotation=build_rotation_model(db,persist=False);rw=_upsert_rotation(db,rotation);funnel=build_candidate_funnel(db,rotation,limit=MAX_CANDIDATES_PER_DAY,enqueue_enrichment=False);cw=_insert_candidates_once(db,funnel);outcomes=update_candidate_outcomes(db);pruned=prune_calibration_history(db);return {"rotation_rows":rw,"candidate_rows":cw,"outcomes":outcomes,"pruned":pruned}
     except Exception:db.rollback();raise
     finally:db.close()
 async def calibration_loop():
