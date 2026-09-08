@@ -1,0 +1,63 @@
+name: Williams Priority Post-Crash 2010-2016
+
+on:
+  push:
+    paths:
+      - '.github/workflows/williams-priority-postcrash-2010-2016.yml'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install market data client
+        run: python -m pip install --disable-pip-version-check yfinance
+      - name: Build same seeded historical baskets
+        shell: bash
+        run: |
+          python - <<'PY'
+          import random, json
+          prior = ['AAPL','MSFT','GOOGL','AMZN','QCOM','ORCL','ADBE','INTU','AMAT','LRCX','KLAC','MU','ASML','TSM','CRM','NFLX','ISRG','BIIB','GILD','CELG','BIDU','SBUX','NKE','COST','UNH','MA','V','CTSH','ADSK','FISV']
+          r=random.Random(20072016)
+          baskets=[r.sample(prior,10) for _ in range(5)]
+          open('postcrash_baskets.json','w').write(json.dumps(baskets,indent=2))
+          print(json.dumps(baskets,indent=2))
+          PY
+      - name: Run 2010-2016 supplemental tests
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          b=json.load(open('postcrash_baskets.json'))
+          for i, syms in enumerate(b,1):
+              subprocess.check_call(['python','scripts/williams_portfolio_priority.py','--symbols',','.join(syms),'--start','2010-01-01','--end','2016-12-30','--monthly-cash','10000','--tilts','0.25,0.5,0.75,1.0','--output',f'postcrash_{i}.json'])
+          PY
+      - name: Summarize
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, glob
+          summary=[]
+          for fn in sorted(glob.glob('postcrash_*.json')):
+              if fn == 'postcrash_baskets.json':
+                  continue
+              d=json.load(open(fn))
+              row={'file':fn,'symbols':d['symbols'],'equal_value':d['results']['equal']['portfolio_value']}
+              for k in ['tilt_25','tilt_50','tilt_75','tilt_100']:
+                  row[k]=d['results'][k]['vs_equal_pct']
+              summary.append(row)
+          print(json.dumps(summary,indent=2))
+          open('postcrash_2010_2016_summary.json','w').write(json.dumps(summary,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: williams-priority-postcrash-2010-2016
+          path: |
+            postcrash_baskets.json
+            postcrash_2010_2016_summary.json
+            postcrash_*.json
+          retention-days: 30
