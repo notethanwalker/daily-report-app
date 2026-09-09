@@ -8,6 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..models import MarketSnapshot, SymbolRegistry
+from ..normalized_market_models import MarketPipelineState
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,11 @@ def _latest_snapshot_rows(db: Session) -> list[MarketSnapshot]:
 
 def _registry_map(db: Session) -> dict[str, SymbolRegistry]:
     return {r.symbol.upper(): r for r in db.query(SymbolRegistry).all()}
+
+
+def _pipeline_state(db: Session, key: str) -> dict:
+    row = db.get(MarketPipelineState, key)
+    return dict(row.payload or {}) if row else {}
 
 
 def _williams_score(williams: float) -> float:
@@ -106,6 +112,14 @@ def _is_scannable(registry: SymbolRegistry | None, payload: dict, include_etfs: 
     return bool(registry and (registry.provider_ids or {}).get("universe_source") == "Nasdaq Trader" and asset != "etf")
 
 
+def _registry_scannable_count(registry: dict[str, SymbolRegistry], include_etfs: bool) -> int:
+    count = 0
+    for reg in registry.values():
+        if _is_scannable(reg, {}, include_etfs):
+            count += 1
+    return count
+
+
 def scan_cached_market(
     db: Session,
     include_near: bool = False,
@@ -116,13 +130,16 @@ def scan_cached_market(
     strong: list[dict] = []
     weak: list[dict] = []
     near: list[dict] = []
-    scanned = eligible = 0
-    etfs_excluded = liquidity_excluded = 0
+    scanned = technical_complete = eligible = 0
+    etfs_excluded = liquidity_excluded = incomplete_technicals = 0
+    verified = primary_only = verification_unknown = 0
     newest = None
 
-    for row in _latest_snapshot_rows(db):
+    latest_rows = _latest_snapshot_rows(db)
+    for row in latest_rows:
         payload = row.payload or {}
         reg = registry.get(row.symbol.upper())
+        newest = row.retrieved_at if newest is None or row.retrieved_at > newest else newest
         asset = _asset_type(reg, payload)
         if "etf" in asset and not include_etfs:
             etfs_excluded += 1
@@ -130,12 +147,21 @@ def scan_cached_market(
         if not _is_scannable(reg, payload, include_etfs):
             continue
         scanned += 1
+        verification_status = str(payload.get("verification_status") or "").lower()
+        if verification_status in {"verified", "cross_checked", "matched"}:
+            verified += 1
+        elif verification_status in {"primary_only", "single_source"}:
+            primary_only += 1
+        else:
+            verification_unknown += 1
         williams = _f(payload.get("williams_r_14"))
         ma100_distance = _f(payload.get("price_vs_ma100_percent"))
         price = _f(payload.get("price"))
         avg_dollar_volume = _f(payload.get("average_dollar_volume_20d"))
         if williams is None or ma100_distance is None or price is None:
+            incomplete_technicals += 1
             continue
+        technical_complete += 1
         if price < MIN_PRICE or avg_dollar_volume is None or avg_dollar_volume < MIN_AVG_DOLLAR_VOLUME_20D:
             liquidity_excluded += 1
             continue
@@ -177,23 +203,60 @@ def scan_cached_market(
             "technical_source": payload.get("technical_source"),
             "canonical_history_source": payload.get("canonical_history_source"),
             "latest_bar_source": payload.get("latest_bar_source") or payload.get("provider") or row.provider,
+            "verification_status": payload.get("verification_status") or "unknown",
         }
-        newest = row.retrieved_at if newest is None or row.retrieved_at > newest else newest
         {"strong": strong, "weak": weak, "near": near}[bucket].append(item)
 
     for rows in (strong, weak, near):
         rows.sort(key=lambda x: (x["score"], -x["williams_r_14"], -x["price_vs_ma100_percent"]), reverse=True)
 
+    registry_scannable = _registry_scannable_count(registry, include_etfs)
+    coverage_pct = round(scanned / registry_scannable * 100.0, 1) if registry_scannable else 0.0
+    technical_coverage_pct = round(technical_complete / scanned * 100.0, 1) if scanned else 0.0
+    stooq = _pipeline_state(db, "stooq_manual_archive")
+    canonical_ready = stooq.get("status") == "ready" and bool(stooq.get("canonical"))
+    broad_state = "ready" if canonical_ready and coverage_pct >= 95 else "partial"
+    data_strategy = (
+        "Canonical broad archive is ready. Ranking reads only the normalized/cached market layer and performs zero provider calls."
+        if canonical_ready
+        else "Broad archive is not canonical. Ranking is limited to symbols with valid cached market snapshots; coverage is reported explicitly and no market-wide completeness claim is made. The scan performs zero provider calls."
+    )
+
     result = {
         "strong": strong[:limit_per_bucket],
         "weak": weak[:limit_per_bucket],
         "counts": {
+            "registry_symbols": len(registry),
+            "registry_scannable": registry_scannable,
+            "cached_snapshot_symbols": len(latest_rows),
             "cached_symbols_scanned": scanned,
+            "technical_inputs_complete": technical_complete,
             "technically_eligible": eligible,
+            "incomplete_technicals": incomplete_technicals,
             "strong": len(strong),
             "weak": len(weak),
             "etfs_excluded": etfs_excluded,
             "liquidity_excluded": liquidity_excluded,
+        },
+        "coverage": {
+            "state": broad_state,
+            "market_wide_ready": broad_state == "ready",
+            "cached_snapshot_coverage_percent": coverage_pct,
+            "technical_coverage_percent": technical_coverage_pct,
+            "registry_scannable": registry_scannable,
+            "cached_scannable": scanned,
+            "technical_complete": technical_complete,
+            "limitation": None if broad_state == "ready" else "Results are valid for the cached subset only; the current scan must not be interpreted as complete U.S. market coverage.",
+        },
+        "verification": {
+            "verified": verified,
+            "primary_only": primary_only,
+            "unknown": verification_unknown,
+        },
+        "archive_state": {
+            "status": stooq.get("status") or "unknown",
+            "canonical": bool(stooq.get("canonical")),
+            "coverage_ratio": stooq.get("coverage_ratio"),
         },
         "include_etfs": include_etfs,
         "thresholds": THRESHOLDS.__dict__,
@@ -204,7 +267,7 @@ def scan_cached_market(
         "weights": {"williams": 60, "ma100_proximity": 30, "confirmation": 10},
         "confirmation_weights": {"ma100_slope": 5, "approach_velocity": 5},
         "last_cache_update": newest.isoformat() if newest else None,
-        "data_strategy": "Stooq manual archive is the canonical broad historical backbone. Newer daily/intraday bars may be appended from fallback providers. Ranking uses the normalized merged OHLCV cache and performs zero provider calls.",
+        "data_strategy": data_strategy,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     if include_near:

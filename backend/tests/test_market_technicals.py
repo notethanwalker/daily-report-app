@@ -26,6 +26,27 @@ class MarketTechnicalCalculations(unittest.TestCase):
             "normalized": True,
         }
 
+    def _broad_raw(self, bars=130):
+        start = date(2026, 1, 1)
+        values = []
+        for i in range(bars):
+            close = 100.0 + i * 0.08
+            values.append({
+                "datetime": (start + timedelta(days=i)).isoformat(),
+                "open": close - 0.2,
+                "high": close + 1.0,
+                "low": close - 1.0,
+                "close": close,
+                "volume": 2_000_000 + i * 1000,
+            })
+        return {
+            "history": {"values": values, "meta": {"symbol": "BROAD"}},
+            "provider": "unit-test",
+            "source_url": "test://broad-ohlcv",
+            "retrieved_at": "2026-09-09T00:00:00+00:00",
+            "normalized": True,
+        }
+
     def test_real_ma100_approach_velocity_is_positive_when_distance_contracts(self):
         snapshot = build_market_snapshot(self._raw())
         self.assertIsNotNone(snapshot["ma100_distance_5d_ago"])
@@ -42,6 +63,17 @@ class MarketTechnicalCalculations(unittest.TestCase):
         snapshot = build_market_snapshot(self._raw())
         self.assertEqual(snapshot["technical_source"], "normalized_daily_bars")
         self.assertTrue(snapshot["is_materialized_cache"])
+
+    def test_broad_130_bar_snapshot_has_opportunity_inputs_without_fake_200ma(self):
+        snapshot = build_market_snapshot(self._broad_raw())
+        self.assertIsNotNone(snapshot["williams_r_14"])
+        self.assertIsNotNone(snapshot["ma100"])
+        self.assertIsNotNone(snapshot["price_vs_ma100_percent"])
+        self.assertIsNotNone(snapshot["ma100_slope_20d_percent"])
+        self.assertIsNotNone(snapshot["approach_velocity_100_5d"])
+        self.assertIsNotNone(snapshot["average_dollar_volume_20d"])
+        self.assertIsNone(snapshot["ma200"])
+        self.assertIsNone(snapshot["price_vs_ma200_percent"])
 
 
 if __name__ == "__main__":
