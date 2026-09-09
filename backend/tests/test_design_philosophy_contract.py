@@ -8,6 +8,8 @@ FUNNEL = (ROOT / "backend/app/services/candidate_funnel_v4.py").read_text(encodi
 V4 = (ROOT / "web/app/v4/page.tsx").read_text(encoding="utf-8")
 V4_CSS = (ROOT / "web/app/v4/v4.css").read_text(encoding="utf-8")
 PHILOSOPHY = (ROOT / "docs/DAILY_REPORT_APP_DESIGN_PHILOSOPHY.md").read_text(encoding="utf-8")
+STACK = (ROOT / "backend/app/routers/stack_v4.py").read_text(encoding="utf-8")
+MAIN = (ROOT / "backend/app/main.py").read_text(encoding="utf-8")
 
 
 class DesignPhilosophyContract(unittest.TestCase):
@@ -50,6 +52,21 @@ class DesignPhilosophyContract(unittest.TestCase):
         self.assertIn('TRACKED_MIN_BARS = 220', PIPELINE)
         self.assertIn('retain_days = NORMALIZED_HISTORY_DAYS if tracked else BROAD_OPPORTUNITY_HISTORY_DAYS', PIPELINE)
         self.assertIn('tail=BROAD_OPPORTUNITY_HISTORY_DAYS', PIPELINE)
+
+    def test_deployment_fundamental_score_is_informational_only(self):
+        self.assertIn('build_fundamental_score', STACK)
+        self.assertIn('fundamental_score_policy', STACK)
+        self.assertIn('never changes Williams rank, weight, eligibility or suggested dollars', STACK)
+        self.assertNotIn('fundamental_score', (ROOT / "backend/app/services/monthly_priority.py").read_text(encoding="utf-8"))
+
+    def test_expandable_detail_controls_are_wired_into_v4(self):
+        self.assertIn('DeepLinksV4', V4)
+        self.assertIn('OpportunityTableV4', V4)
+        self.assertIn('Fundamental score details', V4)
+
+    def test_world_news_window_is_real_backend_input(self):
+        self.assertIn('hours:int=Query(default=48,ge=1,le=168)', MAIN)
+        self.assertIn('timespan=f"{hours}h"', MAIN)
 
     def test_mobile_progressive_disclosure_is_preserved(self):
         self.assertIn('@media(max-width:560px)', V4_CSS)

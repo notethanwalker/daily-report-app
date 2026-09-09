@@ -165,8 +165,8 @@ def _latest_market_by_symbol(db,symbols=None):
    out[symbol]=p
  return out
 
-def _load_world_news(topic,limit):
- q=WORLD_NEWS_TOPIC_QUERIES.get(topic,WORLD_NEWS_ALL_QUERY);d=GdeltProvider().search(q,max_records=limit,timespan="48h")
+def _load_world_news(topic,limit,hours=48):
+ q=WORLD_NEWS_TOPIC_QUERIES.get(topic,WORLD_NEWS_ALL_QUERY);hours=max(1,min(int(hours),168));d=GdeltProvider().search(q,max_records=limit,timespan=f"{hours}h")
  if topic in WORLD_NEWS_TOPIC_QUERIES:d["articles"]=[a for a in d.get("articles",[]) if topic in (a.get("topics") or [])]
  d["selected_topic"]=topic or "All";return d
 
@@ -255,9 +255,9 @@ def market(symbol:str,verify:bool=True,db:Session=Depends(get_db)):
 def history(symbol:str,limit:int=Query(default=20,ge=1,le=100),db:Session=Depends(get_db)):
  rs=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol.strip().upper()).order_by(MarketSnapshot.retrieved_at.desc()).limit(limit).all();return {"symbol":symbol.upper(),"snapshots":[{"id":r.id,"as_of":r.as_of,"provider":r.provider,"retrieved_at":r.retrieved_at.isoformat(),"data":r.payload} for r in rs]}
 @app.get("/api/v1/news/world")
-def world_news(limit:int=Query(default=25,ge=1,le=50),topic:str|None=None):
+def world_news(limit:int=Query(default=25,ge=1,le=50),topic:str|None=None,hours:int=Query(default=48,ge=1,le=168)):
  selected=topic if topic in WORLD_NEWS_TOPIC_QUERIES else None
- try:return _cached_shared(f"world:{limit}:{selected or 'all'}",NEWS_CACHE_TTL_SECONDS,lambda:_load_world_news(selected,limit))
+ try:return _cached_shared(f"world:{limit}:{selected or 'all'}:{hours}h",NEWS_CACHE_TTL_SECONDS,lambda:_load_world_news(selected,limit,hours))
  except Exception as exc:raise HTTPException(502,f"World news unavailable: {exc}") from exc
 @app.get("/api/v1/news/market")
 def market_news(limit:int=Query(default=15,ge=1,le=30)):

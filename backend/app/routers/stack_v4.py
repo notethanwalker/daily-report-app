@@ -13,6 +13,7 @@ from ..services.calibration_v4 import CANDIDATE_MODEL_VERSION, ROTATION_MODEL_VE
 from ..services.candidate_funnel_v4 import build_candidate_funnel, enqueue_deep_enrichment
 from ..services.classification_v4 import blend_rotation_context, rotation_exposures
 from ..services.feature_model_v4 import presentation_payload
+from ..services.fundamental_score import build_fundamental_score
 from ..services.monthly_priority import deployment_plan
 from ..services.opportunity_model import recent_flow
 from ..services.provider_orchestrator import ProviderOrchestrator
@@ -91,4 +92,9 @@ def deployment(capital:float=Query(1000,ge=0,le=100000000),basket:str=Query("wat
     if symbols:selected=[x.strip().upper() for x in symbols.split(",") if x.strip()];name="Custom Basket"
     elif basket.lower() in {"ai","ai-buildout","ai_buildout","ai buildout basket"}:selected=AI_BUILDOUT_BASKET;name="AI Buildout Basket"
     else:selected=_user_symbols(db,user);name="Watchlist + Portfolio"
-    return {"model":"Williams Priority v1","basket":name,"symbols":selected,"capital":capital,"new_capital_only":True,"existing_holdings_rebalanced":False,"quality_gate":"manual",**deployment_plan(selected,capital)}
+    plan=deployment_plan(selected,capital)
+    for row in plan.get("eligible",[]):
+        fund=db.get(FundamentalCache,row["symbol"])
+        row["fundamental_score"]=build_fundamental_score(fund.payload if fund else None)
+        row["fundamental_source"]={"provider":fund.provider,"retrieved_at":fund.retrieved_at.isoformat()} if fund else None
+    return {"model":"Williams Priority v1 + informational fundamentals","basket":name,"symbols":selected,"capital":capital,"new_capital_only":True,"existing_holdings_rebalanced":False,"quality_gate":"informational_only","fundamental_score_policy":"Display-only context. Fundamental score never changes Williams rank, weight, eligibility or suggested dollars.",**plan}
