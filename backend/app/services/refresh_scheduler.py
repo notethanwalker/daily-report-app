@@ -1,5 +1,8 @@
 import asyncio
+import gc
 import os
+import re
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 
@@ -31,6 +34,7 @@ from .validation import build_secondary_metrics, cross_check_market_snapshot
 _last_universe_sync = None
 _last_bulk_attempt = None
 _last_cleanup = None
+_BROAD_BOOTSTRAP_LOCK = threading.Lock()
 QUEUE_RUNNING_TIMEOUT_MINUTES = 30
 QUEUE_HISTORY_RETENTION_DAYS = 14
 DEPLOYMENT_WARM_SYMBOLS = {x.strip().upper() for x in os.getenv("DEPLOYMENT_WARM_SYMBOLS", "MU,NVDA").split(",") if x.strip()}
@@ -245,8 +249,29 @@ def _save_pipeline_state(db, key, payload):
     db.commit()
 
 
+def _process_rss_mb():
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return float(line.split()[1]) / 1024.0
+    except Exception:
+        return 0.0
+    return 0.0
+
+
+def _broad_bootstrap_memory_limit_mb():
+    return float(os.getenv("YAHOO_BOOTSTRAP_MEMORY_LIMIT_MB", "400"))
+
+
+def _yahoo_safe_symbol(symbol):
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9-]{0,9}", str(symbol or "").upper()))
+
+
 def _broad_stock_eligible(row):
     if str(row.asset_type or "").lower() not in {"stock", "equity"}:
+        return False
+    if not _yahoo_safe_symbol(row.symbol):
         return False
     name = str(row.name or "").lower()
     blocked = (" warrant", " warrants", " unit", " units", " right", " rights", " preferred", " preference", " notes due", " bond", " fund")
@@ -254,76 +279,101 @@ def _broad_stock_eligible(row):
 
 
 def yahoo_broad_bootstrap_batch(db, limit=None, chunk_size=None):
-    limit = int(limit or os.getenv("YAHOO_BOOTSTRAP_SYMBOLS_PER_CYCLE", "300"))
-    chunk_size = int(chunk_size or os.getenv("YAHOO_BOOTSTRAP_CHUNK_SIZE", "50"))
+    limit = int(limit or os.getenv("YAHOO_BOOTSTRAP_SYMBOLS_PER_CYCLE", "60"))
+    chunk_size = int(chunk_size or os.getenv("YAHOO_BOOTSTRAP_CHUNK_SIZE", "10"))
     min_bars = int(os.getenv("MARKET_MIN_TECHNICAL_BARS", "120"))
-    covered = set(r[0] for r in db.query(NormalizedDailyBar.symbol).group_by(NormalizedDailyBar.symbol).having(func.count(NormalizedDailyBar.id) >= min_bars).all())
-    rows = [r for r in db.query(SymbolRegistry).order_by(SymbolRegistry.symbol).all() if (r.provider_ids or {}).get("universe_source") == "Nasdaq Trader" and _broad_stock_eligible(r)]
-    if not rows:
-        return {"status": "waiting_for_universe", "requested": 0}
+    memory_limit_mb = _broad_bootstrap_memory_limit_mb()
+    if not _BROAD_BOOTSTRAP_LOCK.acquire(blocking=False):
+        return {"status": "skipped", "reason": "broad bootstrap already running"}
+    try:
+        covered = set(r[0] for r in db.query(NormalizedDailyBar.symbol).group_by(NormalizedDailyBar.symbol).having(func.count(NormalizedDailyBar.id) >= min_bars).all())
+        registry_rows = db.query(SymbolRegistry.symbol, SymbolRegistry.name, SymbolRegistry.asset_type, SymbolRegistry.provider_ids).order_by(SymbolRegistry.symbol).all()
+        rows = [r for r in registry_rows if (r.provider_ids or {}).get("universe_source") == "Nasdaq Trader" and _broad_stock_eligible(r)]
+        del registry_rows
+        gc.collect()
+        if not rows:
+            return {"status": "waiting_for_universe", "requested": 0}
 
-    state = _pipeline_state(db, "yahoo_bootstrap")
-    cursor = str(state.get("cursor") or "")
-    candidates = [r.symbol.upper() for r in rows if r.symbol.upper() not in covered and r.symbol.upper() > cursor]
-    wrapped = False
-    if not candidates:
-        candidates = [r.symbol.upper() for r in rows if r.symbol.upper() not in covered]
-        cursor = ""; wrapped = True
-    selected = candidates[:limit]
-    if not selected:
-        result = {"status": "complete", "eligible_stocks": len(rows), "covered_stocks": len(covered), "requested": 0, "completed_at": datetime.now(timezone.utc).isoformat()}
+        state = _pipeline_state(db, "yahoo_bootstrap")
+        cursor = str(state.get("cursor") or "")
+        candidates = [r.symbol.upper() for r in rows if r.symbol.upper() not in covered and r.symbol.upper() > cursor]
+        wrapped = False
+        if not candidates:
+            candidates = [r.symbol.upper() for r in rows if r.symbol.upper() not in covered]
+            cursor = ""; wrapped = True
+        selected = candidates[:limit]
+        if not selected:
+            result = {"status": "complete", "eligible_stocks": len(rows), "covered_stocks": len(covered), "requested": 0, "completed_at": datetime.now(timezone.utc).isoformat()}
+            _save_pipeline_state(db, "yahoo_bootstrap", result)
+            return result
+
+        succeeded = failed = snapshots = bars = 0
+        failed_examples = []
+        paused_for_memory = False
+        processed = 0
+        for i in range(0, len(selected), max(1, chunk_size)):
+            rss_before = _process_rss_mb()
+            if rss_before and rss_before >= memory_limit_mb:
+                paused_for_memory = True
+                break
+            chunk = selected[i:i + max(1, chunk_size)]
+            provider = YahooOhlcvProvider()
+            batch = {}
+            try:
+                batch = provider.batch_daily_history(chunk, period="2y")
+            except Exception as exc:
+                failed += len(chunk)
+                processed += len(chunk)
+                if len(failed_examples) < 10:
+                    failed_examples.append({"symbols": chunk[:5], "error": str(exc)[:180]})
+            else:
+                for symbol in chunk:
+                    data = batch.get(symbol)
+                    processed += 1
+                    if not data or len(data.get("rows") or []) < min_bars:
+                        failed += 1
+                        if len(failed_examples) < 10:
+                            failed_examples.append({"symbol": symbol, "error": "insufficient Yahoo history"})
+                        continue
+                    try:
+                        bars += persist_normalized_history(db, data)
+                        snap = _snapshot_from_normalized(db, symbol)
+                        if snap:
+                            store_market_snapshot(db, symbol, snap, "Yahoo Finance")
+                            snapshots += 1
+                        succeeded += 1
+                    except Exception as exc:
+                        db.rollback(); failed += 1
+                        if len(failed_examples) < 10:
+                            failed_examples.append({"symbol": symbol, "error": str(exc)[:180]})
+            batch.clear()
+            del batch, provider
+            gc.collect()
+
+        status = "paused_memory_guard" if paused_for_memory else "running"
+        result = {
+            "status": status,
+            "source": "Yahoo Finance batch OHLCV",
+            "eligible_stocks": len(rows),
+            "covered_before": len(covered),
+            "requested": len(selected),
+            "processed": processed,
+            "succeeded": succeeded,
+            "failed": failed,
+            "snapshots_written": snapshots,
+            "bars_touched": bars,
+            "cursor": selected[processed - 1] if processed else cursor,
+            "wrapped": wrapped,
+            "memory_limit_mb": memory_limit_mb,
+            "rss_mb_after": round(_process_rss_mb(), 1),
+            "failed_examples": failed_examples,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
         _save_pipeline_state(db, "yahoo_bootstrap", result)
         return result
-
-    provider = YahooOhlcvProvider()
-    succeeded = failed = snapshots = bars = 0
-    failed_examples = []
-    for i in range(0, len(selected), max(1, chunk_size)):
-        chunk = selected[i:i + max(1, chunk_size)]
-        try:
-            batch = provider.batch_daily_history(chunk, period="2y")
-        except Exception as exc:
-            batch = {}
-            failed += len(chunk)
-            if len(failed_examples) < 10:
-                failed_examples.append({"symbols": chunk[:5], "error": str(exc)[:180]})
-            continue
-        for symbol in chunk:
-            data = batch.get(symbol)
-            if not data or len(data.get("rows") or []) < min_bars:
-                failed += 1
-                if len(failed_examples) < 10:
-                    failed_examples.append({"symbol": symbol, "error": "insufficient Yahoo history"})
-                continue
-            try:
-                bars += persist_normalized_history(db, data)
-                snap = _snapshot_from_normalized(db, symbol)
-                if snap:
-                    store_market_snapshot(db, symbol, snap, "Yahoo Finance")
-                    snapshots += 1
-                succeeded += 1
-            except Exception as exc:
-                db.rollback(); failed += 1
-                if len(failed_examples) < 10:
-                    failed_examples.append({"symbol": symbol, "error": str(exc)[:180]})
-
-    result = {
-        "status": "running",
-        "source": "Yahoo Finance batch OHLCV",
-        "eligible_stocks": len(rows),
-        "covered_before": len(covered),
-        "requested": len(selected),
-        "succeeded": succeeded,
-        "failed": failed,
-        "snapshots_written": snapshots,
-        "bars_touched": bars,
-        "cursor": selected[-1],
-        "wrapped": wrapped,
-        "failed_examples": failed_examples,
-        "completed_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _save_pipeline_state(db, "yahoo_bootstrap", result)
-    return result
+    finally:
+        gc.collect()
+        _BROAD_BOOTSTRAP_LOCK.release()
 
 
 def bootstrap_macro_cache(db, limit=80):
