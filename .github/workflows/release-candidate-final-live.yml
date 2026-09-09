@@ -86,7 +86,7 @@ jobs:
             await page.waitForFunction(()=>/[1-9]\d* groups\b/.test(document.querySelector('main')?.innerText||''),null,{timeout:25000});
             await overflow('macro');
             await page.getByRole('button',{name:/Opportunity/}).click();
-            await page.waitForFunction(()=>/[1-9]\d* candidates\b/.test(document.querySelector('main')?.innerText||''),null,{timeout:25000});
+            await page.waitForFunction(()=>/[1-9]\d* shown\b/.test(document.querySelector('main')?.innerText||''),null,{timeout:25000});
             await overflow('opportunity');
             await page.getByRole('button',{name:/Deployment/}).click();
             await page.waitForTimeout(2500);
