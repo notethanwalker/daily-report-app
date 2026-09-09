@@ -44,12 +44,26 @@ def _save_state(db: Session, payload: dict) -> None:
 
 
 def _eligible_stock(row: SymbolRegistry) -> bool:
+    """Return True only for common/ordinary equity suitable for the broad scanner.
+
+    Nasdaq Trader classifies several preferred/debt/unit instruments as ``Stock``.
+    Keep ADR/common/ordinary/Class A/B equity, but remove instruments whose price
+    history and technical behavior should not be mixed with the common-equity scan.
+    """
     if str(row.asset_type or "").lower() not in {"stock", "equity"}:
         return False
-    name = str(row.name or "").lower()
+    symbol = str(row.symbol or "").upper()
+    name = f" {str(row.name or '').lower()} "
+    if not symbol or "$" in symbol:
+        return False
     blocked = (
-        " warrant", " warrants", " unit", " units", " right", " rights",
-        " preferred", " preference", " notes due", " bond", " fund",
+        " warrant", " warrants", " redeemable warrant", " unit", " units",
+        " right", " rights", " preferred", " preference", " preferred stock",
+        " preferred share", " preferred shares", " notes due", " note due",
+        " senior notes", " senior note", " subordinated notes", " subordinated note",
+        " debenture", " debentures", " bond", " bonds", " income fund",
+        " closed-end fund", " closed end fund", " exchange traded note",
+        " etn ", " trust preferred",
     )
     return not any(term in name for term in blocked)
 
@@ -178,7 +192,7 @@ def missing_opportunity_symbols(db: Session, *, limit: int = 500, cursor: str = 
         "remaining_missing": len(missing_all),
         "mode": "bootstrap",
         "coverage": coverage,
-        "policy": "Rotate through missing equities; unavailable or too-young listings do not pin the queue.",
+        "policy": "Rotate through missing common equities; unavailable or too-young listings do not pin the queue.",
     }
 
 
