@@ -9,13 +9,6 @@ on:
         default: "250"
   schedule:
     - cron: "17 * * * *"
-  push:
-    paths:
-      - ".github/workflows/opportunity-coverage.yml"
-      - "scripts/opportunity_bulk_worker.py"
-      - "backend/app/services/github_actions_oidc.py"
-      - "backend/app/services/opportunity_bulk_ingest.py"
-      - "backend/app/routers/opportunity_scanner.py"
 
 concurrency:
   group: opportunity-coverage-expansion
