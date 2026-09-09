@@ -1,0 +1,34 @@
+name: UI Pass2 Once
+on:
+  push:
+    branches: [ui-cache-validation-20260909]
+    paths: [".github/workflows/ui-pass2-once.yml"]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: ui-cache-validation-20260909}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Wire clickable Research metrics
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('web/app/v4/page.tsx');s=p.read_text()
+          s=s.replace('import MacroRotationTableV4 from "./macro-rotation-table-v4";','import MacroRotationTableV4 from "./macro-rotation-table-v4";\nimport ResearchMetricStripV4 from "./research-metric-strip-v4";')
+          old='<div className="mini-stats"><span>7D <b>{n(research.market?.seven_day_percent)}%</b></span><span>30D <b>{n(research.market?.thirty_day_percent)}%</b></span><span>100MA <b>{n(research.market?.price_vs_ma100_percent)}%</b></span></div>'
+          new='<ResearchMetricStripV4 research={research}/>'
+          if old not in s: raise SystemExit('research metric block not found')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+      - name: Commit
+        run: |
+          git config user.name "daily-report-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add web/app/v4/page.tsx
+          git commit -m "Wire clickable Research metric details"
+          git push origin HEAD:ui-cache-validation-20260909
