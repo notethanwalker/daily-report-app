@@ -110,9 +110,16 @@ def _google_query(query: str) -> str:
     return " OR ".join(deduped[:14]) or "global markets economy"
 
 
-def _google_news_fallback(query: str, max_records: int) -> list[dict]:
+def _google_news_fallback(query: str, max_records: int, timespan: str = "24h") -> list[dict]:
+    span=str(timespan or "24h").lower(); suffix=""
+    if span.endswith("h"):
+        try:
+            hours=max(1,int(span[:-1])); days=max(1,(hours+23)//24); suffix=f" when:{days}d"
+        except ValueError: pass
+    elif span.endswith("d"):
+        suffix=f" when:{span}"
     params = {
-        "q": _google_query(query),
+        "q": _google_query(query) + suffix,
         "hl": "en-US",
         "gl": "US",
         "ceid": "US:en",
@@ -187,7 +194,7 @@ class GdeltProvider:
         fallback_reason = None
 
         if time.time() < _gdelt_cooldown_until:
-            articles = _google_news_fallback(query, max_records)
+            articles = _google_news_fallback(query, max_records, timespan)
             provider = "Google News RSS fallback"
             source_url = "https://news.google.com/"
             fallback_reason = "gdelt_cooldown"
@@ -228,14 +235,14 @@ class GdeltProvider:
                     if len(articles) >= max_records:
                         break
             except (httpx.HTTPError, ValueError, ET.ParseError):
-                articles = _google_news_fallback(query, max_records)
+                articles = _google_news_fallback(query, max_records, timespan)
                 provider = "Google News RSS fallback"
                 source_url = "https://news.google.com/"
                 fallback_reason = "gdelt_rate_limited_or_unavailable"
 
         if provider == "GDELT" and max_records >= 20:
             try:
-                google = _google_news_fallback(query, max(10, max_records // 2))
+                google = _google_news_fallback(query, max(10, max_records // 2), timespan)
                 articles = _dedupe_articles(articles + google, max_records)
                 provider = "GDELT + Google News RSS"
             except Exception:
@@ -256,7 +263,7 @@ class GdeltProvider:
     def search_broad(self, query: str, max_records: int = 40, timespan: str = "7d") -> dict:
         primary = self.search(query, max_records=max(12, max_records // 2), timespan=timespan)
         try:
-            google = _google_news_fallback(query, max_records=max(12, max_records // 2))
+            google = _google_news_fallback(query, max_records=max(12, max_records // 2), timespan=timespan)
         except Exception:
             google = []
         merged = _dedupe_articles(list(primary.get("articles") or []) + google, max_records)

@@ -10,6 +10,7 @@ V4_CSS = (ROOT / "web/app/v4/v4.css").read_text(encoding="utf-8")
 PHILOSOPHY = (ROOT / "docs/DAILY_REPORT_APP_DESIGN_PHILOSOPHY.md").read_text(encoding="utf-8")
 STACK = (ROOT / "backend/app/routers/stack_v4.py").read_text(encoding="utf-8")
 MAIN = (ROOT / "backend/app/main.py").read_text(encoding="utf-8")
+GDELT = (ROOT / "backend/app/providers/gdelt.py").read_text(encoding="utf-8")
 
 
 class DesignPhilosophyContract(unittest.TestCase):
@@ -67,6 +68,8 @@ class DesignPhilosophyContract(unittest.TestCase):
     def test_world_news_window_is_real_backend_input(self):
         self.assertIn('hours:int=Query(default=48,ge=1,le=168)', MAIN)
         self.assertIn('timespan=f"{hours}h"', MAIN)
+        self.assertIn('suffix=f" when:{days}d"', GDELT)
+        self.assertIn('_google_news_fallback(query, max_records, timespan)', GDELT)
 
     def test_mobile_progressive_disclosure_is_preserved(self):
         self.assertIn('@media(max-width:560px)', V4_CSS)

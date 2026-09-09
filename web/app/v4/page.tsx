@@ -10,7 +10,7 @@ const API="/backend";
 const REQUEST_TIMEOUT_MS=12000;
 type LayerKey="research"|"macro"|"opportunity"|"deployment";
 type Overview={version:string;pipeline:string[];layers:Record<LayerKey,any>;sources?:any[]};
-type Deployment={basket:string;capital:number;eligible:any[];unavailable:any[];methodology:string;model:string};
+type Deployment={basket:string;capital:number;eligible:any[];unavailable:any[];methodology:string;model:string;fundamental_score_policy?:string};
 
 async function requestJson(url:string,init?:RequestInit,timeoutMs=REQUEST_TIMEOUT_MS){const c=new AbortController(),t=setTimeout(()=>c.abort(),timeoutMs);try{const r=await fetch(url,{cache:"no-store",credentials:"include",...init,signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d?.detail||`HTTP ${r.status}`);return d}catch(e:any){if(e?.name==="AbortError")throw new Error("This view took too long to respond. Retry without losing your current layer.");throw e}finally{clearTimeout(t)}}
 const n=(v:any,d=1)=>v==null?"—":Number(v).toFixed(d);
