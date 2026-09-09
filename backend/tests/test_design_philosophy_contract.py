@@ -7,6 +7,9 @@ PIPELINE = (ROOT / "backend/app/services/market_data_pipeline.py").read_text(enc
 FUNNEL = (ROOT / "backend/app/services/candidate_funnel_v4.py").read_text(encoding="utf-8")
 V4 = (ROOT / "web/app/v4/page.tsx").read_text(encoding="utf-8")
 V4_CSS = (ROOT / "web/app/v4/v4.css").read_text(encoding="utf-8")
+OPPORTUNITY_TABLE = (ROOT / "web/app/v4/opportunity-table-v4.tsx").read_text(encoding="utf-8")
+MACRO_TABLE = (ROOT / "web/app/v4/macro-rotation-table-v4.tsx").read_text(encoding="utf-8")
+RESEARCH_METRICS = (ROOT / "web/app/v4/research-metric-strip-v4.tsx").read_text(encoding="utf-8")
 PHILOSOPHY = (ROOT / "docs/DAILY_REPORT_APP_DESIGN_PHILOSOPHY.md").read_text(encoding="utf-8")
 STACK = (ROOT / "backend/app/routers/stack_v4.py").read_text(encoding="utf-8")
 MAIN = (ROOT / "backend/app/main.py").read_text(encoding="utf-8")
@@ -64,7 +67,28 @@ class DesignPhilosophyContract(unittest.TestCase):
     def test_expandable_detail_controls_are_wired_into_v4(self):
         self.assertIn('DeepLinksV4', V4)
         self.assertIn('OpportunityTableV4', V4)
+        self.assertIn('MacroRotationTableV4', V4)
+        self.assertIn('ResearchMetricStripV4', V4)
         self.assertIn('Fundamental score details', V4)
+
+    def test_sorting_is_clickable_and_dropdown_accessible(self):
+        self.assertIn('metric-sort-bar', OPPORTUNITY_TABLE)
+        self.assertIn('aria-pressed', OPPORTUNITY_TABLE)
+        self.assertIn('<select', OPPORTUNITY_TABLE)
+        self.assertIn('metric-sort-bar', MACRO_TABLE)
+        self.assertIn('aria-pressed', MACRO_TABLE)
+        self.assertIn('Rank metric', MACRO_TABLE)
+        self.assertIn('View<select', MACRO_TABLE)
+
+    def test_research_statistics_are_clickable_and_explained(self):
+        self.assertIn('Research statistics; select one for details', RESEARCH_METRICS)
+        self.assertIn('aria-pressed', RESEARCH_METRICS)
+        self.assertIn('100-day moving average', RESEARCH_METRICS)
+        self.assertIn('Williams %R timing signal', RESEARCH_METRICS)
+        self.assertIn('provider', RESEARCH_METRICS)
+
+    def test_layer_switch_clears_stale_error_context(self):
+        self.assertIn('onClick={()=>{setError("");setActive(key)}}', V4)
 
     def test_world_news_window_is_real_backend_input(self):
         self.assertIn('hours:int=Query(default=48,ge=1,le=168)', MAIN)
@@ -82,6 +106,8 @@ class DesignPhilosophyContract(unittest.TestCase):
         self.assertIn('@media(max-width:560px)', V4_CSS)
         self.assertIn('.v4-pipeline{grid-template-columns:1fr}', V4_CSS)
         self.assertIn('.source-state-grid{grid-template-columns:1fr}', V4_CSS)
+        self.assertIn('.metric-sort-bar{display:none}', V4_CSS)
+        self.assertIn('.table-controls label,.table-controls select,.table-controls button{width:100%}', V4_CSS)
 
 
 if __name__ == "__main__":
