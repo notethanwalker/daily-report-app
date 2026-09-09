@@ -19,6 +19,7 @@ from .market_data_pipeline import (
 )
 
 STATE_KEY = "opportunity_external_ingest"
+CURSOR_STATE_KEY = "opportunity_external_cursor"
 MIN_BARS = BROAD_OPPORTUNITY_MIN_BARS
 RETAIN_DAYS = BROAD_OPPORTUNITY_HISTORY_DAYS
 MAX_RECORDS_PER_BATCH = 200
@@ -28,13 +29,17 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _save_state(db: Session, payload: dict) -> None:
-    row = db.get(MarketPipelineState, STATE_KEY)
+def _save_named_state(db: Session, key: str, payload: dict) -> None:
+    row = db.get(MarketPipelineState, key)
     if row:
         row.payload = payload
     else:
-        db.add(MarketPipelineState(key=STATE_KEY, payload=payload))
+        db.add(MarketPipelineState(key=key, payload=payload))
     db.commit()
+
+
+def _save_state(db: Session, payload: dict) -> None:
+    _save_named_state(db, STATE_KEY, payload)
 
 
 def _eligible_stock(row: SymbolRegistry) -> bool:
@@ -106,13 +111,38 @@ def missing_opportunity_symbols(db: Session, *, limit: int = 500, cursor: str = 
     limit = max(1, min(int(limit), 1000))
     eligible = _eligible_symbols(db)
     covered = _covered_symbols(db)
-    missing = [s for s in eligible if s not in covered and (not cursor or s > cursor)]
-    selected = missing[:limit]
+    missing_all = [s for s in eligible if s not in covered]
+
+    cursor_state = db.get(MarketPipelineState, CURSOR_STATE_KEY)
+    stored_cursor = str((cursor_state.payload or {}).get("cursor") or "") if cursor_state else ""
+    effective_cursor = cursor.strip().upper() or stored_cursor
+    after = [s for s in missing_all if not effective_cursor or s > effective_cursor]
+    selected = after[:limit]
+    wrapped = False
+    if len(selected) < limit and effective_cursor and missing_all:
+        needed = limit - len(selected)
+        before = [s for s in missing_all if s <= effective_cursor and s not in selected]
+        if before:
+            selected.extend(before[:needed])
+            wrapped = True
+
+    next_cursor = selected[-1] if selected else effective_cursor
+    _save_named_state(db, CURSOR_STATE_KEY, {
+        "cursor": next_cursor,
+        "previous_cursor": effective_cursor,
+        "wrapped": wrapped,
+        "selected": len(selected),
+        "missing_total": len(missing_all),
+        "updated_at": _now(),
+    })
+
     covered_count = len(set(eligible) & covered)
     return {
         "symbols": selected,
-        "cursor": selected[-1] if selected else cursor,
-        "remaining_from_cursor": len(missing),
+        "cursor": next_cursor,
+        "previous_cursor": effective_cursor,
+        "wrapped": wrapped,
+        "remaining_missing": len(missing_all),
         "mode": "bootstrap",
         "coverage": {
             "eligible_stocks": len(eligible),
