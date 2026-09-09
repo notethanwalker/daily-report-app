@@ -1,0 +1,27 @@
+name: Emergency DB Rescue (temporary)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - emergency-db-rescue-20260909
+
+permissions:
+  contents: read
+
+jobs:
+  rescue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PostgreSQL driver
+        run: pip install --disable-pip-version-check "psycopg[binary]"
+      - name: Verify, remove one disposable index, and inventory
+        working-directory: backend
+        env:
+          EMERGENCY_DATABASE_URL: ${{ secrets.EMERGENCY_DATABASE_URL }}
+        run: python -m app.emergency_db_repair
