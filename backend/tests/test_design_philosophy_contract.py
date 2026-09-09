@@ -7,6 +7,7 @@ PIPELINE = (ROOT / "backend/app/services/market_data_pipeline.py").read_text(enc
 FUNNEL = (ROOT / "backend/app/services/candidate_funnel_v4.py").read_text(encoding="utf-8")
 V4 = (ROOT / "web/app/v4/page.tsx").read_text(encoding="utf-8")
 V4_CSS = (ROOT / "web/app/v4/v4.css").read_text(encoding="utf-8")
+DEEP_CSS = (ROOT / "web/app/v4/deep-interaction.css").read_text(encoding="utf-8")
 OPPORTUNITY_TABLE = (ROOT / "web/app/v4/opportunity-table-v4.tsx").read_text(encoding="utf-8")
 MACRO_TABLE = (ROOT / "web/app/v4/macro-rotation-table-v4.tsx").read_text(encoding="utf-8")
 RESEARCH_METRICS = (ROOT / "web/app/v4/research-metric-strip-v4.tsx").read_text(encoding="utf-8")
@@ -79,10 +80,13 @@ class DesignPhilosophyContract(unittest.TestCase):
         self.assertIn('metric-sort-bar', OPPORTUNITY_TABLE)
         self.assertIn('aria-pressed', OPPORTUNITY_TABLE)
         self.assertIn('<select', OPPORTUNITY_TABLE)
+        self.assertIn('function selectSort', OPPORTUNITY_TABLE)
+        self.assertIn('onChange={e=>selectSort(', OPPORTUNITY_TABLE)
         self.assertIn('metric-sort-bar', MACRO_TABLE)
         self.assertIn('aria-pressed', MACRO_TABLE)
         self.assertIn('Rank metric', MACRO_TABLE)
-        self.assertIn('View<select', MACRO_TABLE)
+        self.assertIn('function selectMetric', MACRO_TABLE)
+        self.assertIn('onChange={e=>selectMetric(', MACRO_TABLE)
 
     def test_research_statistics_are_clickable_and_explained(self):
         self.assertIn('Research statistics; select one for details', RESEARCH_METRICS)
@@ -112,6 +116,9 @@ class DesignPhilosophyContract(unittest.TestCase):
         self.assertIn('.source-state-grid{grid-template-columns:1fr}', V4_CSS)
         self.assertIn('.metric-sort-bar{display:none}', V4_CSS)
         self.assertIn('.table-controls label,.table-controls select,.table-controls button{width:100%}', V4_CSS)
+        self.assertIn('@media(max-width:430px)', DEEP_CSS)
+        self.assertIn('.deep-v4-shell .subtab-bar', DEEP_CSS)
+        self.assertIn('grid-template-columns:1fr!important', DEEP_CSS)
 
 
 if __name__ == "__main__":
