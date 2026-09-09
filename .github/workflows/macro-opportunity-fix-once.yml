@@ -18,7 +18,7 @@ jobs:
           p=Path('backend/app/services/rotation_model_v4.py')
           s=p.read_text()
           old='''def _daily_snapshots(db: Session, symbol: str, limit_days: int = 8) -> list[MarketSnapshot]:\n    rows = db.query(MarketSnapshot).filter(MarketSnapshot.symbol == symbol).order_by(MarketSnapshot.retrieved_at.desc()).limit(160).all()\n    by_day = {}\n    for row in rows:\n        key = str((row.payload or {}).get("as_of") or row.as_of or row.retrieved_at.date().isoformat())[:10]\n        by_day.setdefault(key, row)\n    return [by_day[k] for k in sorted(by_day, reverse=True)[:limit_days]][::-1]\n'''
-          new='''def _all_daily_snapshots(db: Session, limit_days: int = 8) -> dict[str, list[MarketSnapshot]]:\n    symbols=list(SECTORS)\n    rows=db.query(MarketSnapshot).filter(MarketSnapshot.symbol.in_(symbols)).order_by(MarketSnapshot.symbol.asc(),MarketSnapshot.retrieved_at.desc()).all()\n    grouped={}\n    for symbol in symbols:\n        grouped[symbol]={}\n    for row in rows:\n        by_day=grouped.setdefault(row.symbol,{})\n        key=str((row.payload or {}).get("as_of") or row.as_of or row.retrieved_at.date().isoformat())[:10]\n        if key not in by_day and len(by_day)<limit_days:\n            by_day[key]=row\n    return {symbol:[days[k] for k in sorted(days)][-limit_days:] for symbol,days in grouped.items()}\n'''
+          new='''def _all_daily_snapshots(db: Session, limit_days: int = 8) -> dict[str, list[MarketSnapshot]]:\n    symbols=list(SECTORS)\n    rows=db.query(MarketSnapshot).filter(MarketSnapshot.symbol.in_(symbols)).order_by(MarketSnapshot.symbol.asc(),MarketSnapshot.retrieved_at.desc()).all()\n    grouped={symbol:{} for symbol in symbols}\n    for row in rows:\n        by_day=grouped.setdefault(row.symbol,{})\n        key=str((row.payload or {}).get("as_of") or row.as_of or row.retrieved_at.date().isoformat())[:10]\n        if key not in by_day and len(by_day)<limit_days:by_day[key]=row\n    return {symbol:[days[k] for k in sorted(days)] for symbol,days in grouped.items()}\n'''
           assert old in s
           s=s.replace(old,new)
           old2='''def build_rotation_model(db: Session, persist: bool = False) -> dict:\n    rows=[];now=datetime.now(timezone.utc)\n    for symbol,name in SECTORS.items():\n        history=_daily_snapshots(db,symbol)\n'''
@@ -70,6 +70,8 @@ jobs:
                   self.assertIn('FRESHNESS_POLICIES["market"].priority + macro_boost',SCH)
           if __name__=='__main__':unittest.main()
           PY
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
       - name: Validate backend
         run: |
           cd backend
