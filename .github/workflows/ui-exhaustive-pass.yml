@@ -3,14 +3,24 @@ on:
   push:
     branches: [ui-exhaustive-pass-20260909]
     paths:
-      - 'web/preflight-ui-exhaustive-v4.mjs'
+      - 'web/preflight-ui-exhaustive-v5.mjs'
       - '.github/workflows/ui-exhaustive-pass.yml'
 permissions:
   contents: read
 jobs:
   exhaustive:
+    strategy:
+      fail-fast: false
+      matrix:
+        viewport:
+          - { name: desktop-1440, width: 1440, height: 1000 }
+          - { name: desktop-1024, width: 1024, height: 768 }
+          - { name: mobile-430, width: 430, height: 932 }
+          - { name: mobile-390, width: 390, height: 844 }
+          - { name: mobile-375, width: 375, height: 812 }
+    name: exhaustive (${{ matrix.viewport.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -38,11 +48,15 @@ jobs:
           exit 1
       - name: Run isolated per-element browser audit
         working-directory: web
-        run: node preflight-ui-exhaustive-v4.mjs
+        env:
+          UI_VIEWPORT_NAME: ${{ matrix.viewport.name }}
+          UI_VIEWPORT_WIDTH: ${{ matrix.viewport.width }}
+          UI_VIEWPORT_HEIGHT: ${{ matrix.viewport.height }}
+        run: node preflight-ui-exhaustive-v5.mjs
       - name: Upload exhaustive report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ui-exhaustive-v4-results
+          name: ui-exhaustive-${{ matrix.viewport.name }}
           path: web/preflight-exhaustive-v3-report.json
           retention-days: 3
