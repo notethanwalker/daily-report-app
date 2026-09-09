@@ -18,6 +18,10 @@ async function requestJson(url:string,init?:RequestInit,timeoutMs=REQUEST_TIMEOU
 const n=(v:any,d=1)=>v==null?"—":Number(v).toFixed(d);
 const words=(v:any)=>String(v||"").replaceAll("_"," ");
 const when=(v:any)=>{if(!v)return "—";const d=new Date(v);return Number.isNaN(d.getTime())?String(v):d.toLocaleString()};
+const arr=(v:any):any[]=>Array.isArray(v)?v:[];
+const normalizeRotation=(x:any)=>({...((x&&typeof x==="object")?x:{}),rows:arr(x?.rows),early_rotation:arr(x?.early_rotation),outflow_risk:arr(x?.outflow_risk)});
+const normalizeFunnel=(x:any)=>({...((x&&typeof x==="object")?x:{}),candidates:arr(x?.candidates??x?.rows),rows:arr(x?.rows??x?.candidates),stages:arr(x?.stages)});
+const normalizeDeployment=(x:any)=>({...((x&&typeof x==="object")?x:{}),eligible:arr(x?.eligible),unavailable:arr(x?.unavailable)});
 
 export default function V4(){return <AuthGate>{account=><DecisionStack account={account}/>}</AuthGate>}
 
@@ -26,9 +30,9 @@ function DecisionStack({account}:{account:Account}){
  const[active,setActive]=useState<LayerKey>("research"),[capital,setCapital]=useState(1000),[basket,setBasket]=useState("ai-buildout"),[symbol,setSymbol]=useState("NBIS");
  const[loading,setLoading]=useState(true),[error,setError]=useState(""),[deployLoading,setDeployLoading]=useState(false),[researchLoading,setResearchLoading]=useState(false),[funnelLoading,setFunnelLoading]=useState(false),[rotationLoading,setRotationLoading]=useState(false),[enrichLoading,setEnrichLoading]=useState(false),[enrichMsg,setEnrichMsg]=useState("");
  async function load(){setLoading(true);setError("");try{setOverview(await requestJson(`${API}/api/v1/stack/overview`))}catch(e:any){setError(e?.message||String(e))}finally{setLoading(false)}}
- async function loadDeployment(){setDeployLoading(true);setError("");try{setDeployment(await requestJson(`${API}/api/v1/stack/deployment?basket=${encodeURIComponent(basket)}&capital=${capital}`))}catch(e:any){setError(e?.message||String(e))}finally{setDeployLoading(false)}}
- async function loadRotation(){if(rotation)return;setRotationLoading(true);try{setRotation(await requestJson(`${API}/api/v1/stack/rotation`))}catch(e:any){setError(e?.message||String(e))}finally{setRotationLoading(false)}}
- async function loadFunnel(force=false){if(funnel&&!force)return;setFunnelLoading(true);try{setFunnel(await requestJson(`${API}/api/v1/stack/candidates?limit=60`))}catch(e:any){setError(e?.message||String(e))}finally{setFunnelLoading(false)}}
+ async function loadDeployment(){setDeployLoading(true);setError("");try{setDeployment(normalizeDeployment(await requestJson(`${API}/api/v1/stack/deployment?basket=${encodeURIComponent(basket)}&capital=${capital}`)))}catch(e:any){setError(e?.message||String(e))}finally{setDeployLoading(false)}}
+ async function loadRotation(){if(rotation)return;setRotationLoading(true);try{setRotation(normalizeRotation(await requestJson(`${API}/api/v1/stack/rotation`)))}catch(e:any){setError(e?.message||String(e))}finally{setRotationLoading(false)}}
+ async function loadFunnel(force=false){if(funnel&&!force)return;setFunnelLoading(true);try{setFunnel(normalizeFunnel(await requestJson(`${API}/api/v1/stack/candidates?limit=60`)))}catch(e:any){setError(e?.message||String(e))}finally{setFunnelLoading(false)}}
  async function enrichFunnel(){setEnrichLoading(true);setEnrichMsg("");setError("");try{const r=await requestJson(`${API}/api/v1/stack/candidates/enrich?limit=60`,{method:"POST"});setEnrichMsg(`${r.jobs_added||0} enrichment job${r.jobs_added===1?"":"s"} queued`);await loadFunnel(true)}catch(e:any){setError(e?.message||String(e))}finally{setEnrichLoading(false)}}
  async function loadResearch(target?:string){const s=(target??symbol).trim().toUpperCase();if(!s)return;setResearchLoading(true);setError("");try{setResearch(await requestJson(`${API}/api/v1/stack/research/${encodeURIComponent(s)}`));setSymbol(s)}catch(e:any){setError(e?.message||String(e))}finally{setResearchLoading(false)}}
  function openResearch(target:string){const s=target.trim().toUpperCase();setSymbol(s);setActive("research");loadResearch(s)}
@@ -64,8 +68,8 @@ function DecisionStack({account}:{account:Account}){
   {active==="macro"&&<section className="v4-grid">
    {rotationLoading&&!rotation&&<article className="v4-card wide"><p className="muted" role="status">Loading rotation state…</p></article>}
    <article className="v4-card wide"><div className="section-head"><div><span className="label">Rotation model v4</span><h2>Leadership + transition state</h2></div><strong>{rotation?.rows?.length??0} groups</strong></div><MacroRotationTableV4 rotation={rotation} onOpen={openResearch}/></article>
-   <article className="v4-card"><span className="label">Early rotation</span><h2>Improving laggards</h2>{(rotation?.early_rotation||[]).map((x:any)=><button className="compact-row row-button" key={x.symbol} onClick={()=>openResearch(x.symbol)}><strong>{x.symbol}</strong><span>{x.name}</span><b>{n(x.conviction,0)}</b></button>)}</article>
-   <article className="v4-card"><span className="label">Outflow risk</span><h2>Weakening leadership</h2>{(rotation?.outflow_risk||[]).map((x:any)=><button className="compact-row row-button" key={x.symbol} onClick={()=>openResearch(x.symbol)}><strong>{x.symbol}</strong><span>{x.name}</span><b>{n(x.rotation_pressure,1)}</b></button>)}</article>
+   <article className="v4-card"><span className="label">Early rotation</span><h2>Improving laggards</h2>{arr(rotation?.early_rotation).map((x:any)=><button className="compact-row row-button" key={x.symbol} onClick={()=>openResearch(x.symbol)}><strong>{x.symbol}</strong><span>{x.name}</span><b>{n(x.conviction,0)}</b></button>)}</article>
+   <article className="v4-card"><span className="label">Outflow risk</span><h2>Weakening leadership</h2>{arr(rotation?.outflow_risk).map((x:any)=><button className="compact-row row-button" key={x.symbol} onClick={()=>openResearch(x.symbol)}><strong>{x.symbol}</strong><span>{x.name}</span><b>{n(x.rotation_pressure,1)}</b></button>)}</article>
    <article className="v4-card"><span className="label">Persisted history</span><h2>{layer?.rotation_history_days??0} days</h2><p className="muted">Background-captured state observations accumulating for forward-outcome calibration.</p></article>
    <article className="v4-card wide"><p className="muted">{rotation?.methodology}</p></article>
   </section>}

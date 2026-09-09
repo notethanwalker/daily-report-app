@@ -17,7 +17,8 @@ function opportunityTone(x:any){
 
 export default function OpportunityTableV4({rows,onOpen}:{rows:any[];onOpen:(symbol:string)=>void}){
  const[sort,setSort]=useState<SortKey>("score"),[direction,setDirection]=useState<"desc"|"asc">("desc"),[bucket,setBucket]=useState("all");
- const buckets=useMemo(()=>Array.from(new Set((rows||[]).map((x:any)=>String(x.bucket||"")).filter(Boolean))).sort(),[rows]);
+ const safeRows=Array.isArray(rows)?rows:[];
+ const buckets=useMemo(()=>Array.from(new Set(safeRows.map((x:any)=>String(x.bucket||"")).filter(Boolean))).sort(),[safeRows]);
  function chooseSort(key:SortKey){
   if(sort===key){setDirection(x=>x==="asc"?"desc":"asc");return}
   setSort(key);
@@ -29,10 +30,10 @@ export default function OpportunityTableV4({rows,onOpen}:{rows:any[];onOpen:(sym
   setDirection(key==="williams"||key==="ma100"||key==="symbol"?"asc":"desc");
  }
  const visible=useMemo(()=>{
-  const out=(rows||[]).filter(x=>bucket==="all"||x.bucket===bucket);
+  const out=safeRows.filter(x=>bucket==="all"||x.bucket===bucket);
   const value=(x:any)=>sort==="score"?Number(x.funnel_score??x.score??-Infinity):sort==="williams"?Number(x.williams_r_14??x.williams_feature??Infinity):sort==="ma100"?Number(x.price_vs_ma100_percent??x.ma100_distance??Infinity):sort==="liquidity"?Number(x.average_dollar_volume_20d??-Infinity):String(x.symbol||"");
   out.sort((a:any,b:any)=>{const av=value(a),bv=value(b);const cmp=typeof av==="string"?av.localeCompare(String(bv)):Number(av)-Number(bv);return direction==="asc"?cmp:-cmp});return out;
- },[rows,sort,direction,bucket]);
+ },[safeRows,sort,direction,bucket]);
  return <>
   <div className="metric-sort-bar" role="group" aria-label="Click a metric to sort opportunity candidates">
    {(Object.keys(LABELS) as SortKey[]).map(key=><button key={key} type="button" className={sort===key?"active":""} aria-pressed={sort===key} onClick={()=>chooseSort(key)}>{LABELS[key]}{sort===key?<span aria-hidden="true"> {direction==="asc"?"↑":"↓"}</span>:null}</button>)}
