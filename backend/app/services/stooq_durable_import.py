@@ -332,9 +332,13 @@ def process_batch(db: Session, batch_symbols: int | None = None) -> dict:
     """), {"status": next_status, "cursor": last_cursor, "matched": matched_total, "snapshots": snapshots_total, "id": upload_id})
     db.commit()
 
+    registry_count = len(registry_rows)
+    coverage_percent = round((matched_total / registry_count) * 100.0, 2) if registry_count else 0.0
+    canonical_min_coverage = float(os.getenv("STOOQ_CANONICAL_MIN_COVERAGE_PERCENT", "80"))
+    canonical_ready = bool(complete and registry_count and coverage_percent >= canonical_min_coverage)
     canonical_state = {
         "status": "ready" if complete else "importing",
-        "canonical": bool(complete),
+        "canonical": canonical_ready,
         "provider": "Stooq",
         "archive_name": row["filename"],
         "archive_sha256": metadata.get("source_archive_sha256"),
@@ -351,7 +355,10 @@ def process_batch(db: Session, batch_symbols: int | None = None) -> dict:
         canonical_state["imported_at"] = _now()
         canonical_state["archive_latest_bar_date"] = metadata.get("archive_latest_bar_date")
         canonical_state["archive_history_start_date"] = metadata.get("archive_history_start_date")
-        canonical_state["coverage_percent"] = round((matched_total / len(registry_rows)) * 100.0, 2) if registry_rows else 0.0
+        canonical_state["coverage_percent"] = coverage_percent
+        canonical_state["canonical_min_coverage_percent"] = canonical_min_coverage
+        if not canonical_ready:
+            canonical_state["limitation"] = "Completed archive did not meet measured registry coverage required for canonical market history."
     _set_state(db, CANONICAL_STATE_KEY, canonical_state)
 
     if complete:
