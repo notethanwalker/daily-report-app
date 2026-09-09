@@ -137,12 +137,13 @@ def enqueue_stale(db):
             _enqueue(db, symbol, "history", FRESHNESS_POLICIES["history"].priority + warm_boost)
         if _fundamentals_supported(db, symbol) and (not fundamental or is_stale(fundamental.retrieved_at, "fundamentals", now)):
             _enqueue(db, symbol, "fundamentals", FRESHNESS_POLICIES["fundamentals"].priority + warm_boost)
+    macro_boost = 40
     for symbol in sorted(macro - users):
         market = db.query(MarketSnapshot).filter(MarketSnapshot.symbol == symbol).order_by(MarketSnapshot.retrieved_at.desc()).first()
         if not market or is_stale(market.retrieved_at, "market", now):
-            _enqueue(db, symbol, "market", FRESHNESS_POLICIES["market"].priority)
+            _enqueue(db, symbol, "market", FRESHNESS_POLICIES["market"].priority + macro_boost)
         if _history_needs_refresh(db, symbol, now):
-            _enqueue(db, symbol, "history", FRESHNESS_POLICIES["history"].priority)
+            _enqueue(db, symbol, "history", FRESHNESS_POLICIES["history"].priority + macro_boost)
     db.commit()
 
 
