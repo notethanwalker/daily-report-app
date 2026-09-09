@@ -9,6 +9,10 @@ on:
         default: "250"
   schedule:
     - cron: "17 * * * *"
+  push:
+    paths:
+      - ".github/workflows/opportunity-coverage.yml"
+      - "scripts/opportunity_bulk_worker.py"
 
 concurrency:
   group: opportunity-coverage-expansion
@@ -49,7 +53,7 @@ jobs:
           echo "::add-mask::$token"
           echo "OPPORTUNITY_OIDC_TOKEN=$token" >> "$GITHUB_ENV"
 
-      - name: Expand missing Opportunity coverage
+      - name: Expand or refresh Opportunity coverage
         env:
           INPUT_LIMIT: ${{ github.event.inputs.limit }}
         run: |
