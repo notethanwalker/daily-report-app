@@ -117,7 +117,12 @@ def rows_from_frame(frame: pd.DataFrame | None) -> list[dict]:
     return out
 
 
-def fetch_chunk(symbols: list[str], *, period: str = "1y", min_bars: int = MIN_BARS) -> tuple[list[dict], list[dict]]:
+def fetch_chunk(
+    symbols: list[str],
+    *,
+    period: str = "1y",
+    min_bars: int = MIN_BARS,
+) -> tuple[list[dict], list[dict]]:
     yahoo_symbols = [normalize_yahoo_symbol(s) for s in symbols]
     failures: list[dict] = []
     records: list[dict] = []
@@ -147,8 +152,8 @@ def fetch_chunk(symbols: list[str], *, period: str = "1y", min_bars: int = MIN_B
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Fill missing Opportunity technical coverage from a GitHub runner.")
-    parser.add_argument("--limit", type=int, default=250, help="Maximum missing symbols to attempt this run")
+    parser = argparse.ArgumentParser(description="Bootstrap and maintain Opportunity technical coverage from a GitHub runner.")
+    parser.add_argument("--limit", type=int, default=250, help="Maximum target symbols to attempt this run")
     parser.add_argument("--download-chunk", type=int, default=15, help="Yahoo symbols per download request")
     parser.add_argument("--upload-batch", type=int, default=25, help="Records per API ingest request")
     parser.add_argument("--sleep", type=float, default=2.0, help="Pause between provider chunks")
@@ -160,17 +165,26 @@ def main() -> int:
         return 3
 
     query = urllib.parse.urlencode({"limit": max(1, min(args.limit, 1000))})
-    missing = api_json(f"{api_base}/api/v1/opportunities/bulk-missing?{query}")
-    symbols = list(missing.get("symbols") or [])
-    print(json.dumps({"starting_coverage": missing.get("coverage"), "requested_missing": len(symbols)}, indent=2))
+    targets = api_json(f"{api_base}/api/v1/opportunities/bulk-missing?{query}")
+    symbols = list(targets.get("symbols") or [])
+    mode = str(targets.get("mode") or "bootstrap")
+    period = "1mo" if mode == "refresh" else "1y"
+    min_bars = 1 if mode == "refresh" else MIN_BARS
+    print(json.dumps({
+        "starting_coverage": targets.get("coverage"),
+        "mode": mode,
+        "target_count": len(symbols),
+        "reference_date": targets.get("reference_date"),
+        "wrapped": targets.get("wrapped"),
+    }, indent=2))
     if not symbols:
-        print("No missing Opportunity symbols returned.")
+        print("No Opportunity symbols require work in this cycle.")
         return 0
 
     pending: list[dict] = []
     failures: list[dict] = []
     accepted_total = rejected_total = 0
-    final_coverage = missing.get("coverage")
+    final_coverage = targets.get("coverage")
     run_id = os.getenv("GITHUB_RUN_ID") or datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 
     def upload(records: list[dict]) -> None:
@@ -183,7 +197,7 @@ def main() -> int:
             payload={
                 "source": "Yahoo Finance via GitHub Actions",
                 "source_url": "https://finance.yahoo.com/",
-                "batch_id": f"gha-{run_id}",
+                "batch_id": f"gha-{run_id}-{mode}",
                 "records": records,
             },
             timeout=180,
@@ -192,16 +206,18 @@ def main() -> int:
         accepted_total += int(result.get("accepted") or 0)
         rejected_total += int(result.get("rejected") or 0)
         final_coverage = result.get("coverage") or final_coverage
-        print(json.dumps({"ingest": {k: result.get(k) for k in ("accepted", "rejected", "coverage")}}, indent=2))
+        print(json.dumps({"ingest": {k: result.get(k) for k in (
+            "accepted", "rejected", "bootstrap_updates", "refresh_updates", "coverage"
+        )}}, indent=2))
 
     chunk_size = max(1, args.download_chunk)
     upload_size = max(1, args.upload_batch)
     for offset in range(0, len(symbols), chunk_size):
         chunk = symbols[offset:offset + chunk_size]
-        records, failed = fetch_chunk(chunk)
+        records, failed = fetch_chunk(chunk, period=period, min_bars=min_bars)
         pending.extend(records)
         failures.extend(failed)
-        print(f"provider chunk {offset // chunk_size + 1}: {len(records)} usable / {len(chunk)}")
+        print(f"provider chunk {offset // chunk_size + 1}: {len(records)} usable / {len(chunk)} ({mode})")
 
         while len(pending) >= upload_size:
             batch = pending[:upload_size]
@@ -212,6 +228,7 @@ def main() -> int:
 
     upload(pending)
     summary = {
+        "mode": mode,
         "attempted": len(symbols),
         "accepted": accepted_total,
         "ingest_rejected": rejected_total,
