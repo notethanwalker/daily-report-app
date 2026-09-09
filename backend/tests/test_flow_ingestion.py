@@ -1,4 +1,7 @@
+import os
 from datetime import datetime, timezone
+
+os.environ.setdefault("DATABASE_URL","sqlite:////tmp/daily-report-flow-tests.db")
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
