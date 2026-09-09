@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 import yfinance as yf
 
 SOURCE_ROOT = "https://finance.yahoo.com/quote"
+YAHOO_SYMBOL_ALIASES = {
+    "VIX": "^VIX",
+}
 
 
 class YahooOhlcvError(RuntimeError):
@@ -44,13 +47,19 @@ def _rows_from_frame(frame) -> list[dict]:
     return rows
 
 
+def _provider_symbol(symbol: str) -> str:
+    canonical = symbol.strip().upper()
+    return YAHOO_SYMBOL_ALIASES.get(canonical, canonical)
+
+
 class YahooOhlcvProvider:
     name = "Yahoo Finance"
 
     def daily_history(self, symbol: str, period: str = "5y") -> dict:
         s = symbol.strip().upper()
+        provider_symbol = _provider_symbol(s)
         try:
-            frame = yf.Ticker(s).history(period=period, interval="1d", auto_adjust=False, actions=False)
+            frame = yf.Ticker(provider_symbol).history(period=period, interval="1d", auto_adjust=False, actions=False)
         except Exception as exc:
             raise YahooOhlcvError(f"Yahoo Finance OHLCV request failed for {s}") from exc
         rows = _rows_from_frame(frame)
@@ -60,7 +69,7 @@ class YahooOhlcvProvider:
             "symbol": s,
             "rows": rows,
             "provider": self.name,
-            "source_url": f"{SOURCE_ROOT}/{s}/history",
+            "source_url": f"{SOURCE_ROOT}/{provider_symbol}/history",
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -69,9 +78,11 @@ class YahooOhlcvProvider:
         requested = list(dict.fromkeys(s.strip().upper() for s in symbols if s and s.strip()))
         if not requested:
             return {}
+        provider_by_symbol = {symbol: _provider_symbol(symbol) for symbol in requested}
+        provider_symbols = list(dict.fromkeys(provider_by_symbol.values()))
         try:
             frame = yf.download(
-                tickers=requested,
+                tickers=provider_symbols,
                 period=period,
                 interval="1d",
                 auto_adjust=False,
@@ -86,23 +97,27 @@ class YahooOhlcvProvider:
 
         retrieved_at = datetime.now(timezone.utc).isoformat()
         out: dict[str, dict] = {}
-        if len(requested) == 1:
-            symbol = requested[0]
+        if len(provider_symbols) == 1:
+            provider_symbol = provider_symbols[0]
             rows = _rows_from_frame(frame)
             if len(rows) >= 14:
-                out[symbol] = {
-                    "symbol": symbol,
-                    "rows": rows,
-                    "provider": self.name,
-                    "source_url": f"{SOURCE_ROOT}/{symbol}/history",
-                    "retrieved_at": retrieved_at,
-                }
+                for symbol in requested:
+                    if provider_by_symbol[symbol] != provider_symbol:
+                        continue
+                    out[symbol] = {
+                        "symbol": symbol,
+                        "rows": rows,
+                        "provider": self.name,
+                        "source_url": f"{SOURCE_ROOT}/{provider_symbol}/history",
+                        "retrieved_at": retrieved_at,
+                    }
             return out
 
         # yfinance returns a ticker-first MultiIndex when group_by='ticker'.
         for symbol in requested:
+            provider_symbol = provider_by_symbol[symbol]
             try:
-                sub = frame[symbol]
+                sub = frame[provider_symbol]
             except Exception:
                 continue
             rows = _rows_from_frame(sub)
@@ -112,7 +127,7 @@ class YahooOhlcvProvider:
                 "symbol": symbol,
                 "rows": rows,
                 "provider": self.name,
-                "source_url": f"{SOURCE_ROOT}/{symbol}/history",
+                "source_url": f"{SOURCE_ROOT}/{provider_symbol}/history",
                 "retrieved_at": retrieved_at,
             }
         return out
