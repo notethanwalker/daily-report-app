@@ -14,9 +14,38 @@ import pandas as pd
 import yfinance as yf
 
 DEFAULT_API = "https://daily-report-api-ero2.onrender.com"
+OIDC_AUDIENCE = "daily-report-opportunity-ingest"
 MIN_BARS = 120
 UPLOAD_TAIL = 130
 RETRYABLE_HTTP = {429, 500, 502, 503, 504}
+
+
+def acquire_github_oidc_token() -> str | None:
+    request_url = os.getenv("ACTIONS_ID_TOKEN_REQUEST_URL") or ""
+    request_token = os.getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN") or ""
+    if not request_url or not request_token:
+        return None
+    separator = "&" if "?" in request_url else "?"
+    url = f"{request_url}{separator}{urllib.parse.urlencode({'audience': OIDC_AUDIENCE})}"
+    request = urllib.request.Request(url, method="GET")
+    request.add_header("authorization", f"bearer {request_token}")
+    with urllib.request.urlopen(request, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    token = str(payload.get("value") or "")
+    if not token:
+        raise RuntimeError("GitHub OIDC endpoint returned no identity token")
+    os.environ["OPPORTUNITY_OIDC_TOKEN"] = token
+    return token
+
+
+def ensure_auth() -> None:
+    if os.getenv("STOOQ_IMPORT_TOKEN"):
+        return
+    if os.getenv("OPPORTUNITY_OIDC_TOKEN"):
+        return
+    if acquire_github_oidc_token():
+        return
+    raise RuntimeError("No secure Opportunity ingest authentication is configured")
 
 
 def api_json(
@@ -29,7 +58,10 @@ def api_json(
 ) -> dict:
     data = None if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
     last_error = None
-    for attempt in range(1, max(1, attempts) + 1):
+    auth_refreshed = False
+    attempt = 1
+    while attempt <= max(1, attempts):
+        ensure_auth()
         request = urllib.request.Request(url, data=data, method=method)
         oidc = os.getenv("OPPORTUNITY_OIDC_TOKEN") or ""
         static = os.getenv("STOOQ_IMPORT_TOKEN") or ""
@@ -37,8 +69,6 @@ def api_json(
             request.add_header("authorization", f"Bearer {oidc}")
         elif static:
             request.add_header("x-stooq-import-token", static)
-        else:
-            raise RuntimeError("No Opportunity ingest authentication is configured")
         if data is not None:
             request.add_header("content-type", "application/json")
         try:
@@ -46,6 +76,15 @@ def api_json(
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             last_error = exc
+            # GitHub OIDC identity tokens are intentionally short-lived. If a long
+            # bootstrap run crosses token expiry, obtain a fresh identity and retry
+            # the exact idempotent request once without consuming the normal retry budget.
+            if exc.code == 403 and oidc and not static and not auth_refreshed:
+                fresh = acquire_github_oidc_token()
+                if fresh:
+                    auth_refreshed = True
+                    print("Refreshed short-lived GitHub identity for Opportunity ingest")
+                    continue
             if exc.code not in RETRYABLE_HTTP or attempt >= attempts:
                 raise
         except (urllib.error.URLError, TimeoutError) as exc:
@@ -55,6 +94,7 @@ def api_json(
         delay = min(30, 2 ** attempt)
         print(f"API request retry {attempt}/{attempts} after {last_error}; sleeping {delay}s")
         time.sleep(delay)
+        attempt += 1
     raise RuntimeError(f"API request failed: {last_error}")
 
 
@@ -160,9 +200,11 @@ def main() -> int:
     args = parser.parse_args()
 
     api_base = (os.getenv("DAILY_REPORT_API_BASE") or DEFAULT_API).rstrip("/")
-    if not (os.getenv("OPPORTUNITY_OIDC_TOKEN") or os.getenv("STOOQ_IMPORT_TOKEN")):
-        print("No secure Opportunity ingest authentication is configured.")
-        return 3
+    ensure_auth()
+    print(json.dumps({
+        "oidc_refresh_available": bool(os.getenv("ACTIONS_ID_TOKEN_REQUEST_URL") and os.getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")),
+        "static_token_configured": bool(os.getenv("STOOQ_IMPORT_TOKEN")),
+    }))
 
     query = urllib.parse.urlencode({"limit": max(1, min(args.limit, 1000))})
     targets = api_json(f"{api_base}/api/v1/opportunities/bulk-missing?{query}")
