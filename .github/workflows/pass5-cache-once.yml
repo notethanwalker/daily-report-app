@@ -1,0 +1,45 @@
+name: Pass5 Cache Once
+on:
+  push:
+    branches: [design-philosophy-hardening-20260909]
+    paths: [".github/workflows/pass5-cache-once.yml"]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: design-philosophy-hardening-20260909}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Patch cache bootstrap
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('backend/app/services/refresh_scheduler.py');s=p.read_text()
+          s=s.replace('QUEUE_HISTORY_RETENTION_DAYS = 14\n', 'QUEUE_HISTORY_RETENTION_DAYS = 14\nDEPLOYMENT_WARM_SYMBOLS = {x.strip().upper() for x in os.getenv("DEPLOYMENT_WARM_SYMBOLS", "MU,NVDA").split(",") if x.strip()}\n')
+          marker='''def _history_needs_refresh(db, symbol, now):\n'''
+          seed='''def seed_historical_from_normalized(db, symbols, keep=260):\n    seeded_symbols = inserted = 0\n    for symbol in sorted(set(str(x).upper() for x in symbols if x)):\n        existing_count = db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol == symbol).count()\n        if existing_count >= 120:\n            continue\n        rows = db.query(NormalizedDailyBar).filter(NormalizedDailyBar.symbol == symbol).order_by(NormalizedDailyBar.bar_date.desc()).limit(keep).all()\n        if len(rows) < 120:\n            continue\n        existing_dates = {r.bar_date for r in db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol == symbol).all()}\n        for row in reversed(rows):\n            if row.bar_date in existing_dates or row.close is None:\n                continue\n            db.add(HistoricalDailyBar(symbol=symbol, bar_date=row.bar_date, close=float(row.close), volume=float(row.volume or 0), provider=str(row.provider or "normalized_daily_bars"), source_url=str(row.source_url or "")))\n            inserted += 1\n        seeded_symbols += 1\n    if inserted:\n        db.commit()\n    return {"seeded_symbols": seeded_symbols, "inserted_rows": inserted}\n\n\n'''
+          if marker not in s: raise SystemExit('history marker missing')
+          s=s.replace(marker,seed+marker,1)
+          s=s.replace('users = set(_user_symbols(db))\n    macro = set(SECTORS)', 'users = set(_user_symbols(db)) | DEPLOYMENT_WARM_SYMBOLS\n    macro = set(SECTORS)')
+          s=s.replace('''    try:\n        enqueue_stale(db); process_queue(db, 4)''','''    try:\n        seed_historical_from_normalized(db, set(_user_symbols(db)) | set(SECTORS) | DEPLOYMENT_WARM_SYMBOLS)\n        enqueue_stale(db); process_queue(db, 4)''')
+          p.write_text(s)
+
+          p=Path('backend/tests/test_design_philosophy_contract.py');s=p.read_text()
+          s=s.replace('GDELT = (ROOT / "backend/app/providers/gdelt.py").read_text(encoding="utf-8")','GDELT = (ROOT / "backend/app/providers/gdelt.py").read_text(encoding="utf-8")\nSCHEDULER = (ROOT / "backend/app/services/refresh_scheduler.py").read_text(encoding="utf-8")')
+          marker='''    def test_mobile_progressive_disclosure_is_preserved(self):'''
+          tests='''    def test_cold_start_reuses_normalized_history_and_warms_deployment_symbols(self):\n        self.assertIn('DEPLOYMENT_WARM_SYMBOLS', SCHEDULER)\n        self.assertIn('"MU,NVDA"', SCHEDULER)\n        self.assertIn('seed_historical_from_normalized', SCHEDULER)\n        self.assertIn('users = set(_user_symbols(db)) | DEPLOYMENT_WARM_SYMBOLS', SCHEDULER)\n\n'''
+          if marker not in s: raise SystemExit('contract marker missing')
+          s=s.replace(marker,tests+marker,1);p.write_text(s)
+          PY
+      - name: Compile
+        run: python -m py_compile backend/app/services/refresh_scheduler.py backend/tests/test_design_philosophy_contract.py
+      - name: Commit
+        run: |
+          git config user.name "daily-report-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend/app/services/refresh_scheduler.py backend/tests/test_design_philosophy_contract.py
+          git commit -m "Bootstrap critical deployment and historical caches"
+          git push origin HEAD:design-philosophy-hardening-20260909
