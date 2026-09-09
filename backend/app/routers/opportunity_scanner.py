@@ -12,6 +12,7 @@ from ..database import get_db
 from ..models import PortfolioHolding, UserWatchlistItem
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from ..normalized_market_models import MarketPipelineState
+from ..services.github_actions_oidc import verify_github_actions_token
 from ..services.market_data_pipeline import pipeline_status
 from ..services.opportunity_bulk_ingest import ingest_opportunity_batch, missing_opportunity_symbols
 from ..services.opportunity_scanner import scan_cached_market
@@ -50,8 +51,18 @@ def _require_owner(db: Session, user: str) -> None:
 def _require_import_token(request: Request) -> None:
     expected = os.getenv("STOOQ_IMPORT_TOKEN") or ""
     provided = request.headers.get("x-stooq-import-token") or ""
-    if not expected or not secrets.compare_digest(provided, expected):
-        raise HTTPException(status_code=403, detail="Invalid Stooq import token")
+    if expected and provided and secrets.compare_digest(provided, expected):
+        return
+
+    auth = request.headers.get("authorization") or ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+        try:
+            verify_github_actions_token(token)
+            return
+        except Exception:
+            pass
+    raise HTTPException(status_code=403, detail="Invalid Opportunity import authorization")
 
 
 def _state(db: Session, key: str) -> dict:
