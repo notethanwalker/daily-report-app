@@ -1,0 +1,74 @@
+name: Tiered History Once
+on:
+  push:
+    branches: [design-philosophy-hardening-20260909]
+    paths:
+      - ".github/workflows/tiered-history-once.yml"
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: design-philosophy-hardening-20260909
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Patch broad-market history policy
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('backend/app/services/market_data_pipeline.py')
+          s=p.read_text()
+          replacements=[
+            ('NORMALIZED_HISTORY_DAYS = int(os.getenv("NORMALIZED_HISTORY_DAYS", "260"))\nMARKET_SNAPSHOT_KEEP_PER_SYMBOL', 'NORMALIZED_HISTORY_DAYS = int(os.getenv("NORMALIZED_HISTORY_DAYS", "260"))\nBROAD_OPPORTUNITY_HISTORY_DAYS = max(120, int(os.getenv("BROAD_OPPORTUNITY_HISTORY_DAYS", "130")))\nBROAD_OPPORTUNITY_MIN_BARS = 120\nTRACKED_MIN_BARS = 220\nMARKET_SNAPSHOT_KEEP_PER_SYMBOL'),
+            ('def _history_from_sources(symbol: str, prefer: str = "stooq") -> tuple[dict, list[str]]:', 'def _history_from_sources(symbol: str, prefer: str = "stooq", min_full_bars: int = TRACKED_MIN_BARS, retain_days: int = NORMALIZED_HISTORY_DAYS) -> tuple[dict, list[str]]:'),
+            ('TwelveDataProvider().daily_history(s, outputsize=NORMALIZED_HISTORY_DAYS)', 'TwelveDataProvider().daily_history(s, outputsize=retain_days)'),
+            ('if len(rows) >= 220 and full_bars >= 220:\n                data["rows"] = rows[-NORMALIZED_HISTORY_DAYS:]', 'if len(rows) >= min_full_bars and full_bars >= min_full_bars:\n                data["rows"] = rows[-retain_days:]'),
+            ('def persist_normalized_history(db: Session, data: dict, commit: bool = True) -> int:', 'def persist_normalized_history(db: Session, data: dict, commit: bool = True, keep_days: int = NORMALIZED_HISTORY_DAYS) -> int:'),
+            ('for item in (data.get("rows") or [])[-NORMALIZED_HISTORY_DAYS:]:', 'for item in (data.get("rows") or [])[-keep_days:]:'),
+            ('def _snapshot_from_rows(data: dict) -> dict | None:\n    rows = [r for r in data.get("rows") or [] if r.get("high") is not None and r.get("low") is not None]\n    if len(rows) < 220:\n        return None\n    rows = rows[-NORMALIZED_HISTORY_DAYS:]', 'def _snapshot_from_rows(data: dict, min_bars: int = TRACKED_MIN_BARS, tail_days: int = NORMALIZED_HISTORY_DAYS) -> dict | None:\n    rows = [r for r in data.get("rows") or [] if r.get("high") is not None and r.get("low") is not None]\n    if len(rows) < min_bars:\n        return None\n    rows = rows[-tail_days:]'),
+            ('def _snapshot_from_normalized(db: Session, symbol: str) -> dict | None:', 'def _snapshot_from_normalized(db: Session, symbol: str, min_bars: int = TRACKED_MIN_BARS, tail_days: int = NORMALIZED_HISTORY_DAYS) -> dict | None:'),
+            (').order_by(NormalizedDailyBar.bar_date.desc()).limit(NORMALIZED_HISTORY_DAYS).all()\n    rows = list(reversed(rows))\n    if len(rows) < 220:\n        return None\n    return _snapshot_from_rows({', ').order_by(NormalizedDailyBar.bar_date.desc()).limit(tail_days).all()\n    rows = list(reversed(rows))\n    if len(rows) < min_bars:\n        return None\n    return _snapshot_from_rows({'),
+            ('        "source_url": rows[-1].source_url,\n    })', '        "source_url": rows[-1].source_url,\n    }, min_bars=min_bars, tail_days=tail_days)'),
+            ('def refresh_symbol(db: Session, symbol: str, tracked: bool = False) -> dict:\n    data, errors = _history_from_sources(symbol, prefer="twelve" if tracked else "stooq")\n    touched = persist_normalized_history(db, data)\n    snapshot = _snapshot_from_normalized(db, symbol)', 'def refresh_symbol(db: Session, symbol: str, tracked: bool = False) -> dict:\n    min_bars = TRACKED_MIN_BARS if tracked else BROAD_OPPORTUNITY_MIN_BARS\n    retain_days = NORMALIZED_HISTORY_DAYS if tracked else BROAD_OPPORTUNITY_HISTORY_DAYS\n    data, errors = _history_from_sources(symbol, prefer="twelve" if tracked else "stooq", min_full_bars=min_bars, retain_days=retain_days)\n    touched = persist_normalized_history(db, data, keep_days=retain_days)\n    snapshot = _snapshot_from_normalized(db, symbol, min_bars=min_bars, tail_days=retain_days)'),
+            ('func.count(NormalizedDailyBar.id) >= 220', 'func.count(NormalizedDailyBar.id) >= BROAD_OPPORTUNITY_MIN_BARS'),
+            ('persist_tail = NORMALIZED_HISTORY_DAYS if full else 5', 'persist_tail = BROAD_OPPORTUNITY_HISTORY_DAYS if full else 5'),
+            ('provider.iter_us_bulk_history(archive, tail=NORMALIZED_HISTORY_DAYS)', 'provider.iter_us_bulk_history(archive, tail=BROAD_OPPORTUNITY_HISTORY_DAYS)'),
+            ('snapshot = _snapshot_from_rows(data)\n            if snapshot is None:', 'snapshot = _snapshot_from_rows(data, min_bars=BROAD_OPPORTUNITY_MIN_BARS, tail_days=BROAD_OPPORTUNITY_HISTORY_DAYS)\n            if snapshot is None:'),
+            ('.group_by(NormalizedDailyBar.symbol).all() if count >= 220', '.group_by(NormalizedDailyBar.symbol).all() if count >= BROAD_OPPORTUNITY_MIN_BARS'),
+            ('"symbols_with_220_plus_bars": covered,', '"symbols_with_broad_opportunity_history": covered,'),
+            ('"history_days_retained_per_symbol": NORMALIZED_HISTORY_DAYS,', '"tracked_history_days_retained_per_symbol": NORMALIZED_HISTORY_DAYS,\n        "broad_opportunity_history_days_retained_per_symbol": BROAD_OPPORTUNITY_HISTORY_DAYS,\n        "broad_opportunity_min_bars": BROAD_OPPORTUNITY_MIN_BARS,'),
+          ]
+          for old,new in replacements:
+              if old not in s:
+                  raise SystemExit(f'missing expected pattern: {old[:100]!r}')
+              s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+      - name: Add policy regression tests
+        run: |
+          cat >> backend/tests/test_design_philosophy_contract.py.tmp <<'EOF'
+          EOF
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('backend/tests/test_design_philosophy_contract.py')
+          s=p.read_text()
+          s=s.replace('SCANNER = (ROOT / "backend/app/services/opportunity_scanner.py").read_text(encoding="utf-8")', 'SCANNER = (ROOT / "backend/app/services/opportunity_scanner.py").read_text(encoding="utf-8")\nPIPELINE = (ROOT / "backend/app/services/market_data_pipeline.py").read_text(encoding="utf-8")')
+          marker='    def test_mobile_progressive_disclosure_is_preserved(self):\n'
+          test='    def test_broad_scanner_uses_tiered_history_retention(self):\n        self.assertIn(\'BROAD_OPPORTUNITY_HISTORY_DAYS\', PIPELINE)\n        self.assertIn(\'BROAD_OPPORTUNITY_MIN_BARS = 120\', PIPELINE)\n        self.assertIn(\'TRACKED_MIN_BARS = 220\', PIPELINE)\n        self.assertIn(\'retain_days = NORMALIZED_HISTORY_DAYS if tracked else BROAD_OPPORTUNITY_HISTORY_DAYS\', PIPELINE)\n        self.assertIn(\'tail=BROAD_OPPORTUNITY_HISTORY_DAYS\', PIPELINE)\n\n'
+          if marker not in s: raise SystemExit('test insertion marker missing')
+          s=s.replace(marker,test+marker,1)
+          p.write_text(s)
+          PY
+      - name: Compile targeted files
+        run: python -m py_compile backend/app/services/market_data_pipeline.py backend/tests/test_design_philosophy_contract.py
+      - name: Commit patch
+        run: |
+          git config user.name "daily-report-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend/app/services/market_data_pipeline.py backend/tests/test_design_philosophy_contract.py
+          git commit -m "Split broad scanner and tracked history retention"
+          git push origin HEAD:design-philosophy-hardening-20260909
