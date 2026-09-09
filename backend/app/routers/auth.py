@@ -69,7 +69,11 @@ def login(body: Credentials, request: Request, response: Response, db: Session =
     if not account or not verify_password(body.password,account.password_hash):raise HTTPException(401,"Invalid email or password")
     if account.status=="pending":raise HTTPException(403,"Account is awaiting administrator approval")
     if account.status=="rejected" or not account.enabled:raise HTTPException(403,"Account access is not enabled")
-    _clear_rate(_login_attempts,rate_key);token=create_session(db,account.id);account.last_login_at=datetime.now(timezone.utc);db.commit();_set_session_cookie(response,token)
+    _clear_rate(_login_attempts,rate_key)
+    # Materialize all per-user rows before the frontend fans out into parallel API calls.
+    # This prevents intelligence routes from racing to create the same UserProfile.
+    ensure_user_defaults(db,account)
+    token=create_session(db,account.id);account.last_login_at=datetime.now(timezone.utc);db.commit();_set_session_cookie(response,token)
     return {"account":safe_account(account)}
 
 @router.post("/logout")
