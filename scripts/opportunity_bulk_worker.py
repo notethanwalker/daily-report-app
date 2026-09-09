@@ -38,6 +38,10 @@ def acquire_github_oidc_token() -> str | None:
     return token
 
 
+def oidc_refresh_available() -> bool:
+    return bool(os.getenv("ACTIONS_ID_TOKEN_REQUEST_URL") and os.getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN"))
+
+
 def ensure_auth() -> None:
     if os.getenv("STOOQ_IMPORT_TOKEN"):
         return
@@ -60,6 +64,14 @@ def api_json(
     last_error = None
     auth_refreshed = False
     attempt = 1
+
+    # GitHub's identity tokens are intentionally short-lived. Heavy ingest requests
+    # can run long enough that carrying one token into the next API call creates an
+    # avoidable 403/retry cycle. Mint a fresh identity before each API request while
+    # retaining the existing one-time 403 recovery below as a safety net.
+    if not os.getenv("STOOQ_IMPORT_TOKEN") and oidc_refresh_available():
+        acquire_github_oidc_token()
+
     while attempt <= max(1, attempts):
         ensure_auth()
         request = urllib.request.Request(url, data=data, method=method)
@@ -76,9 +88,6 @@ def api_json(
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             last_error = exc
-            # GitHub OIDC identity tokens are intentionally short-lived. If a long
-            # bootstrap run crosses token expiry, obtain a fresh identity and retry
-            # the exact idempotent request once without consuming the normal retry budget.
             if exc.code == 403 and oidc and not static and not auth_refreshed:
                 fresh = acquire_github_oidc_token()
                 if fresh:
@@ -202,7 +211,7 @@ def main() -> int:
     api_base = (os.getenv("DAILY_REPORT_API_BASE") or DEFAULT_API).rstrip("/")
     ensure_auth()
     print(json.dumps({
-        "oidc_refresh_available": bool(os.getenv("ACTIONS_ID_TOKEN_REQUEST_URL") and os.getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")),
+        "oidc_refresh_available": oidc_refresh_available(),
         "static_token_configured": bool(os.getenv("STOOQ_IMPORT_TOKEN")),
     }))
 
