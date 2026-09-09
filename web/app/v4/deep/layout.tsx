@@ -7,5 +7,6 @@ import "../../intelligence-extras.css";
 import "../../mobile-layout-fixes.css";
 import "../../polish.css";
 import "../v4.css";
+import "../deep-interaction.css";
 
 export default function DeepLayout({children}:{children:React.ReactNode}){return <>{children}</>}
