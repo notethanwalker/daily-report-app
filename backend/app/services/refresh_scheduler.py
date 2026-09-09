@@ -223,6 +223,11 @@ def _broad_stock_eligible(row):
 
 
 def yahoo_broad_bootstrap_batch(db, limit=None, chunk_size=None):
+    from .storage_guard import broad_ingest_enabled, require_bulk_capacity
+
+    if not broad_ingest_enabled():
+        return {"status": "disabled", "reason": "broad ingestion is disabled for the free-tier database profile"}
+    require_bulk_capacity(db)
     limit = int(limit or os.getenv("YAHOO_BOOTSTRAP_SYMBOLS_PER_CYCLE", "300"))
     chunk_size = int(chunk_size or os.getenv("YAHOO_BOOTSTRAP_CHUNK_SIZE", "50"))
     min_bars = int(os.getenv("MARKET_MIN_TECHNICAL_BARS", "120"))

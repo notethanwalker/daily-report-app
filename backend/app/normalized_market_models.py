@@ -22,7 +22,9 @@ class NormalizedDailyBar(Base):
     volume: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
     source_url: Mapped[str] = mapped_column(String(1024), nullable=False)
-    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True, nullable=False)
+    # This timestamp is observability metadata, not a query key.  The old index
+    # consumed enough extra space to help strand the Render database at 100%.
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class MarketPipelineState(Base):

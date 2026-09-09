@@ -349,6 +349,11 @@ def _record_alias(db: Session, canonical: str, stooq_symbol: str) -> None:
 
 
 def bulk_refresh_us_market(db: Session, force_full: bool = False) -> dict:
+    from .storage_guard import broad_ingest_enabled, require_bulk_capacity
+
+    if not broad_ingest_enabled():
+        return {"status": "disabled", "reason": "broad ingestion is disabled for the free-tier database profile"}
+    require_bulk_capacity(db)
     if not db.execute(text("SELECT pg_try_advisory_lock(:lock_id)"), {"lock_id": BULK_LOCK_ID}).scalar():
         return {"status": "skipped", "reason": "bulk refresh already running"}
     archive = None

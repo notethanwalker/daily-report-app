@@ -20,6 +20,7 @@ from .market_data_pipeline import (
     _set_state,
     prune_market_snapshots,
 )
+from .storage_guard import durable_archive_enabled, require_bulk_capacity
 
 CANONICAL_STATE_KEY = "stooq_manual_archive"
 COMPACT_FORMAT = "daily-report-stooq-opportunities-v1"
@@ -59,6 +60,11 @@ def ensure_tables(db: Session) -> None:
 
 
 def create_upload(db: Session, filename: str, total_bytes: int) -> dict:
+    if not durable_archive_enabled():
+        raise RuntimeError(
+            "Database-backed archive uploads are disabled. Stream the archive through ephemeral storage instead."
+        )
+    require_bulk_capacity(db)
     ensure_tables(db)
     if total_bytes <= 0 or total_bytes > 2 * 1024 * 1024 * 1024:
         raise ValueError("Invalid Stooq package size")
@@ -72,6 +78,7 @@ def create_upload(db: Session, filename: str, total_bytes: int) -> dict:
 
 
 def write_chunk(db: Session, upload_id: str, offset: int, body: bytes) -> dict:
+    require_bulk_capacity(db)
     ensure_tables(db)
     row = db.execute(text("SELECT total_bytes, status FROM stooq_import_uploads WHERE upload_id=:id"), {"id": upload_id}).mappings().first()
     if not row:
