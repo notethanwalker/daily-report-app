@@ -49,7 +49,8 @@ class DesignPhilosophyContract(unittest.TestCase):
     def test_cross_layer_rows_drill_into_research(self):
         delegated = V4.count('openResearch(') + OPPORTUNITY_TABLE.count('onOpen(') + MACRO_TABLE.count('onOpen(')
         self.assertGreaterEqual(delegated, 6)
-        self.assertIn('table-row-button', V4)
+        self.assertIn('table-row-button', OPPORTUNITY_TABLE)
+        self.assertIn('table-row-button', MACRO_TABLE)
         self.assertIn('allocation-row-button', V4)
         self.assertIn('title={`Open ${x.symbol} research`}', OPPORTUNITY_TABLE)
         self.assertIn('title={`Open ${x.symbol} research`}', MACRO_TABLE)
