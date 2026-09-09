@@ -1,0 +1,19 @@
+name: Vercel Package Once
+on:
+  push:
+    branches: [ui-cache-validation-20260909]
+    paths: ['.github/workflows/vercel-package-once.yml']
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Archive web source
+        run: tar -czf web-source.tgz web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-source
+          path: web-source.tgz
+          retention-days: 1
