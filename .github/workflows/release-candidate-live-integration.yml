@@ -90,11 +90,16 @@ jobs:
             await page.getByLabel('Password').fill(process.env.RC_PASS);
             await page.locator('button.auth-primary').click();
             const nameInput=page.getByLabel('Name');
+            const stackHeading=page.getByRole('heading',{name:'Decision Stack'});
+            await Promise.race([
+              nameInput.waitFor({state:'visible',timeout:20000}).catch(()=>null),
+              stackHeading.waitFor({state:'visible',timeout:20000}).catch(()=>null)
+            ]);
             if(await nameInput.isVisible().catch(()=>false)){
               await nameInput.fill('Release Test');
               await page.getByRole('button',{name:'Continue'}).click();
             }
-            await page.getByRole('heading',{name:'Decision Stack'}).waitFor({timeout:20000});
+            await stackHeading.waitFor({timeout:20000});
             const checkOverflow=async label=>{const o=await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);if(o>2)failures.push(`${width}:${label}:overflow:${o}`)};
             await checkOverflow('research');
             await page.getByRole('button',{name:/Macro/}).click();
