@@ -37,10 +37,8 @@ async function mock(route){
  if(p.includes('/api/v1/stack/deployment')) return json(route,deployment);
  if(p.includes('/api/v1/auth/admin/pending')) return json(route,{accounts:[{id:'p1',email:'pending@example.com',created_at:new Date().toISOString()}]});
  if(p.includes('/api/v1/auth/')) return json(route,{account:{id:'test',email:'test@example.com',name:'Preflight',name_required:false,role:'owner',status:'approved',enabled:true},message:'ok'});
- // Generic safe payloads for deep workspaces so controls render without touching production.
  return json(route,{rows:[],items:[],events:[],positions:[],accounts:[],symbols:[],data:[],status:'ok'});
 }
-function rectOverlap(a,b){return a.left < b.right-2 && a.right > b.left+2 && a.top < b.bottom-2 && a.bottom > b.top+2;}
 async function auditLayout(page,label){
  return await page.evaluate((label)=>{
   const badOverflow=[]; const viewportW=document.documentElement.clientWidth;
@@ -73,9 +71,8 @@ for(const vp of viewports){
  page.on('console',m=>{if(m.type()==='error')consoles.push(m.text())});
  const out={screens:[],layout:[],interactions:[],pageErrors:errs,consoleErrors:consoles}; report.viewports[vp.name]=out;
  await page.goto(BASE+'/v4',{waitUntil:'networkidle'});
- await page.getByText('Decision Stack').waitFor({timeout:10000});
+ await page.getByRole('heading',{name:'Decision Stack',exact:true}).waitFor({timeout:10000});
  out.layout.push(await auditLayout(page,'research'));
- // Research controls and metric buttons.
  await page.getByLabel('Ticker').fill('NBIS'); await page.getByRole('button',{name:'Open'}).click(); await page.waitForTimeout(100);
  for(const name of ['Macro','Opportunity','Deployment','Research']){
   await page.getByRole('button',{name:new RegExp(`^${name}`)}).click(); await page.waitForTimeout(180);
@@ -89,7 +86,6 @@ for(const vp of viewports){
    for(const n of ['Opportunity score','Williams %R','100MA distance','20D dollar volume','Ticker']) await clickIfVisible(page.getByRole('button',{name:new RegExp(n)}).first());
    const setup=page.getByLabel('Setup'); if(await setup.count()) for(const v of ['all','strong','weak','near']){try{await setup.selectOption(v);await page.waitForTimeout(40)}catch{}}
    const sort=page.getByLabel('Sort'); if(await sort.count()) for(const v of ['score','williams','ma100','liquidity','symbol']){await sort.selectOption(v);await page.waitForTimeout(40)}
-   // Row drill-through.
    const first=page.locator('.opportunities .table-row-button').first(); if(await first.count()){await first.click();await page.waitForTimeout(100);out.interactions.push('opportunity:drillthrough')}
   }
   if(name==='Deployment'){
@@ -97,11 +93,9 @@ for(const vp of viewports){
    const buttons=page.locator('button'); for(let i=0;i<await buttons.count();i++){const b=buttons.nth(i);const txt=(await b.innerText().catch(()=>'' )).trim();if(/refresh|calculate|update|apply/i.test(txt))await clickIfVisible(b)}
   }
  }
- // Deep-workspace links: validate hrefs and visit every internal /v4/deep path.
  await page.getByRole('button',{name:/Research/}).click(); await page.waitForTimeout(80);
  const hrefs=await page.locator('a[href^="/v4/deep/"]').evaluateAll(as=>[...new Set(as.map(a=>a.getAttribute('href')).filter(Boolean))]);
  for(const href of hrefs){await page.goto(BASE+href,{waitUntil:'networkidle'});out.interactions.push(`deep:${href}`);out.layout.push(await auditLayout(page,href));}
- // Global checks.
  for(const l of out.layout){if(l.badOverflow.length) report.errors.push({viewport:vp.name,type:'overflow',detail:l});if(l.overlaps.length)report.errors.push({viewport:vp.name,type:'overlap',detail:l});if(l.scrollWidth>l.clientWidth+2)report.errors.push({viewport:vp.name,type:'horizontal-scroll',detail:l});}
  report.consoleErrors.push(...consoles.map(x=>({viewport:vp.name,error:x}))); report.errors.push(...errs.map(x=>({viewport:vp.name,type:'pageerror',detail:x})));
  await page.goto(BASE+'/v4',{waitUntil:'networkidle'}); await page.screenshot({path:`preflight-${vp.name}.png`,fullPage:true});out.screens.push(`preflight-${vp.name}.png`);
