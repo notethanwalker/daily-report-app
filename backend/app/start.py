@@ -79,7 +79,11 @@ app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/
 app.add_api_route("/api/v1/events",events_v3_handler,methods=["GET"],tags=["events-v3"],name="events_v3_authoritative");app.router.routes.insert(0,app.router.routes.pop())
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/markets/{symbol}","/api/v1/flow/recent")];app.include_router(reconciliation_router)
 PERMISSION_PATHS=(("/api/v1/stack/research","can_view_research"),("/api/v1/stack/scores","can_view_research"),("/api/v1/stack/rotation","can_view_macro"),("/api/v1/stack/candidates","can_view_opportunities"),("/api/v1/stack/deployment","can_manage_portfolios"),("/api/v1/stack","can_view_command_center"),("/api/v1/command-center","can_view_command_center"),("/api/v1/portfolios","can_manage_portfolios"),("/api/v1/opportunities","can_view_opportunities"),("/api/v1/events","can_view_events"),("/api/v1/flow","can_view_flow"),("/api/v1/macro","can_view_macro"),("/api/v1/analytics/","can_view_macro"),("/api/v1/security","can_view_research"),("/api/v1/alerts","can_manage_alerts"),("/api/v1/push","can_manage_alerts"),("/api/v1/theses","can_manage_theses"),("/api/v1/system/","can_view_settings"))
-PUBLIC_API_PATHS={"/api/v1/health"}
+PUBLIC_API_PATHS={
+    "/api/v1/health",
+    "/api/v1/opportunities/bulk-missing",
+    "/api/v1/opportunities/bulk-ingest",
+}
 def _cookie_from_scope(scope,name):
     raw=""
     for key,value in scope.get("headers",[]):
