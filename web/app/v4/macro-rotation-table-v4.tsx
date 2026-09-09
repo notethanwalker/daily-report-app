@@ -20,7 +20,7 @@ export default function MacroRotationTableV4({rotation,onOpen}:{rotation:any;onO
  function chooseMetric(next:Metric){if(next===metric){setDirection(x=>x==="asc"?"desc":"asc");return}setMetric(next);setDirection(next==="symbol"?"asc":"desc")}
  function selectMetric(next:Metric){if(next===metric)return;setMetric(next);setDirection(next==="symbol"?"asc":"desc")}
  const rows=useMemo(()=>{
-  const source=[...(rotation?.rows||[])];
+  const source=Array.isArray(rotation?.rows)?[...rotation.rows]:[];
   const filtered=source.filter((x:any)=>group==="all"||group==="early"&&["early_rotation_candidate","watch_for_rotation"].includes(x.forward_bias)||group==="outflow"&&["rotation_out_risk","avoidance_bias"].includes(x.forward_bias)||group==="leaders"&&Number(x.rotation_score??0)>=0);
   const value=(x:any)=>metric==="pressure"?Number(x.rotation_pressure??-Infinity):metric==="conviction"?Number(x.conviction??-Infinity):metric==="delta1"?Number(x.delta_1_observation??-Infinity):metric==="delta3"?Number(x.delta_3_observations??-Infinity):String(x.symbol||"");
   filtered.sort((a:any,b:any)=>{const av=value(a),bv=value(b);const cmp=typeof av==="string"?av.localeCompare(String(bv)):Number(av)-Number(bv);return direction==="asc"?cmp:-cmp});return filtered.slice(0,16);
