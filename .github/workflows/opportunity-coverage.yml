@@ -6,7 +6,7 @@ on:
       limit:
         description: "Maximum missing symbols to attempt"
         required: false
-        default: "250"
+        default: "500"
   schedule:
     - cron: "17 * * * *"
   push:
@@ -41,21 +41,9 @@ jobs:
       - name: Install market worker dependencies
         run: python -m pip install --disable-pip-version-check "yfinance>=0.2.54" "pandas>=2.2"
 
-      - name: Acquire short-lived GitHub identity token
-        shell: bash
-        run: |
-          set -euo pipefail
-          response=$(curl --fail --silent --show-error \
-            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-opportunity-ingest")
-          token=$(printf '%s' "$response" | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')
-          test -n "$token"
-          echo "::add-mask::$token"
-          echo "OPPORTUNITY_OIDC_TOKEN=$token" >> "$GITHUB_ENV"
-
       - name: Expand or refresh Opportunity coverage
         env:
           INPUT_LIMIT: ${{ github.event.inputs.limit }}
         run: |
-          LIMIT="${INPUT_LIMIT:-250}"
+          LIMIT="${INPUT_LIMIT:-500}"
           python scripts/opportunity_bulk_worker.py --limit "$LIMIT" --download-chunk 15 --upload-batch 25 --sleep 2
