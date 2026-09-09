@@ -23,6 +23,7 @@ CURSOR_STATE_KEY = "opportunity_external_cursor"
 MIN_BARS = BROAD_OPPORTUNITY_MIN_BARS
 RETAIN_DAYS = BROAD_OPPORTUNITY_HISTORY_DAYS
 MAX_RECORDS_PER_BATCH = 200
+READY_COVERAGE_PERCENT = 95.0
 
 
 def _now() -> str:
@@ -107,8 +108,41 @@ def _coverage(db: Session) -> dict:
     }
 
 
+def opportunity_refresh_targets(db: Session, *, limit: int = 200) -> dict:
+    limit = max(1, min(int(limit), 1000))
+    eligible = set(_eligible_symbols(db))
+    coverage_rows = _coverage_rows(db)
+    covered = {s for s in eligible if coverage_rows.get(s, {}).get("bars", 0) >= MIN_BARS}
+    reference_date = _consensus_market_date(db, eligible)
+    stale = []
+    if reference_date:
+        stale = sorted(
+            (
+                (coverage_rows.get(symbol, {}).get("latest_bar_date") or "", symbol)
+                for symbol in covered
+                if (coverage_rows.get(symbol, {}).get("latest_bar_date") or "") < reference_date
+            ),
+            key=lambda item: (item[0], item[1]),
+        )
+    selected = [symbol for _, symbol in stale[:limit]]
+    return {
+        "symbols": selected,
+        "mode": "refresh",
+        "reference_date": reference_date,
+        "stale_count": len(stale),
+        "coverage": _coverage(db),
+    }
+
+
 def missing_opportunity_symbols(db: Session, *, limit: int = 500, cursor: str = "") -> dict:
     limit = max(1, min(int(limit), 1000))
+    coverage = _coverage(db)
+    if float(coverage.get("coverage_percent") or 0) >= READY_COVERAGE_PERCENT:
+        refresh = opportunity_refresh_targets(db, limit=limit)
+        if refresh.get("symbols"):
+            refresh["policy"] = "Broad coverage is ready; refresh stale covered symbols with recent bars before retrying residual unavailable listings."
+            return refresh
+
     eligible = _eligible_symbols(db)
     covered = _covered_symbols(db)
     missing_all = [s for s in eligible if s not in covered]
@@ -136,7 +170,6 @@ def missing_opportunity_symbols(db: Session, *, limit: int = 500, cursor: str = 
         "updated_at": _now(),
     })
 
-    covered_count = len(set(eligible) & covered)
     return {
         "symbols": selected,
         "cursor": next_cursor,
@@ -144,39 +177,8 @@ def missing_opportunity_symbols(db: Session, *, limit: int = 500, cursor: str = 
         "wrapped": wrapped,
         "remaining_missing": len(missing_all),
         "mode": "bootstrap",
-        "coverage": {
-            "eligible_stocks": len(eligible),
-            "covered_stocks": covered_count,
-            "coverage_percent": round(covered_count / len(eligible) * 100.0, 2) if eligible else 0.0,
-            "minimum_bars": MIN_BARS,
-            "retained_sessions": RETAIN_DAYS,
-        },
-    }
-
-
-def opportunity_refresh_targets(db: Session, *, limit: int = 200) -> dict:
-    limit = max(1, min(int(limit), 1000))
-    eligible = set(_eligible_symbols(db))
-    coverage_rows = _coverage_rows(db)
-    covered = {s for s in eligible if coverage_rows.get(s, {}).get("bars", 0) >= MIN_BARS}
-    reference_date = _consensus_market_date(db, eligible)
-    stale = []
-    if reference_date:
-        stale = sorted(
-            (
-                (coverage_rows.get(symbol, {}).get("latest_bar_date") or "", symbol)
-                for symbol in covered
-                if (coverage_rows.get(symbol, {}).get("latest_bar_date") or "") < reference_date
-            ),
-            key=lambda item: (item[0], item[1]),
-        )
-    selected = [symbol for _, symbol in stale[:limit]]
-    return {
-        "symbols": selected,
-        "mode": "refresh",
-        "reference_date": reference_date,
-        "stale_count": len(stale),
-        "coverage": _coverage(db),
+        "coverage": coverage,
+        "policy": "Rotate through missing equities; unavailable or too-young listings do not pin the queue.",
     }
 
 
