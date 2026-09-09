@@ -1,0 +1,84 @@
+name: Macro Opportunity Fix Once
+on:
+  push:
+    branches: [macro-opportunity-functionality-20260909]
+    paths: ['.github/workflows/macro-opportunity-fix-once.yml']
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch backend data paths
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p=Path('backend/app/services/rotation_model_v4.py')
+          s=p.read_text()
+          old='''def _daily_snapshots(db: Session, symbol: str, limit_days: int = 8) -> list[MarketSnapshot]:\n    rows = db.query(MarketSnapshot).filter(MarketSnapshot.symbol == symbol).order_by(MarketSnapshot.retrieved_at.desc()).limit(160).all()\n    by_day = {}\n    for row in rows:\n        key = str((row.payload or {}).get("as_of") or row.as_of or row.retrieved_at.date().isoformat())[:10]\n        by_day.setdefault(key, row)\n    return [by_day[k] for k in sorted(by_day, reverse=True)[:limit_days]][::-1]\n'''
+          new='''def _all_daily_snapshots(db: Session, limit_days: int = 8) -> dict[str, list[MarketSnapshot]]:\n    symbols=list(SECTORS)\n    rows=db.query(MarketSnapshot).filter(MarketSnapshot.symbol.in_(symbols)).order_by(MarketSnapshot.symbol.asc(),MarketSnapshot.retrieved_at.desc()).all()\n    grouped={}\n    for symbol in symbols:\n        grouped[symbol]={}\n    for row in rows:\n        by_day=grouped.setdefault(row.symbol,{})\n        key=str((row.payload or {}).get("as_of") or row.as_of or row.retrieved_at.date().isoformat())[:10]\n        if key not in by_day and len(by_day)<limit_days:\n            by_day[key]=row\n    return {symbol:[days[k] for k in sorted(days)][-limit_days:] for symbol,days in grouped.items()}\n'''
+          assert old in s
+          s=s.replace(old,new)
+          old2='''def build_rotation_model(db: Session, persist: bool = False) -> dict:\n    rows=[];now=datetime.now(timezone.utc)\n    for symbol,name in SECTORS.items():\n        history=_daily_snapshots(db,symbol)\n'''
+          new2='''def build_rotation_model(db: Session, persist: bool = False) -> dict:\n    rows=[];now=datetime.now(timezone.utc);all_history=_all_daily_snapshots(db)\n    for symbol,name in SECTORS.items():\n        history=all_history.get(symbol,[])\n'''
+          assert old2 in s
+          s=s.replace(old2,new2)
+          p.write_text(s)
+
+          p=Path('backend/app/services/candidate_funnel_v4.py')
+          s=p.read_text()
+          anchor='''def _latest_market(db,symbol):\n    row=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol).order_by(MarketSnapshot.retrieved_at.desc()).first()\n    if not row:return {}\n    return {**dict(row.payload or {}),"__retrieved_at":row.retrieved_at}\n'''
+          replacement=anchor+'''def _latest_market_map(db:Session,symbols:list[str])->dict[str,dict]:\n    if not symbols:return {}\n    rows=db.query(MarketSnapshot).filter(MarketSnapshot.symbol.in_(symbols)).order_by(MarketSnapshot.symbol.asc(),MarketSnapshot.retrieved_at.desc()).all();out={}\n    for row in rows:\n        if row.symbol not in out:out[row.symbol]={**dict(row.payload or {}),"__retrieved_at":row.retrieved_at}\n    return out\ndef _latest_feature_map(db:Session,symbols:list[str])->dict[str,dict]:\n    if not symbols:return {}\n    rows=db.query(FeatureSnapshot).filter(FeatureSnapshot.symbol.in_(symbols)).order_by(FeatureSnapshot.symbol.asc(),FeatureSnapshot.as_of.desc(),FeatureSnapshot.created_at.desc()).all();out={}\n    for row in rows:\n        if row.symbol not in out:out[row.symbol]={**dict(row.payload or {}),"__as_of":row.as_of}\n    return out\n'''
+          assert anchor in s
+          s=s.replace(anchor,replacement)
+          old='''    registry={x.symbol.upper():x for x in db.query(SymbolRegistry).all()};ranked=[]\n    for row,bucket_bonus in source:\n        symbol=row["symbol"];reg=registry.get(symbol);market=_latest_market(db,symbol);feature=_latest_feature(db,symbol)\n'''
+          new='''    source_symbols=sorted({row["symbol"] for row,_ in source});registry={x.symbol.upper():x for x in db.query(SymbolRegistry).filter(SymbolRegistry.symbol.in_(source_symbols)).all()};market_map=_latest_market_map(db,source_symbols);feature_map=_latest_feature_map(db,source_symbols);ranked=[]\n    for row,bucket_bonus in source:\n        symbol=row["symbol"];reg=registry.get(symbol);market=dict(market_map.get(symbol) or {});feature=dict(feature_map.get(symbol) or {})\n'''
+          assert old in s
+          s=s.replace(old,new)
+          p.write_text(s)
+
+          p=Path('backend/app/services/refresh_scheduler.py')
+          s=p.read_text()
+          old='''    for symbol in sorted(macro - users):\n        market = db.query(MarketSnapshot).filter(MarketSnapshot.symbol == symbol).order_by(MarketSnapshot.retrieved_at.desc()).first()\n        if not market or is_stale(market.retrieved_at, "market", now):\n            _enqueue(db, symbol, "market", FRESHNESS_POLICIES["market"].priority)\n        if _history_needs_refresh(db, symbol, now):\n            _enqueue(db, symbol, "history", FRESHNESS_POLICIES["history"].priority)\n'''
+          new='''    macro_boost = 40\n    for symbol in sorted(macro - users):\n        market = db.query(MarketSnapshot).filter(MarketSnapshot.symbol == symbol).order_by(MarketSnapshot.retrieved_at.desc()).first()\n        if not market or is_stale(market.retrieved_at, "market", now):\n            _enqueue(db, symbol, "market", FRESHNESS_POLICIES["market"].priority + macro_boost)\n        if _history_needs_refresh(db, symbol, now):\n            _enqueue(db, symbol, "history", FRESHNESS_POLICIES["history"].priority + macro_boost)\n'''
+          assert old in s
+          s=s.replace(old,new)
+          p.write_text(s)
+          PY
+      - name: Add regression tests
+        run: |
+          cat > backend/tests/test_stack_query_efficiency.py <<'PY'
+          from pathlib import Path
+          import unittest
+          ROOT=Path(__file__).resolve().parents[2]
+          ROT=(ROOT/'backend/app/services/rotation_model_v4.py').read_text()
+          FUN=(ROOT/'backend/app/services/candidate_funnel_v4.py').read_text()
+          SCH=(ROOT/'backend/app/services/refresh_scheduler.py').read_text()
+          class StackQueryEfficiency(unittest.TestCase):
+              def test_rotation_bulk_loads_sector_snapshots(self):
+                  self.assertIn('def _all_daily_snapshots',ROT)
+                  self.assertIn('all_history=_all_daily_snapshots(db)',ROT)
+                  self.assertNotIn('history=_daily_snapshots(db,symbol)',ROT)
+              def test_candidate_funnel_bulk_loads_market_and_features(self):
+                  self.assertIn('market_map=_latest_market_map(db,source_symbols)',FUN)
+                  self.assertIn('feature_map=_latest_feature_map(db,source_symbols)',FUN)
+                  self.assertNotIn('market=_latest_market(db,symbol);feature=_latest_feature(db,symbol)',FUN)
+              def test_macro_refreshes_are_prioritized(self):
+                  self.assertIn('macro_boost = 40',SCH)
+                  self.assertIn('FRESHNESS_POLICIES["market"].priority + macro_boost',SCH)
+          if __name__=='__main__':unittest.main()
+          PY
+      - name: Validate backend
+        run: |
+          cd backend
+          python -m compileall -q app
+          python -m unittest discover -s tests -p 'test_*.py'
+      - name: Commit patch
+        run: |
+          git config user.name "daily-report-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend
+          git commit -m "Make Macro and Opportunity data paths responsive"
+          git push origin HEAD:macro-opportunity-functionality-20260909
