@@ -282,7 +282,7 @@ def run_opportunity_incremental_cycle() -> dict:
 
 
 async def opportunity_incremental_loop():
-    await asyncio.sleep(150)
+    await asyncio.sleep(20)
     while True:
         await asyncio.to_thread(run_opportunity_incremental_cycle)
         await asyncio.sleep(10 * 60)
