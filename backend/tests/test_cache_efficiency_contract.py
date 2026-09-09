@@ -12,6 +12,10 @@ class CacheEfficiencyContract(unittest.TestCase):
         self.assertIn('_fundamentals_supported(db, symbol)', SCHEDULER)
         self.assertIn('!= "VIX"', SCHEDULER)
 
+    def test_deployment_warm_symbols_receive_priority_boost(self):
+        self.assertIn('warm_boost = 50 if symbol in DEPLOYMENT_WARM_SYMBOLS else 0', SCHEDULER)
+        self.assertGreaterEqual(SCHEDULER.count('priority + warm_boost'), 3)
+
 
 if __name__ == "__main__":
     unittest.main()
