@@ -1,0 +1,41 @@
+name: Flow Smoke Once
+on:
+  push:
+    branches: [preflight-ui-20260909]
+    paths: ['.github/workflows/flow-smoke-once.yml','backend/app/services/flow_ingestion.py','backend/app/routers/reconciliation.py']
+permissions:
+  contents: read
+jobs:
+  flow-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+      - name: Compile backend
+        run: python -m compileall -q backend/app
+      - name: Run backend tests
+        run: pytest -q backend/tests
+      - name: Smoke public SquawkFlow source
+        env:
+          DATABASE_URL: sqlite:////tmp/flow-smoke.db
+        run: |
+          PYTHONPATH=backend python - <<'PY'
+          from app.database import Base, engine, SessionLocal
+          from app.services.flow_ingestion import refresh_flow_cache
+          Base.metadata.create_all(bind=engine)
+          db=SessionLocal()
+          try:
+              result=refresh_flow_cache(db,25)
+              count=len(result.get('events') or [])
+              stored=db.execute(__import__('sqlalchemy').text('select count(*) from flow_events')).scalar_one()
+              print({'provider':result.get('provider'),'live_events':count,'stored_events':stored,'persisted':result.get('persisted'),'usage':result.get('usage')})
+              if count < 1 or stored < 1:
+                  raise SystemExit('Flow source returned no persistable observations')
+          finally:
+              db.close()
+          PY
