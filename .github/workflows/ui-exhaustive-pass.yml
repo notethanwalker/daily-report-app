@@ -3,7 +3,7 @@ on:
   push:
     branches: [ui-exhaustive-pass-20260909]
     paths:
-      - 'web/preflight-ui-exhaustive.mjs'
+      - 'web/preflight-ui-exhaustive-v2.mjs'
       - '.github/workflows/ui-exhaustive-pass.yml'
 permissions:
   contents: read
@@ -36,13 +36,13 @@ jobs:
           for i in {1..60}; do curl -fsS http://127.0.0.1:3000/v4 >/dev/null && exit 0; sleep 1; done
           cat /tmp/daily-report-next.log
           exit 1
-      - name: Run exhaustive browser audit
+      - name: Run corrected exhaustive browser audit
         working-directory: web
-        run: node preflight-ui-exhaustive.mjs
+        run: node preflight-ui-exhaustive-v2.mjs
       - name: Upload exhaustive report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ui-exhaustive-results
-          path: web/preflight-exhaustive-report.json
+          name: ui-exhaustive-v2-results
+          path: web/preflight-exhaustive-v2-report.json
           retention-days: 3
