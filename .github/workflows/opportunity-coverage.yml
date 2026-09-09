@@ -6,7 +6,7 @@ on:
       limit:
         description: "Maximum missing symbols to attempt"
         required: false
-        default: "400"
+        default: "250"
   schedule:
     - cron: "17 * * * *"
   push:
@@ -60,5 +60,5 @@ jobs:
         env:
           INPUT_LIMIT: ${{ github.event.inputs.limit }}
         run: |
-          LIMIT="${INPUT_LIMIT:-400}"
-          python scripts/opportunity_bulk_worker.py --limit "$LIMIT" --download-chunk 40 --upload-batch 100 --sleep 2
+          LIMIT="${INPUT_LIMIT:-250}"
+          python scripts/opportunity_bulk_worker.py --limit "$LIMIT" --download-chunk 15 --upload-batch 25 --sleep 2
