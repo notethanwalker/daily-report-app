@@ -234,7 +234,7 @@ def scan_cached_market(
     if broad_state == "ready":
         data_strategy = "Broad equity technical coverage is ready from the normalized/cached market layer. Ranking performs zero provider calls; historical inputs may be sourced from the canonical archive or the low-memory Stooq per-symbol bootstrap."
     else:
-        data_strategy = "Broad equity coverage is still converging. Ranking is limited to symbols with valid cached market snapshots; coverage is reported explicitly and the scan itself performs zero provider calls."
+        data_strategy = "Broad archive is not canonical, and broad equity coverage is still converging. Ranking is limited to symbols with valid cached market snapshots; coverage is reported explicitly and the scan itself performs zero provider calls."
 
     result = {
         "strong": strong[:limit_per_bucket],
