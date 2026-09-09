@@ -52,6 +52,7 @@ from .services.rotation import SECTORS
 from .services.macro_universe import EXPANDED_MACRO
 
 SECTORS.update(EXPANDED_MACRO)
+stable.DEFAULT_WATCHLIST=["CBRS" if symbol=="CRBS" else symbol for symbol in stable.DEFAULT_WATCHLIST]
 for symbol in EXPANDED_MACRO:
     if symbol not in stable.MACRO_BACKFILL_PRIORITY:stable.MACRO_BACKFILL_PRIORITY.append(symbol)
 if "Command Center" not in access_policy.ALL_TABS:access_policy.ALL_TABS.insert(0,"Command Center")
