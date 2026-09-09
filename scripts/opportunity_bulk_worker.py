@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -15,23 +16,46 @@ import yfinance as yf
 DEFAULT_API = "https://daily-report-api-ero2.onrender.com"
 MIN_BARS = 120
 UPLOAD_TAIL = 130
+RETRYABLE_HTTP = {429, 500, 502, 503, 504}
 
 
-def api_json(url: str, *, method: str = "GET", payload: dict | None = None, timeout: int = 120) -> dict:
+def api_json(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: dict | None = None,
+    timeout: int = 120,
+    attempts: int = 5,
+) -> dict:
     data = None if payload is None else json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    request = urllib.request.Request(url, data=data, method=method)
-    oidc = os.getenv("OPPORTUNITY_OIDC_TOKEN") or ""
-    static = os.getenv("STOOQ_IMPORT_TOKEN") or ""
-    if oidc:
-        request.add_header("authorization", f"Bearer {oidc}")
-    elif static:
-        request.add_header("x-stooq-import-token", static)
-    else:
-        raise RuntimeError("No Opportunity ingest authentication is configured")
-    if data is not None:
-        request.add_header("content-type", "application/json")
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    last_error = None
+    for attempt in range(1, max(1, attempts) + 1):
+        request = urllib.request.Request(url, data=data, method=method)
+        oidc = os.getenv("OPPORTUNITY_OIDC_TOKEN") or ""
+        static = os.getenv("STOOQ_IMPORT_TOKEN") or ""
+        if oidc:
+            request.add_header("authorization", f"Bearer {oidc}")
+        elif static:
+            request.add_header("x-stooq-import-token", static)
+        else:
+            raise RuntimeError("No Opportunity ingest authentication is configured")
+        if data is not None:
+            request.add_header("content-type", "application/json")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in RETRYABLE_HTTP or attempt >= attempts:
+                raise
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = exc
+            if attempt >= attempts:
+                raise
+        delay = min(30, 2 ** attempt)
+        print(f"API request retry {attempt}/{attempts} after {last_error}; sleeping {delay}s")
+        time.sleep(delay)
+    raise RuntimeError(f"API request failed: {last_error}")
 
 
 def finite(value):
@@ -93,21 +117,21 @@ def rows_from_frame(frame: pd.DataFrame | None) -> list[dict]:
     return out
 
 
-def fetch_chunk(symbols: list[str]) -> tuple[list[dict], list[dict]]:
+def fetch_chunk(symbols: list[str], *, period: str = "1y", min_bars: int = MIN_BARS) -> tuple[list[dict], list[dict]]:
     yahoo_symbols = [normalize_yahoo_symbol(s) for s in symbols]
     failures: list[dict] = []
     records: list[dict] = []
     try:
         frame = yf.download(
             " ".join(yahoo_symbols),
-            period="1y",
+            period=period,
             interval="1d",
             group_by="ticker",
             auto_adjust=False,
             actions=False,
             threads=True,
             progress=False,
-            timeout=30,
+            timeout=25,
         )
     except Exception as exc:
         return [], [{"symbols": symbols[:10], "error": str(exc)[:200]}]
@@ -115,7 +139,7 @@ def fetch_chunk(symbols: list[str]) -> tuple[list[dict], list[dict]]:
     for original in symbols:
         sub = frame_for_symbol(frame, normalize_yahoo_symbol(original), yahoo_symbols)
         rows = rows_from_frame(sub)
-        if len(rows) < MIN_BARS:
+        if len(rows) < min_bars:
             failures.append({"symbol": original, "bars": len(rows)})
             continue
         records.append({"symbol": original, "rows": rows[-UPLOAD_TAIL:]})
@@ -124,9 +148,9 @@ def fetch_chunk(symbols: list[str]) -> tuple[list[dict], list[dict]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fill missing Opportunity technical coverage from a GitHub runner.")
-    parser.add_argument("--limit", type=int, default=400, help="Maximum missing symbols to attempt this run")
-    parser.add_argument("--download-chunk", type=int, default=40, help="Yahoo symbols per download request")
-    parser.add_argument("--upload-batch", type=int, default=100, help="Records per API ingest request")
+    parser.add_argument("--limit", type=int, default=250, help="Maximum missing symbols to attempt this run")
+    parser.add_argument("--download-chunk", type=int, default=15, help="Yahoo symbols per download request")
+    parser.add_argument("--upload-batch", type=int, default=25, help="Records per API ingest request")
     parser.add_argument("--sleep", type=float, default=2.0, help="Pause between provider chunks")
     args = parser.parse_args()
 
@@ -163,6 +187,7 @@ def main() -> int:
                 "records": records,
             },
             timeout=180,
+            attempts=5,
         )
         accepted_total += int(result.get("accepted") or 0)
         rejected_total += int(result.get("rejected") or 0)
