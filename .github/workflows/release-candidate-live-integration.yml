@@ -1,0 +1,92 @@
+name: Release Candidate Live Integration
+on:
+  push:
+    branches: [release-candidate-20260909]
+    paths: ['.github/workflows/release-candidate-live-integration.yml']
+permissions:
+  contents: read
+jobs:
+  live-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate live backend contracts
+        run: |
+          set -euo pipefail
+          API=https://daily-report-api-ero2.onrender.com/api/v1
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 "$API/health" | jq -e '.status == "ok"'
+          curl --fail --silent --show-error --retry 3 "$API/stack/overview" | jq -e '.layers.research and .layers.macro and .layers.opportunity and .layers.deployment'
+          curl --fail --silent --show-error --retry 3 "$API/stack/rotation" > /tmp/rotation.json
+          jq -e '(.rows|type=="array") and (.rows|length>0) and (.early_rotation|type=="array") and (.outflow_risk|type=="array")' /tmp/rotation.json
+          curl --fail --silent --show-error --retry 3 "$API/stack/candidates?limit=60" > /tmp/candidates.json
+          jq -e '((.candidates // .rows)|type=="array") and ((.candidates // .rows)|length>0) and (.coverage|type=="object")' /tmp/candidates.json
+          curl --fail --silent --show-error --retry 3 "$API/stack/deployment?basket=ai-buildout&capital=1000" > /tmp/deployment.json
+          jq -e '(.eligible|type=="array") and (.unavailable|type=="array") and (((.eligible|length)+(.unavailable|length))>0)' /tmp/deployment.json
+          curl --fail --silent --show-error --retry 3 "$API/events?days=30&limit=100" | jq -e '(.events|type=="array") and (.count>=0)'
+          curl --fail --silent --show-error --retry 3 "$API/flow?limit=100" | jq -e 'type=="object" or type=="array"'
+          curl --fail --silent --show-error --retry 3 "$API/portfolios" | jq -e '.portfolios|type=="array"'
+      - name: Install and build exact frontend
+        working-directory: web
+        run: |
+          npm install
+          npm install --no-save playwright
+          npm run build
+          npx playwright install chromium
+      - name: Start exact release candidate
+        working-directory: web
+        env:
+          BACKEND_INTERNAL_URL: https://daily-report-api-ero2.onrender.com
+        run: |
+          nohup npm start -- -p 3000 >/tmp/rc-next.log 2>&1 &
+          for i in {1..60}; do curl -fsS http://127.0.0.1:3000 >/dev/null && exit 0; sleep 1; done
+          cat /tmp/rc-next.log; exit 1
+      - name: Browser integration against live API
+        working-directory: web
+        run: |
+          cat > /tmp/live-ui.mjs <<'JS'
+          import { chromium } from 'playwright';
+          const browser=await chromium.launch({headless:true});
+          const sizes=[[1440,1000],[390,844]];
+          const failures=[];
+          for(const [width,height] of sizes){
+            const ctx=await browser.newContext({viewport:{width,height}});
+            const page=await ctx.newPage();
+            const pageErrors=[]; const consoleErrors=[];
+            page.on('pageerror',e=>pageErrors.push(String(e)));
+            page.on('console',m=>{if(m.type()==='error')consoleErrors.push(m.text())});
+            // Auth handshake only. No market/application data is mocked.
+            await page.route('**/backend/api/v1/auth/session', async route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({account:{id:'rc-test',email:'rc-test@example.invalid',name:'Release Test',name_required:false,role:'approved_user',status:'approved',enabled:true}})}));
+            await page.goto('http://127.0.0.1:3000/v4',{waitUntil:'domcontentloaded',timeout:30000});
+            await page.getByRole('heading',{name:'Decision Stack'}).waitFor({timeout:20000});
+            const checkOverflow=async label=>{const o=await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth);if(o>2)failures.push(`${width}:${label}:overflow:${o}`)};
+            await checkOverflow('research');
+            await page.getByRole('button',{name:/Macro/}).click();
+            await page.getByText(/groups$/).waitFor({timeout:20000});
+            const macroText=await page.locator('main').innerText();
+            if(/0 groups/.test(macroText))failures.push(`${width}:macro:zero-groups`);
+            await checkOverflow('macro');
+            await page.getByRole('button',{name:/Opportunity/}).click();
+            await page.getByText(/Scanner coverage/).waitFor({timeout:20000});
+            const oppText=await page.locator('main').innerText();
+            if(/0 candidates/.test(oppText))failures.push(`${width}:opportunity:zero-candidates`);
+            await checkOverflow('opportunity');
+            await page.getByRole('button',{name:/Deployment/}).click();
+            await page.waitForTimeout(1500);
+            const depText=await page.locator('main').innerText();
+            if(/This view took too long|HTTP 5\d\d|map is not a function/i.test(depText))failures.push(`${width}:deployment:error-text`);
+            await checkOverflow('deployment');
+            const visibleErrors=await page.locator('[role="alert"]').allInnerTexts();
+            if(visibleErrors.some(x=>/HTTP 5\d\d|took too long|map is not a function/i.test(x)))failures.push(`${width}:visible-error:${visibleErrors.join('|')}`);
+            if(pageErrors.length)failures.push(`${width}:page-errors:${pageErrors.join('|')}`);
+            if(consoleErrors.filter(x=>!/favicon/i.test(x)).length)failures.push(`${width}:console-errors:${consoleErrors.join('|')}`);
+            await ctx.close();
+          }
+          await browser.close();
+          if(failures.length){console.error(failures.join('\n'));process.exit(1)}
+          console.log('LIVE_UI_INTEGRATION_OK');
+          JS
+          node /tmp/live-ui.mjs
