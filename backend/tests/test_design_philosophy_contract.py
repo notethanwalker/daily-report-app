@@ -47,9 +47,12 @@ class DesignPhilosophyContract(unittest.TestCase):
         self.assertIn('Scanner coverage', V4)
 
     def test_cross_layer_rows_drill_into_research(self):
-        self.assertGreaterEqual(V4.count('openResearch('), 5)
+        delegated = V4.count('openResearch(') + OPPORTUNITY_TABLE.count('onOpen(') + MACRO_TABLE.count('onOpen(')
+        self.assertGreaterEqual(delegated, 6)
         self.assertIn('table-row-button', V4)
         self.assertIn('allocation-row-button', V4)
+        self.assertIn('title={`Open ${x.symbol} research`}', OPPORTUNITY_TABLE)
+        self.assertIn('title={`Open ${x.symbol} research`}', MACRO_TABLE)
 
     def test_broad_scanner_uses_tiered_history_retention(self):
         self.assertIn('BROAD_OPPORTUNITY_HISTORY_DAYS', PIPELINE)
