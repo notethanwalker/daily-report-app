@@ -4,6 +4,7 @@ import {useEffect,useMemo,useState} from "react";
 import {AuthGate,type Account} from "../auth-shell";
 import DeepLinksV4 from "./deep-links-v4";
 import OpportunityTableV4 from "./opportunity-table-v4";
+import MacroRotationTableV4 from "./macro-rotation-table-v4";
 import "./v4.css";
 
 const API="/backend";
@@ -42,7 +43,7 @@ function DecisionStack({account}:{account:Account}){
  return <main className="v4-shell">
   <header className="v4-header"><div><span className="v4-kicker">DAILY REPORT V4 · DEVELOPMENT BUILD</span><h1>Decision Stack</h1><p>Research → Macro → Opportunity → Deployment</p></div><div className="v4-user"><span>{account.name}</span><small>{overview?.version||"4.5-dev"}</small></div></header>
   {error&&<div className="v4-error" role="alert"><span>{error}</span><button onClick={()=>{setError("");if(active==="research")loadResearch();else if(active==="macro"){setRotation(null);loadRotation()}else if(active==="opportunity")loadFunnel(true);else loadDeployment()}}>Retry</button></div>}
-  <section className="v4-pipeline" aria-label="Decision pipeline">{pipeline.map(([key,title,question],i)=><button key={key} aria-pressed={active===key} className={active===key?"active":""} onClick={()=>setActive(key)}><span>{i+1}</span><div><strong>{title}</strong><small>{question}</small></div></button>)}</section>
+  <section className="v4-pipeline" aria-label="Decision pipeline">{pipeline.map(([key,title,question],i)=><button key={key} aria-pressed={active===key} className={active===key?"active":""} onClick={()=>{setError("");setActive(key)}}><span>{i+1}</span><div><strong>{title}</strong><small>{question}</small></div></button>)}</section>
 
   {active==="research"&&<section className="v4-grid">
    <article className="v4-card hero"><span className="label">Research coverage</span><strong>{layer?.tracked_symbols??0}</strong><p>Watchlist + portfolio symbols feeding the decision stack.</p></article>
@@ -61,7 +62,7 @@ function DecisionStack({account}:{account:Account}){
 
   {active==="macro"&&<section className="v4-grid">
    {rotationLoading&&!rotation&&<article className="v4-card wide"><p className="muted" role="status">Loading rotation state…</p></article>}
-   <article className="v4-card wide"><div className="section-head"><div><span className="label">Rotation model v4</span><h2>Leadership + transition state</h2></div><strong>{rotation?.rows?.length??0} groups</strong></div><div className="v4-table rotation-table">{(rotation?.leaders||[]).map((x:any)=><button className="table-row-button" key={x.symbol} onClick={()=>openResearch(x.symbol)}><strong>{x.symbol}</strong><span>{x.name}</span><span>{words(x.state)}</span><span>{x.stale_input?"stale":x.transition_ready?`${n(x.delta_3_observations,2)} Δ`:`${x.observations||0} obs`}</span><b>{n(x.rotation_pressure??x.rotation_score,2)}</b></button>)}</div></article>
+   <article className="v4-card wide"><div className="section-head"><div><span className="label">Rotation model v4</span><h2>Leadership + transition state</h2></div><strong>{rotation?.rows?.length??0} groups</strong></div><MacroRotationTableV4 rotation={rotation} onOpen={openResearch}/></article>
    <article className="v4-card"><span className="label">Early rotation</span><h2>Improving laggards</h2>{(rotation?.early_rotation||[]).map((x:any)=><button className="compact-row row-button" key={x.symbol} onClick={()=>openResearch(x.symbol)}><strong>{x.symbol}</strong><span>{x.name}</span><b>{n(x.conviction,0)}</b></button>)}</article>
    <article className="v4-card"><span className="label">Outflow risk</span><h2>Weakening leadership</h2>{(rotation?.outflow_risk||[]).map((x:any)=><button className="compact-row row-button" key={x.symbol} onClick={()=>openResearch(x.symbol)}><strong>{x.symbol}</strong><span>{x.name}</span><b>{n(x.rotation_pressure,1)}</b></button>)}</article>
    <article className="v4-card"><span className="label">Persisted history</span><h2>{layer?.rotation_history_days??0} days</h2><p className="muted">Background-captured state observations accumulating for forward-outcome calibration.</p></article>
