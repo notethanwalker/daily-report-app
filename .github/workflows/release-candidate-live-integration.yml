@@ -88,7 +88,7 @@ jobs:
             await page.goto('http://127.0.0.1:3000/v4',{waitUntil:'domcontentloaded',timeout:30000});
             await page.getByLabel('Email').fill(process.env.RC_EMAIL);
             await page.getByLabel('Password').fill(process.env.RC_PASS);
-            await page.getByRole('button',{name:'Sign in',exact:true}).click();
+            await page.locator('button.auth-primary').click();
             const nameInput=page.getByLabel('Name');
             if(await nameInput.isVisible().catch(()=>false)){
               await nameInput.fill('Release Test');
