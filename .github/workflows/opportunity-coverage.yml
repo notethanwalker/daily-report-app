@@ -12,6 +12,10 @@ on:
   push:
     paths:
       - ".github/workflows/opportunity-coverage.yml"
+      - "scripts/opportunity_bulk_worker.py"
+      - "backend/app/services/github_actions_oidc.py"
+      - "backend/app/services/opportunity_bulk_ingest.py"
+      - "backend/app/routers/opportunity_scanner.py"
 
 concurrency:
   group: opportunity-coverage-expansion
@@ -23,9 +27,9 @@ jobs:
     timeout-minutes: 55
     permissions:
       contents: read
+      id-token: write
     env:
       DAILY_REPORT_API_BASE: https://daily-report-api-ero2.onrender.com
-      STOOQ_IMPORT_TOKEN: ${{ secrets.STOOQ_IMPORT_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,12 +44,17 @@ jobs:
       - name: Install market worker dependencies
         run: python -m pip install --disable-pip-version-check "yfinance>=0.2.54" "pandas>=2.2"
 
-      - name: Verify secure ingest token is configured
+      - name: Acquire short-lived GitHub identity token
+        shell: bash
         run: |
-          if [ -z "${STOOQ_IMPORT_TOKEN}" ]; then
-            echo "Repository secret STOOQ_IMPORT_TOKEN is required for secure bulk ingest."
-            exit 3
-          fi
+          set -euo pipefail
+          response=$(curl --fail --silent --show-error \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-opportunity-ingest")
+          token=$(printf '%s' "$response" | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')
+          test -n "$token"
+          echo "::add-mask::$token"
+          echo "OPPORTUNITY_OIDC_TOKEN=$token" >> "$GITHUB_ENV"
 
       - name: Expand missing Opportunity coverage
         env:
