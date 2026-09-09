@@ -1,0 +1,73 @@
+name: Strength Colors Once
+on:
+  push:
+    branches: [opportunity-cache-fix-20260909]
+    paths: ['.github/workflows/strength-colors-once.yml']
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply visual strength scale
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p=Path('web/app/v4/opportunity-table-v4.tsx')
+          s=p.read_text()
+          insert='''\nfunction opportunityTone(x:any){\n const score=Number(x.funnel_score??x.score??50), wr=Number(x.williams_r_14??x.williams_feature??0), ma=Number(x.price_vs_ma100_percent??x.ma100_distance??0);\n if(score>=80||((wr<=-80)&&(ma>=0&&ma<=5)))return "strength-strong";\n if(score>=68||wr<=-70)return "strength-positive";\n if(score<=38)return "strength-weak";\n if(score<=50)return "strength-negative";\n return "strength-neutral";\n}\n'''
+          s=s.replace('const LABELS:Record<SortKey,string>={score:"Opportunity score",williams:"Williams %R",ma100:"100MA distance",liquidity:"20D dollar volume",symbol:"Ticker"};\n', 'const LABELS:Record<SortKey,string>={score:"Opportunity score",williams:"Williams %R",ma100:"100MA distance",liquidity:"20D dollar volume",symbol:"Ticker"};\n'+insert)
+          s=s.replace('className="table-row-button" key={x.symbol}', 'className={`table-row-button ${opportunityTone(x)}`} key={x.symbol}')
+          p.write_text(s)
+
+          p=Path('web/app/v4/macro-rotation-table-v4.tsx')
+          s=p.read_text()
+          insert='''\nfunction macroTone(x:any){\n const pressure=Number(x.rotation_pressure??x.rotation_score??0), state=String(x.state||"");\n if(["leading_accelerating","leading_stable"].includes(state)||pressure>=1.5)return "strength-strong";\n if(["lagging_improving","recovering"].includes(state)||pressure>=0.35)return "strength-positive";\n if(["lagging_deteriorating","leading_weakening"].includes(state)||pressure<=-1.5)return "strength-weak";\n if(pressure<=-0.35)return "strength-negative";\n return "strength-neutral";\n}\n'''
+          s=s.replace('const LABELS:Record<Metric,string>={pressure:"Rotation pressure",conviction:"Conviction",delta1:"1-observation change",delta3:"3-observation change",symbol:"Ticker"};\n', 'const LABELS:Record<Metric,string>={pressure:"Rotation pressure",conviction:"Conviction",delta1:"1-observation change",delta3:"3-observation change",symbol:"Ticker"};\n'+insert)
+          s=s.replace('className="table-row-button" key={x.symbol}', 'className={`table-row-button ${macroTone(x)}`} key={x.symbol}')
+          p.write_text(s)
+
+          p=Path('web/app/v4/v4.css')
+          s=p.read_text()
+          s += '''\n/* Strength/weakness visual scale for populated Macro and Opportunity data. */\n.table-row-button.strength-strong{background:linear-gradient(90deg,rgba(24,116,72,.28),rgba(24,116,72,.07));border-left:3px solid #35c47c;padding-left:10px}.table-row-button.strength-positive{background:linear-gradient(90deg,rgba(38,103,68,.18),rgba(38,103,68,.04));border-left:3px solid #4f9d72;padding-left:10px}.table-row-button.strength-neutral{border-left:3px solid transparent;padding-left:10px}.table-row-button.strength-negative{background:linear-gradient(90deg,rgba(126,54,60,.16),rgba(126,54,60,.04));border-left:3px solid #a86168;padding-left:10px}.table-row-button.strength-weak{background:linear-gradient(90deg,rgba(148,42,52,.28),rgba(148,42,52,.07));border-left:3px solid #df5c68;padding-left:10px}.table-row-button.strength-strong b{color:#74e3a8}.table-row-button.strength-positive b{color:#8cc8a5}.table-row-button.strength-negative b{color:#d99a9f}.table-row-button.strength-weak b{color:#ff8d96}.table-row-button.strength-strong:hover{background:rgba(30,118,76,.34)}.table-row-button.strength-positive:hover{background:rgba(40,105,70,.24)}.table-row-button.strength-negative:hover{background:rgba(128,55,62,.22)}.table-row-button.strength-weak:hover{background:rgba(150,43,53,.34)}\n'''
+          p.write_text(s)
+          PY
+      - name: Add regression contract
+        run: |
+          cat > backend/tests/test_strength_color_contract.py <<'PY'
+          from pathlib import Path
+          import unittest
+          ROOT=Path(__file__).resolve().parents[2]
+          OP=(ROOT/'web/app/v4/opportunity-table-v4.tsx').read_text()
+          MAC=(ROOT/'web/app/v4/macro-rotation-table-v4.tsx').read_text()
+          CSS=(ROOT/'web/app/v4/v4.css').read_text()
+          class StrengthColorContract(unittest.TestCase):
+              def test_opportunity_strength_scale(self):
+                  self.assertIn('opportunityTone',OP)
+                  self.assertIn('strength-strong',OP)
+                  self.assertIn('strength-weak',OP)
+              def test_macro_strength_scale(self):
+                  self.assertIn('macroTone',MAC)
+                  self.assertIn('leading_accelerating',MAC)
+                  self.assertIn('lagging_deteriorating',MAC)
+              def test_visual_classes_exist(self):
+                  for x in ('strength-strong','strength-positive','strength-negative','strength-weak'):
+                      self.assertIn(x,CSS)
+          if __name__=='__main__':unittest.main()
+          PY
+      - name: Validate
+        run: |
+          cd web
+          npm install >/dev/null
+          npm run build
+          cd ..
+          python -m unittest backend/tests/test_strength_color_contract.py
+      - name: Commit intended files
+        run: |
+          git config user.name "daily-report-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add web/app/v4/opportunity-table-v4.tsx web/app/v4/macro-rotation-table-v4.tsx web/app/v4/v4.css backend/tests/test_strength_color_contract.py
+          git commit -m "Add strength colors to Macro and Opportunity"
+          git push origin HEAD:opportunity-cache-fix-20260909
