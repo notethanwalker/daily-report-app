@@ -45,7 +45,9 @@ from .routers.portfolio_access import _permissions, router as portfolio_access_r
 from .services.auth_security import SESSION_COOKIE, account_from_session, bootstrap_admin
 from .services.calibration_v4 import calibration_loop
 from .services.feature_model_v4 import feature_version_loop
+from .services import refresh_scheduler as _refresh_scheduler
 from .services.refresh_scheduler import bulk_market_loop, scheduler_loop, yahoo_bootstrap_loop
+from .services.tracked_market_fallback import refresh_tracked_market_snapshot_with_fallback
 from .services.opportunity_incremental import opportunity_incremental_loop
 from .services.stooq_worker import stooq_import_loop
 from .services.rotation import SECTORS
@@ -53,6 +55,7 @@ from .services.macro_universe import EXPANDED_MACRO
 
 SECTORS.update(EXPANDED_MACRO)
 stable.DEFAULT_WATCHLIST=["CBRS" if symbol=="CRBS" else symbol for symbol in stable.DEFAULT_WATCHLIST]
+_refresh_scheduler.refresh_tracked_market_snapshot=refresh_tracked_market_snapshot_with_fallback
 for symbol in EXPANDED_MACRO:
     if symbol not in stable.MACRO_BACKFILL_PRIORITY:stable.MACRO_BACKFILL_PRIORITY.append(symbol)
 if "Command Center" not in access_policy.ALL_TABS:access_policy.ALL_TABS.insert(0,"Command Center")
