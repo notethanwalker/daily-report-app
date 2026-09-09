@@ -3,6 +3,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCANNER = (ROOT / "backend/app/services/opportunity_scanner.py").read_text(encoding="utf-8")
+PIPELINE = (ROOT / "backend/app/services/market_data_pipeline.py").read_text(encoding="utf-8")
 FUNNEL = (ROOT / "backend/app/services/candidate_funnel_v4.py").read_text(encoding="utf-8")
 V4 = (ROOT / "web/app/v4/page.tsx").read_text(encoding="utf-8")
 V4_CSS = (ROOT / "web/app/v4/v4.css").read_text(encoding="utf-8")
@@ -42,6 +43,13 @@ class DesignPhilosophyContract(unittest.TestCase):
         self.assertGreaterEqual(V4.count('openResearch('), 5)
         self.assertIn('table-row-button', V4)
         self.assertIn('allocation-row-button', V4)
+
+    def test_broad_scanner_uses_tiered_history_retention(self):
+        self.assertIn('BROAD_OPPORTUNITY_HISTORY_DAYS', PIPELINE)
+        self.assertIn('BROAD_OPPORTUNITY_MIN_BARS = 120', PIPELINE)
+        self.assertIn('TRACKED_MIN_BARS = 220', PIPELINE)
+        self.assertIn('retain_days = NORMALIZED_HISTORY_DAYS if tracked else BROAD_OPPORTUNITY_HISTORY_DAYS', PIPELINE)
+        self.assertIn('tail=BROAD_OPPORTUNITY_HISTORY_DAYS', PIPELINE)
 
     def test_mobile_progressive_disclosure_is_preserved(self):
         self.assertIn('@media(max-width:560px)', V4_CSS)

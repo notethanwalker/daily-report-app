@@ -25,6 +25,9 @@ FREE_SOURCE_POLICY = {
 }
 BULK_LOCK_ID = 88421173
 NORMALIZED_HISTORY_DAYS = int(os.getenv("NORMALIZED_HISTORY_DAYS", "260"))
+BROAD_OPPORTUNITY_HISTORY_DAYS = max(120, int(os.getenv("BROAD_OPPORTUNITY_HISTORY_DAYS", "130")))
+BROAD_OPPORTUNITY_MIN_BARS = 120
+TRACKED_MIN_BARS = 220
 MARKET_SNAPSHOT_KEEP_PER_SYMBOL = int(os.getenv("MARKET_SNAPSHOT_KEEP_PER_SYMBOL", "4"))
 
 
@@ -104,7 +107,7 @@ def _normalize_twelve(symbol: str, raw: dict) -> dict:
     }
 
 
-def _history_from_sources(symbol: str, prefer: str = "stooq") -> tuple[dict, list[str]]:
+def _history_from_sources(symbol: str, prefer: str = "stooq", min_full_bars: int = TRACKED_MIN_BARS, retain_days: int = NORMALIZED_HISTORY_DAYS) -> tuple[dict, list[str]]:
     s = symbol.strip().upper()
     errors = []
     # Broad repair avoids consuming Twelve Data quota. Tracked refresh may use Twelve first.
@@ -114,13 +117,13 @@ def _history_from_sources(symbol: str, prefer: str = "stooq") -> tuple[dict, lis
             if source == "stooq":
                 data = StooqProvider().daily_history(s)
             elif source == "twelve":
-                data = _normalize_twelve(s, TwelveDataProvider().daily_history(s, outputsize=NORMALIZED_HISTORY_DAYS))
+                data = _normalize_twelve(s, TwelveDataProvider().daily_history(s, outputsize=retain_days))
             else:
                 data = YahooOhlcvProvider().daily_history(s, period="2y")
             rows = data.get("rows") or []
             full_bars = sum(1 for r in rows if r.get("high") is not None and r.get("low") is not None)
-            if len(rows) >= 220 and full_bars >= 220:
-                data["rows"] = rows[-NORMALIZED_HISTORY_DAYS:]
+            if len(rows) >= min_full_bars and full_bars >= min_full_bars:
+                data["rows"] = rows[-retain_days:]
                 return data, errors
             errors.append(f"{source}: insufficient full OHLCV history")
         except Exception as exc:
@@ -148,12 +151,12 @@ def _upsert_bar_payloads(db: Session, payloads: list[dict]):
     db.execute(stmt)
 
 
-def persist_normalized_history(db: Session, data: dict, commit: bool = True) -> int:
+def persist_normalized_history(db: Session, data: dict, commit: bool = True, keep_days: int = NORMALIZED_HISTORY_DAYS) -> int:
     symbol = data["symbol"].upper()
     provider = str(data.get("provider") or "Unknown")
     source_url = str(data.get("source_url") or "")
     payloads = []
-    for item in (data.get("rows") or [])[-NORMALIZED_HISTORY_DAYS:]:
+    for item in (data.get("rows") or [])[-keep_days:]:
         dt = str(item.get("date") or "")[:10]
         close = _number(item.get("close"))
         if not dt or close is None:
@@ -175,11 +178,11 @@ def persist_normalized_history(db: Session, data: dict, commit: bool = True) -> 
     return len(payloads)
 
 
-def _snapshot_from_rows(data: dict) -> dict | None:
+def _snapshot_from_rows(data: dict, min_bars: int = TRACKED_MIN_BARS, tail_days: int = NORMALIZED_HISTORY_DAYS) -> dict | None:
     rows = [r for r in data.get("rows") or [] if r.get("high") is not None and r.get("low") is not None]
-    if len(rows) < 220:
+    if len(rows) < min_bars:
         return None
-    rows = rows[-NORMALIZED_HISTORY_DAYS:]
+    rows = rows[-tail_days:]
     raw = {
         "history": {
             "values": [{
@@ -200,14 +203,14 @@ def _snapshot_from_rows(data: dict) -> dict | None:
     return build_market_snapshot(raw)
 
 
-def _snapshot_from_normalized(db: Session, symbol: str) -> dict | None:
+def _snapshot_from_normalized(db: Session, symbol: str, min_bars: int = TRACKED_MIN_BARS, tail_days: int = NORMALIZED_HISTORY_DAYS) -> dict | None:
     rows = db.query(NormalizedDailyBar).filter(
         NormalizedDailyBar.symbol == symbol.upper(),
         NormalizedDailyBar.high.is_not(None),
         NormalizedDailyBar.low.is_not(None),
-    ).order_by(NormalizedDailyBar.bar_date.desc()).limit(NORMALIZED_HISTORY_DAYS).all()
+    ).order_by(NormalizedDailyBar.bar_date.desc()).limit(tail_days).all()
     rows = list(reversed(rows))
-    if len(rows) < 220:
+    if len(rows) < min_bars:
         return None
     return _snapshot_from_rows({
         "symbol": symbol.upper(),
@@ -221,7 +224,7 @@ def _snapshot_from_normalized(db: Session, symbol: str) -> dict | None:
         } for r in rows],
         "provider": rows[-1].provider,
         "source_url": rows[-1].source_url,
-    })
+    }, min_bars=min_bars, tail_days=tail_days)
 
 
 def store_market_snapshot(db: Session, symbol: str, snapshot: dict, provider: str | None = None, commit: bool = True):
@@ -274,9 +277,11 @@ def prune_normalized_bars(db: Session, keep_per_symbol: int = NORMALIZED_HISTORY
 
 
 def refresh_symbol(db: Session, symbol: str, tracked: bool = False) -> dict:
-    data, errors = _history_from_sources(symbol, prefer="twelve" if tracked else "stooq")
-    touched = persist_normalized_history(db, data)
-    snapshot = _snapshot_from_normalized(db, symbol)
+    min_bars = TRACKED_MIN_BARS if tracked else BROAD_OPPORTUNITY_MIN_BARS
+    retain_days = NORMALIZED_HISTORY_DAYS if tracked else BROAD_OPPORTUNITY_HISTORY_DAYS
+    data, errors = _history_from_sources(symbol, prefer="twelve" if tracked else "stooq", min_full_bars=min_bars, retain_days=retain_days)
+    touched = persist_normalized_history(db, data, keep_days=retain_days)
+    snapshot = _snapshot_from_normalized(db, symbol, min_bars=min_bars, tail_days=retain_days)
     if snapshot:
         store_market_snapshot(db, symbol, snapshot, data.get("provider"))
     return {
@@ -322,7 +327,7 @@ def _nasdaq_universe_symbols(db: Session) -> set[str]:
 def _coverage(db: Session) -> tuple[int, int]:
     universe = len(_nasdaq_universe_symbols(db))
     covered = db.query(NormalizedDailyBar.symbol).group_by(NormalizedDailyBar.symbol).having(
-        func.count(NormalizedDailyBar.id) >= 220
+        func.count(NormalizedDailyBar.id) >= BROAD_OPPORTUNITY_MIN_BARS
     ).count()
     return universe, covered
 
@@ -360,7 +365,7 @@ def bulk_refresh_us_market(db: Session, force_full: bool = False) -> dict:
             sync_us_symbol_universe(db)
             universe, covered = _coverage(db)
         full = force_full or covered < max(100, int(universe * .60))
-        persist_tail = NORMALIZED_HISTORY_DAYS if full else 5
+        persist_tail = BROAD_OPPORTUNITY_HISTORY_DAYS if full else 5
         registry_rows = _nasdaq_registry(db)
         symbols, unique_keys = _alias_maps(registry_rows)
 
@@ -388,7 +393,7 @@ def bulk_refresh_us_market(db: Session, force_full: bool = False) -> dict:
         bar_batch = int(os.getenv("MARKET_BAR_UPSERT_BATCH", "10000"))
         snapshot_batch = int(os.getenv("MARKET_SNAPSHOT_INSERT_BATCH", "500"))
 
-        for data in provider.iter_us_bulk_history(archive, tail=NORMALIZED_HISTORY_DAYS):
+        for data in provider.iter_us_bulk_history(archive, tail=BROAD_OPPORTUNITY_HISTORY_DAYS):
             seen += 1
             provider_symbol = data["symbol"].upper()
             canonical = provider_symbol if provider_symbol in symbols else unique_keys.get(symbol_key(provider_symbol))
@@ -403,7 +408,7 @@ def bulk_refresh_us_market(db: Session, force_full: bool = False) -> dict:
                 _record_alias(db, canonical, provider_symbol)
             matched.add(canonical)
             data["symbol"] = canonical
-            snapshot = _snapshot_from_rows(data)
+            snapshot = _snapshot_from_rows(data, min_bars=BROAD_OPPORTUNITY_MIN_BARS, tail_days=BROAD_OPPORTUNITY_HISTORY_DAYS)
             if snapshot is None:
                 continue
             eligible += 1
@@ -497,7 +502,7 @@ def bulk_refresh_us_market(db: Session, force_full: bool = False) -> dict:
 def bootstrap_needed_symbols(db: Session, limit: int = 8) -> list[str]:
     covered = {
         symbol for symbol, count in db.query(NormalizedDailyBar.symbol, func.count(NormalizedDailyBar.id))
-        .group_by(NormalizedDailyBar.symbol).all() if count >= 220
+        .group_by(NormalizedDailyBar.symbol).all() if count >= BROAD_OPPORTUNITY_MIN_BARS
     }
     return [r.symbol for r in sorted(_nasdaq_registry(db), key=lambda x: x.symbol) if r.symbol not in covered][:limit]
 
@@ -532,11 +537,13 @@ def pipeline_status(db: Session) -> dict:
         "universe_symbols": universe,
         "stock_symbols": stocks,
         "etf_symbols": etfs,
-        "symbols_with_220_plus_bars": covered,
+        "symbols_with_broad_opportunity_history": covered,
         "coverage_percent": round(covered / universe * 100, 1) if universe else 0.0,
         "normalized_bar_count": bars,
         "normalized_table_bytes": relation_bytes,
-        "history_days_retained_per_symbol": NORMALIZED_HISTORY_DAYS,
+        "tracked_history_days_retained_per_symbol": NORMALIZED_HISTORY_DAYS,
+        "broad_opportunity_history_days_retained_per_symbol": BROAD_OPPORTUNITY_HISTORY_DAYS,
+        "broad_opportunity_min_bars": BROAD_OPPORTUNITY_MIN_BARS,
         "market_snapshots_retained_per_symbol": MARKET_SNAPSHOT_KEEP_PER_SYMBOL,
         "latest_bar_date": latest.bar_date if latest else None,
         "broad_scan_ready": covered >= max(100, int(universe * .60)) if universe else False,
