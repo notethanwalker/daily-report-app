@@ -103,21 +103,35 @@ def _asset_type(registry: SymbolRegistry | None, payload: dict) -> str:
     return str((registry.asset_type if registry else None) or payload.get("type") or payload.get("asset_type") or "").strip().lower()
 
 
+def _blocked_security(registry: SymbolRegistry | None, payload: dict) -> bool:
+    asset = _asset_type(registry, payload)
+    if any(term in asset for term in ("warrant", "unit", "right", "preferred", "preference", "bond", "note", "fund")):
+        return True
+    name = str((registry.name if registry else None) or payload.get("name") or "").lower()
+    blocked = (
+        " warrant", " warrants", " unit", " units", " right", " rights",
+        " preferred", " preference", " notes due", " bond", " fund",
+    )
+    return any(term in name for term in blocked)
+
+
 def _is_scannable(registry: SymbolRegistry | None, payload: dict, include_etfs: bool) -> bool:
     asset = _asset_type(registry, payload)
     if "etf" in asset:
         return include_etfs
+    if _blocked_security(registry, payload):
+        return False
     if any(x in asset for x in ("stock", "equity", "common")):
         return True
-    return bool(registry and (registry.provider_ids or {}).get("universe_source") == "Nasdaq Trader" and asset != "etf")
+    return bool(
+        registry
+        and (registry.provider_ids or {}).get("universe_source") == "Nasdaq Trader"
+        and not asset
+    )
 
 
 def _registry_scannable_count(registry: dict[str, SymbolRegistry], include_etfs: bool) -> int:
-    count = 0
-    for reg in registry.values():
-        if _is_scannable(reg, {}, include_etfs):
-            count += 1
-    return count
+    return sum(1 for reg in registry.values() if _is_scannable(reg, {}, include_etfs))
 
 
 def scan_cached_market(
@@ -214,13 +228,13 @@ def scan_cached_market(
     coverage_pct = round(scanned / registry_scannable * 100.0, 1) if registry_scannable else 0.0
     technical_coverage_pct = round(technical_complete / scanned * 100.0, 1) if scanned else 0.0
     stooq = _pipeline_state(db, "stooq_manual_archive")
+    coverage_bootstrap = _pipeline_state(db, "opportunity_coverage_bootstrap")
     canonical_ready = stooq.get("status") == "ready" and bool(stooq.get("canonical"))
-    broad_state = "ready" if canonical_ready and coverage_pct >= 95 else "partial"
-    data_strategy = (
-        "Canonical broad archive is ready. Ranking reads only the normalized/cached market layer and performs zero provider calls."
-        if canonical_ready
-        else "Broad archive is not canonical. Ranking is limited to symbols with valid cached market snapshots; coverage is reported explicitly and no market-wide completeness claim is made. The scan performs zero provider calls."
-    )
+    broad_state = "ready" if coverage_pct >= 95 and technical_coverage_pct >= 95 else "partial"
+    if broad_state == "ready":
+        data_strategy = "Broad equity technical coverage is ready from the normalized/cached market layer. Ranking performs zero provider calls; historical inputs may be sourced from the canonical archive or the low-memory Stooq per-symbol bootstrap."
+    else:
+        data_strategy = "Broad equity coverage is still converging. Ranking is limited to symbols with valid cached market snapshots; coverage is reported explicitly and the scan itself performs zero provider calls."
 
     result = {
         "strong": strong[:limit_per_bucket],
@@ -246,7 +260,7 @@ def scan_cached_market(
             "registry_scannable": registry_scannable,
             "cached_scannable": scanned,
             "technical_complete": technical_complete,
-            "limitation": None if broad_state == "ready" else "Results are valid for the cached subset only; the current scan must not be interpreted as complete U.S. market coverage.",
+            "limitation": None if broad_state == "ready" else "Results are valid for the currently cached equity subset while background coverage converges toward at least 95%.",
         },
         "verification": {
             "verified": verified,
@@ -258,6 +272,7 @@ def scan_cached_market(
             "canonical": bool(stooq.get("canonical")),
             "coverage_ratio": stooq.get("coverage_ratio"),
         },
+        "coverage_bootstrap": coverage_bootstrap,
         "include_etfs": include_etfs,
         "thresholds": THRESHOLDS.__dict__,
         "liquidity_filter": {
