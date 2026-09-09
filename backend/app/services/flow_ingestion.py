@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..database import SessionLocal
 from ..models import FlowEvent
 from ..providers.squawkflow import SquawkFlowProvider
 
 FLOW_RETENTION_DAYS = 30
 FLOW_BATCH_LIMIT = 100
+FLOW_REFRESH_SECONDS = 5 * 60
 
 
 def _parse_time(value: Any) -> datetime:
@@ -43,13 +46,6 @@ def _fingerprint(event: dict[str, Any]) -> str:
 
 
 def persist_flow_events(db: Session, events: list[dict[str, Any]], provider: str = "SquawkFlow") -> dict[str, Any]:
-    """Persist real provider observations with bounded, deterministic dedupe.
-
-    No synthetic observations are generated. Existing rows are identified by a
-    fingerprint stored in the JSON payload, allowing repeated provider snapshots
-    of the same contract/minute/aggregate to be ignored while preserving later
-    changed observations for persistence analysis.
-    """
     cutoff = datetime.now(timezone.utc) - timedelta(days=FLOW_RETENTION_DAYS)
     recent = (
         db.query(FlowEvent)
@@ -114,3 +110,21 @@ def refresh_flow_cache(db: Session, limit: int = FLOW_BATCH_LIMIT) -> dict[str, 
         "persisted": persisted,
         "pruned": pruned,
     }
+
+
+def _refresh_once() -> None:
+    db = SessionLocal()
+    try:
+        refresh_flow_cache(db, FLOW_BATCH_LIMIT)
+    except Exception:
+        db.rollback()
+    finally:
+        db.close()
+
+
+async def flow_refresh_loop() -> None:
+    """Refresh the public flow source well inside its anonymous hourly quota."""
+    await asyncio.to_thread(_refresh_once)
+    while True:
+        await asyncio.sleep(FLOW_REFRESH_SECONDS)
+        await asyncio.to_thread(_refresh_once)
