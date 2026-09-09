@@ -9,7 +9,8 @@ from ..models import MarketSnapshot, SymbolRegistry
 from ..normalized_market_models import MarketPipelineState, NormalizedDailyBar
 from ..providers.stooq import symbol_key
 from .market_data_pipeline import (
-    NORMALIZED_HISTORY_DAYS,
+    BROAD_OPPORTUNITY_HISTORY_DAYS,
+    BROAD_OPPORTUNITY_MIN_BARS,
     _alias_maps,
     _nasdaq_registry,
     _snapshot_from_rows,
@@ -17,7 +18,8 @@ from .market_data_pipeline import (
 )
 
 STATE_KEY = "opportunity_external_ingest"
-MIN_BARS = 220
+MIN_BARS = BROAD_OPPORTUNITY_MIN_BARS
+RETAIN_DAYS = BROAD_OPPORTUNITY_HISTORY_DAYS
 MAX_RECORDS_PER_BATCH = 200
 
 
@@ -45,42 +47,51 @@ def _eligible_stock(row: SymbolRegistry) -> bool:
     return not any(term in name for term in blocked)
 
 
-def _coverage(db: Session) -> dict:
-    registry_rows = _nasdaq_registry(db)
-    eligible_symbols = {r.symbol.upper() for r in registry_rows if _eligible_stock(r)}
-    covered = {
-        symbol for (symbol,) in db.query(NormalizedDailyBar.symbol)
-        .filter(NormalizedDailyBar.symbol.in_(eligible_symbols))
+def _eligible_symbols(db: Session) -> list[str]:
+    return sorted(r.symbol.upper() for r in _nasdaq_registry(db) if _eligible_stock(r))
+
+
+def _covered_symbols(db: Session) -> set[str]:
+    return {
+        symbol
+        for (symbol,) in db.query(NormalizedDailyBar.symbol)
+        .filter(NormalizedDailyBar.high.is_not(None), NormalizedDailyBar.low.is_not(None))
         .group_by(NormalizedDailyBar.symbol)
         .having(func.count(NormalizedDailyBar.id) >= MIN_BARS)
         .all()
-    } if eligible_symbols else set()
+    }
+
+
+def _coverage(db: Session) -> dict:
+    eligible = _eligible_symbols(db)
+    covered = _covered_symbols(db)
+    covered_count = len(set(eligible) & covered)
     return {
-        "eligible_stocks": len(eligible_symbols),
-        "covered_stocks": len(covered),
-        "coverage_percent": round(len(covered) / len(eligible_symbols) * 100.0, 2) if eligible_symbols else 0.0,
+        "eligible_stocks": len(eligible),
+        "covered_stocks": covered_count,
+        "coverage_percent": round(covered_count / len(eligible) * 100.0, 2) if eligible else 0.0,
+        "minimum_bars": MIN_BARS,
+        "retained_sessions": RETAIN_DAYS,
     }
 
 
 def missing_opportunity_symbols(db: Session, *, limit: int = 500, cursor: str = "") -> dict:
     limit = max(1, min(int(limit), 1000))
-    eligible = sorted(r.symbol.upper() for r in _nasdaq_registry(db) if _eligible_stock(r))
-    covered = {
-        symbol for (symbol,) in db.query(NormalizedDailyBar.symbol)
-        .group_by(NormalizedDailyBar.symbol)
-        .having(func.count(NormalizedDailyBar.id) >= MIN_BARS)
-        .all()
-    }
+    eligible = _eligible_symbols(db)
+    covered = _covered_symbols(db)
     missing = [s for s in eligible if s not in covered and (not cursor or s > cursor)]
     selected = missing[:limit]
+    covered_count = len(set(eligible) & covered)
     return {
         "symbols": selected,
         "cursor": selected[-1] if selected else cursor,
         "remaining_from_cursor": len(missing),
         "coverage": {
             "eligible_stocks": len(eligible),
-            "covered_stocks": len(set(eligible) & covered),
-            "coverage_percent": round(len(set(eligible) & covered) / len(eligible) * 100.0, 2) if eligible else 0.0,
+            "covered_stocks": covered_count,
+            "coverage_percent": round(covered_count / len(eligible) * 100.0, 2) if eligible else 0.0,
+            "minimum_bars": MIN_BARS,
+            "retained_sessions": RETAIN_DAYS,
         },
     }
 
@@ -126,7 +137,10 @@ def ingest_opportunity_batch(
 
         usable = [
             r for r in rows
-            if r.get("close") is not None and r.get("high") is not None and r.get("low") is not None and str(r.get("date") or "")[:10]
+            if r.get("close") is not None
+            and r.get("high") is not None
+            and r.get("low") is not None
+            and str(r.get("date") or "")[:10]
         ]
         if len(usable) < MIN_BARS:
             rejected += 1
@@ -136,35 +150,41 @@ def ingest_opportunity_batch(
 
         data = {
             "symbol": canonical,
-            "rows": usable[-NORMALIZED_HISTORY_DAYS:],
+            "rows": usable[-RETAIN_DAYS:],
             "provider": source,
             "source_url": source_url,
             "retrieved_at": _now(),
         }
         try:
-            bars_touched += persist_normalized_history(db, data, commit=False, keep_days=NORMALIZED_HISTORY_DAYS)
-            snapshot = _snapshot_from_rows(data, min_bars=MIN_BARS, tail_days=NORMALIZED_HISTORY_DAYS)
-            if not snapshot:
-                raise RuntimeError("technical snapshot could not be calculated")
-            snapshot["canonical_history_source"] = source
-            snapshot["latest_bar_source"] = source
-            snapshot["technical_source"] = "normalized_daily_bars"
-            snapshot["is_materialized_cache"] = True
-            snapshot["opportunity_bulk_ingest"] = True
-            if raw.get("all_time_high") is not None:
-                try:
-                    ath = float(raw["all_time_high"])
-                    snapshot["all_time_high"] = ath
-                    price = snapshot.get("price")
-                    snapshot["price_vs_ath_percent"] = None if not price or ath == 0 else ((float(price) / ath) - 1.0) * 100.0
-                except (TypeError, ValueError):
-                    pass
-            db.add(MarketSnapshot(
-                symbol=canonical,
-                as_of=str(snapshot.get("as_of") or ""),
-                provider=source,
-                payload=snapshot,
-            ))
+            # Each symbol gets its own savepoint. A malformed record cannot roll back
+            # successful symbols earlier in the same external batch.
+            with db.begin_nested():
+                touched = persist_normalized_history(db, data, commit=False, keep_days=RETAIN_DAYS)
+                snapshot = _snapshot_from_rows(data, min_bars=MIN_BARS, tail_days=RETAIN_DAYS)
+                if not snapshot:
+                    raise RuntimeError("technical snapshot could not be calculated")
+                snapshot["canonical_history_source"] = source
+                snapshot["latest_bar_source"] = source
+                snapshot["technical_source"] = "normalized_daily_bars"
+                snapshot["is_materialized_cache"] = True
+                snapshot["opportunity_bulk_ingest"] = True
+                if raw.get("all_time_high") is not None:
+                    try:
+                        ath = float(raw["all_time_high"])
+                        snapshot["all_time_high"] = ath
+                        price = snapshot.get("price")
+                        snapshot["price_vs_ath_percent"] = None if not price or ath == 0 else ((float(price) / ath) - 1.0) * 100.0
+                    except (TypeError, ValueError):
+                        pass
+                db.add(MarketSnapshot(
+                    symbol=canonical,
+                    as_of=str(snapshot.get("as_of") or ""),
+                    provider=source,
+                    payload=snapshot,
+                ))
+                db.flush()
+
+            bars_touched += touched
             accepted += 1
             snapshots_written += 1
             accepted_symbols.append(canonical)
@@ -172,7 +192,6 @@ def ingest_opportunity_batch(
             if last_date:
                 newest_bar = max(newest_bar or last_date, last_date)
         except Exception as exc:
-            db.rollback()
             rejected += 1
             if len(rejected_examples) < 12:
                 rejected_examples.append({"symbol": source_symbol, "reason": str(exc)[:180]})
