@@ -27,6 +27,7 @@ jobs:
       id-token: write
     env:
       DAILY_REPORT_API_BASE: https://daily-report-api-ero2.onrender.com
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
