@@ -10,7 +10,7 @@ from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from ..normalized_market_models import MarketPipelineState
 from ..providers.alpaca_market_data import AlpacaMarketDataProvider
 from ..services.calibration_v4 import CANDIDATE_MODEL_VERSION, ROTATION_MODEL_VERSION, rotation_calibration_summary
-from ..services.candidate_funnel_v4 import build_candidate_funnel, enqueue_deep_enrichment
+from ..services.candidate_funnel_v4 import build_candidate_funnel, enqueue_deep_enrichment, get_candidate_funnel_cache
 from ..services.classification_v4 import blend_rotation_context, rotation_exposures
 from ..services.feature_model_v4 import presentation_payload
 from ..services.fundamental_score import build_fundamental_score
@@ -54,7 +54,10 @@ def rotation_history(days:int=Query(90,ge=1,le=400),db:Session=Depends(get_db),u
 def rotation_calibration(horizon:int=Query(20,ge=5,le=60),db:Session=Depends(get_db),user:str=Depends(current_user)):return rotation_calibration_summary(db,horizon)
 
 @router.get("/candidates")
-def candidates(limit:int=Query(50,ge=1,le=200),db:Session=Depends(get_db),user:str=Depends(current_user)):return build_candidate_funnel(db,build_rotation_model(db),limit=limit,enqueue_enrichment=False)
+def candidates(limit:int=Query(50,ge=1,le=200),db:Session=Depends(get_db),user:str=Depends(current_user)):
+    cached=get_candidate_funnel_cache(db,limit)
+    if cached:return cached
+    return build_candidate_funnel(db,build_rotation_model(db),limit=limit,enqueue_enrichment=False)
 @router.post("/candidates/enrich")
 def enrich_candidates(limit:int=Query(50,ge=1,le=200),db:Session=Depends(get_db),user:str=Depends(current_user)):
     f=build_candidate_funnel(db,build_rotation_model(db),limit=limit,enqueue_enrichment=False);symbols=f.get("deep_enrichment_symbols",[]);return {"shortlist":symbols,"jobs_added":enqueue_deep_enrichment(db,symbols),"policy":"Explicit bounded enrichment action."}

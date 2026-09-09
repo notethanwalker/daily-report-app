@@ -49,6 +49,7 @@ from .services import refresh_scheduler as _refresh_scheduler
 from .services.refresh_scheduler import bulk_market_loop, scheduler_loop, yahoo_bootstrap_loop
 from .services.tracked_market_fallback import refresh_tracked_market_snapshot_with_fallback
 from .services.opportunity_incremental import opportunity_incremental_loop
+from .services.candidate_funnel_v4 import candidate_snapshot_loop
 from .services.stooq_worker import stooq_import_loop
 from .services.rotation import SECTORS
 from .services.macro_universe import EXPANDED_MACRO
@@ -118,4 +119,4 @@ async def self_keepalive_loop():
         except Exception:pass
 @app.on_event("startup")
 async def start_refresh_scheduler():
-    asyncio.create_task(scheduler_loop());asyncio.create_task(bulk_market_loop());asyncio.create_task(yahoo_bootstrap_loop());asyncio.create_task(opportunity_incremental_loop());asyncio.create_task(stooq_import_loop());asyncio.create_task(calibration_loop());asyncio.create_task(feature_version_loop());asyncio.create_task(self_keepalive_loop())
+    asyncio.create_task(scheduler_loop());asyncio.create_task(bulk_market_loop());asyncio.create_task(yahoo_bootstrap_loop());asyncio.create_task(opportunity_incremental_loop());asyncio.create_task(candidate_snapshot_loop());asyncio.create_task(stooq_import_loop());asyncio.create_task(calibration_loop());asyncio.create_task(feature_version_loop());asyncio.create_task(self_keepalive_loop())
