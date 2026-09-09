@@ -13,6 +13,7 @@ from ..models import PortfolioHolding, UserWatchlistItem
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from ..normalized_market_models import MarketPipelineState
 from ..services.market_data_pipeline import pipeline_status
+from ..services.opportunity_bulk_ingest import ingest_opportunity_batch
 from ..services.opportunity_scanner import scan_cached_market
 from ..services.stooq_durable_import import (
     create_upload as create_durable_upload,
@@ -31,6 +32,13 @@ router = APIRouter(prefix="/api/v1/opportunities", tags=["opportunity-scanner"])
 class StooqUploadInit(BaseModel):
     filename: str = "d_us_txt.zip"
     total_bytes: int
+
+
+class OpportunityBulkBatch(BaseModel):
+    source: str
+    source_url: str = ""
+    batch_id: str | None = None
+    records: list[dict]
 
 
 def _require_owner(db: Session, user: str) -> None:
@@ -143,10 +151,11 @@ def opportunity_data_pipeline(db: Session = Depends(get_db), user: str = Depends
     incremental = _state(db, "opportunity_incremental")
     result["canonical_stooq_archive"] = canonical
     result["incremental_freshness"] = incremental
+    result["external_bulk_ingest"] = _state(db, "opportunity_external_ingest")
     result["canonical_history_ready"] = canonical.get("status") == "ready" and bool(canonical.get("canonical"))
     result["effective_history_policy"] = {
-        "historical_authority": "Stooq durable manual archive",
-        "incremental_daily_freshness": "Yahoo Finance after canonical import",
+        "historical_authority": "Cached normalized OHLCV from bulk ingest; Stooq archive when available",
+        "incremental_daily_freshness": "Yahoo Finance / Stooq repair layer",
         "tracked_symbol_freshness": "Twelve Data with Yahoo verification",
     }
     return result
@@ -242,3 +251,21 @@ def token_finalize_stooq_archive(upload_id: str, request: Request, db: Session =
         return finalize_durable_upload(db, upload_id)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/bulk-ingest")
+def bulk_ingest_opportunities(payload: OpportunityBulkBatch, request: Request, db: Session = Depends(get_db)):
+    _require_import_token(request)
+    try:
+        return ingest_opportunity_batch(
+            db,
+            payload.records,
+            source=payload.source.strip() or "External bulk source",
+            source_url=payload.source_url,
+            batch_id=payload.batch_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(exc)[:1000]) from exc
