@@ -33,6 +33,7 @@ _last_bulk_attempt = None
 _last_cleanup = None
 QUEUE_RUNNING_TIMEOUT_MINUTES = 30
 QUEUE_HISTORY_RETENTION_DAYS = 14
+DEPLOYMENT_WARM_SYMBOLS = {x.strip().upper() for x in os.getenv("DEPLOYMENT_WARM_SYMBOLS", "MU,NVDA").split(",") if x.strip()}
 
 
 def _user_symbols(db):
@@ -79,6 +80,27 @@ def recover_and_prune_queue(db):
     return {"reclaimed": len(stale), "pruned": int(deleted or 0)}
 
 
+def seed_historical_from_normalized(db, symbols, keep=260):
+    seeded_symbols = inserted = 0
+    for symbol in sorted(set(str(x).upper() for x in symbols if x)):
+        existing_count = db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol == symbol).count()
+        if existing_count >= 120:
+            continue
+        rows = db.query(NormalizedDailyBar).filter(NormalizedDailyBar.symbol == symbol).order_by(NormalizedDailyBar.bar_date.desc()).limit(keep).all()
+        if len(rows) < 120:
+            continue
+        existing_dates = {r.bar_date for r in db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol == symbol).all()}
+        for row in reversed(rows):
+            if row.bar_date in existing_dates or row.close is None:
+                continue
+            db.add(HistoricalDailyBar(symbol=symbol, bar_date=row.bar_date, close=float(row.close), volume=float(row.volume or 0), provider=str(row.provider or "normalized_daily_bars"), source_url=str(row.source_url or "")))
+            inserted += 1
+        seeded_symbols += 1
+    if inserted:
+        db.commit()
+    return {"seeded_symbols": seeded_symbols, "inserted_rows": inserted}
+
+
 def _history_needs_refresh(db, symbol, now):
     count = db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol == symbol).count()
     if count < 120:
@@ -96,7 +118,7 @@ def _history_needs_refresh(db, symbol, now):
 
 def enqueue_stale(db):
     now = datetime.now(timezone.utc)
-    users = set(_user_symbols(db))
+    users = set(_user_symbols(db)) | DEPLOYMENT_WARM_SYMBOLS
     macro = set(SECTORS)
     for symbol in sorted(users):
         market = db.query(MarketSnapshot).filter(MarketSnapshot.symbol == symbol).order_by(MarketSnapshot.retrieved_at.desc()).first()
@@ -299,6 +321,7 @@ def run_cycle():
     global _last_cleanup
     db = SessionLocal()
     try:
+        seed_historical_from_normalized(db, set(_user_symbols(db)) | set(SECTORS) | DEPLOYMENT_WARM_SYMBOLS)
         enqueue_stale(db); process_queue(db, 4)
         try:
             _sync_universe_if_due(db)

@@ -11,6 +11,7 @@ PHILOSOPHY = (ROOT / "docs/DAILY_REPORT_APP_DESIGN_PHILOSOPHY.md").read_text(enc
 STACK = (ROOT / "backend/app/routers/stack_v4.py").read_text(encoding="utf-8")
 MAIN = (ROOT / "backend/app/main.py").read_text(encoding="utf-8")
 GDELT = (ROOT / "backend/app/providers/gdelt.py").read_text(encoding="utf-8")
+SCHEDULER = (ROOT / "backend/app/services/refresh_scheduler.py").read_text(encoding="utf-8")
 
 
 class DesignPhilosophyContract(unittest.TestCase):
@@ -70,6 +71,12 @@ class DesignPhilosophyContract(unittest.TestCase):
         self.assertIn('timespan=f"{hours}h"', MAIN)
         self.assertIn('suffix=f" when:{days}d"', GDELT)
         self.assertIn('_google_news_fallback(query, max_records, timespan)', GDELT)
+
+    def test_cold_start_reuses_normalized_history_and_warms_deployment_symbols(self):
+        self.assertIn('DEPLOYMENT_WARM_SYMBOLS', SCHEDULER)
+        self.assertIn('"MU,NVDA"', SCHEDULER)
+        self.assertIn('seed_historical_from_normalized', SCHEDULER)
+        self.assertIn('users = set(_user_symbols(db)) | DEPLOYMENT_WARM_SYMBOLS', SCHEDULER)
 
     def test_mobile_progressive_disclosure_is_preserved(self):
         self.assertIn('@media(max-width:560px)', V4_CSS)
