@@ -13,6 +13,7 @@ from .market_data_pipeline import (
     BROAD_OPPORTUNITY_MIN_BARS,
     _alias_maps,
     _nasdaq_registry,
+    _snapshot_from_normalized,
     _snapshot_from_rows,
     persist_normalized_history,
 )
@@ -51,15 +52,41 @@ def _eligible_symbols(db: Session) -> list[str]:
     return sorted(r.symbol.upper() for r in _nasdaq_registry(db) if _eligible_stock(r))
 
 
-def _covered_symbols(db: Session) -> set[str]:
+def _coverage_rows(db: Session) -> dict[str, dict]:
+    rows = db.query(
+        NormalizedDailyBar.symbol,
+        func.count(NormalizedDailyBar.id).label("bars"),
+        func.max(NormalizedDailyBar.bar_date).label("latest_bar_date"),
+    ).filter(
+        NormalizedDailyBar.high.is_not(None),
+        NormalizedDailyBar.low.is_not(None),
+    ).group_by(NormalizedDailyBar.symbol).all()
     return {
-        symbol
-        for (symbol,) in db.query(NormalizedDailyBar.symbol)
-        .filter(NormalizedDailyBar.high.is_not(None), NormalizedDailyBar.low.is_not(None))
-        .group_by(NormalizedDailyBar.symbol)
-        .having(func.count(NormalizedDailyBar.id) >= MIN_BARS)
-        .all()
+        str(symbol).upper(): {"bars": int(bars or 0), "latest_bar_date": str(latest or "")[:10]}
+        for symbol, bars, latest in rows
     }
+
+
+def _covered_symbols(db: Session) -> set[str]:
+    return {symbol for symbol, item in _coverage_rows(db).items() if item["bars"] >= MIN_BARS}
+
+
+def _consensus_market_date(db: Session, eligible: set[str]) -> str | None:
+    if not eligible:
+        return None
+    threshold = max(25, min(250, int(len(eligible) * 0.05)))
+    rows = db.query(
+        NormalizedDailyBar.bar_date,
+        func.count(func.distinct(NormalizedDailyBar.symbol)).label("symbols"),
+    ).filter(
+        NormalizedDailyBar.symbol.in_(eligible),
+        NormalizedDailyBar.high.is_not(None),
+        NormalizedDailyBar.low.is_not(None),
+    ).group_by(NormalizedDailyBar.bar_date).order_by(NormalizedDailyBar.bar_date.desc()).limit(15).all()
+    for bar_date, symbol_count in rows:
+        if int(symbol_count or 0) >= threshold:
+            return str(bar_date)[:10]
+    return str(rows[0][0])[:10] if rows else None
 
 
 def _coverage(db: Session) -> dict:
@@ -86,6 +113,7 @@ def missing_opportunity_symbols(db: Session, *, limit: int = 500, cursor: str = 
         "symbols": selected,
         "cursor": selected[-1] if selected else cursor,
         "remaining_from_cursor": len(missing),
+        "mode": "bootstrap",
         "coverage": {
             "eligible_stocks": len(eligible),
             "covered_stocks": covered_count,
@@ -93,6 +121,32 @@ def missing_opportunity_symbols(db: Session, *, limit: int = 500, cursor: str = 
             "minimum_bars": MIN_BARS,
             "retained_sessions": RETAIN_DAYS,
         },
+    }
+
+
+def opportunity_refresh_targets(db: Session, *, limit: int = 200) -> dict:
+    limit = max(1, min(int(limit), 1000))
+    eligible = set(_eligible_symbols(db))
+    coverage_rows = _coverage_rows(db)
+    covered = {s for s in eligible if coverage_rows.get(s, {}).get("bars", 0) >= MIN_BARS}
+    reference_date = _consensus_market_date(db, eligible)
+    stale = []
+    if reference_date:
+        stale = sorted(
+            (
+                (coverage_rows.get(symbol, {}).get("latest_bar_date") or "", symbol)
+                for symbol in covered
+                if (coverage_rows.get(symbol, {}).get("latest_bar_date") or "") < reference_date
+            ),
+            key=lambda item: (item[0], item[1]),
+        )
+    selected = [symbol for _, symbol in stale[:limit]]
+    return {
+        "symbols": selected,
+        "mode": "refresh",
+        "reference_date": reference_date,
+        "stale_count": len(stale),
+        "coverage": _coverage(db),
     }
 
 
@@ -112,8 +166,10 @@ def ingest_opportunity_batch(
     registry_rows = _nasdaq_registry(db)
     exact, aliases = _alias_maps(registry_rows)
     registry_by_symbol: dict[str, SymbolRegistry] = {r.symbol.upper(): r for r in registry_rows}
+    coverage_before = _coverage_rows(db)
 
     accepted = rejected = bars_touched = snapshots_written = 0
+    refresh_updates = bootstrap_updates = 0
     rejected_examples: list[dict] = []
     accepted_symbols: list[str] = []
     newest_bar = None
@@ -142,10 +198,15 @@ def ingest_opportunity_batch(
             and r.get("low") is not None
             and str(r.get("date") or "")[:10]
         ]
-        if len(usable) < MIN_BARS:
+        existing_bars = int(coverage_before.get(canonical, {}).get("bars") or 0)
+        is_refresh = existing_bars >= MIN_BARS
+        if not usable or (not is_refresh and len(usable) < MIN_BARS):
             rejected += 1
             if len(rejected_examples) < 12:
-                rejected_examples.append({"symbol": source_symbol, "reason": f"insufficient_ohlcv:{len(usable)}"})
+                rejected_examples.append({
+                    "symbol": source_symbol,
+                    "reason": f"insufficient_ohlcv:{len(usable)}" if usable else "no_usable_ohlcv",
+                })
             continue
 
         data = {
@@ -156,18 +217,28 @@ def ingest_opportunity_batch(
             "retrieved_at": _now(),
         }
         try:
-            # Each symbol gets its own savepoint. A malformed record cannot roll back
-            # successful symbols earlier in the same external batch.
             with db.begin_nested():
                 touched = persist_normalized_history(db, data, commit=False, keep_days=RETAIN_DAYS)
-                snapshot = _snapshot_from_rows(data, min_bars=MIN_BARS, tail_days=RETAIN_DAYS)
+                if is_refresh and len(usable) < MIN_BARS:
+                    db.flush()
+                    snapshot = _snapshot_from_normalized(
+                        db,
+                        canonical,
+                        min_bars=MIN_BARS,
+                        tail_days=RETAIN_DAYS,
+                    )
+                else:
+                    snapshot = _snapshot_from_rows(data, min_bars=MIN_BARS, tail_days=RETAIN_DAYS)
                 if not snapshot:
                     raise RuntimeError("technical snapshot could not be calculated")
-                snapshot["canonical_history_source"] = source
+                snapshot["canonical_history_source"] = source if not is_refresh else (
+                    snapshot.get("canonical_history_source") or "normalized_daily_bars"
+                )
                 snapshot["latest_bar_source"] = source
                 snapshot["technical_source"] = "normalized_daily_bars"
                 snapshot["is_materialized_cache"] = True
                 snapshot["opportunity_bulk_ingest"] = True
+                snapshot["opportunity_refresh_mode"] = "incremental" if is_refresh else "bootstrap"
                 if raw.get("all_time_high") is not None:
                     try:
                         ath = float(raw["all_time_high"])
@@ -187,6 +258,8 @@ def ingest_opportunity_batch(
             bars_touched += touched
             accepted += 1
             snapshots_written += 1
+            refresh_updates += int(is_refresh)
+            bootstrap_updates += int(not is_refresh)
             accepted_symbols.append(canonical)
             last_date = str(usable[-1].get("date") or "")[:10]
             if last_date:
@@ -206,6 +279,8 @@ def ingest_opportunity_batch(
         "requested": len(records),
         "accepted": accepted,
         "rejected": rejected,
+        "bootstrap_updates": bootstrap_updates,
+        "refresh_updates": refresh_updates,
         "bars_touched": bars_touched,
         "snapshots_written": snapshots_written,
         "newest_bar_date": newest_bar,
