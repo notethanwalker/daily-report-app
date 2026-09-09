@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from ..database import SessionLocal
 from ..models import FeatureSnapshot, MarketSnapshot, RefreshQueueItem, SymbolRegistry
-from ..normalized_market_models import NormalizedDailyBar
+from ..normalized_market_models import MarketPipelineState, NormalizedDailyBar
 from .classification_v4 import blend_rotation_context
 from .opportunity_convergence import evaluate_convergence_inputs
 from .opportunity_scanner import scan_cached_market
 from .provider_orchestrator import FRESHNESS_POLICIES
 
-CANDIDATE_MODEL_VERSION="candidate-funnel-v4.9"
+CANDIDATE_MODEL_VERSION="candidate-funnel-v4.10"
 DEEP_ENRICHMENT_LIMIT=25
+CANDIDATE_CACHE_KEY="v4_candidate_funnel_cache"
+CANDIDATE_CACHE_LIMIT=100
+CANDIDATE_CACHE_SECONDS=5*60
 
 
 def _f(v,default=0.0):
@@ -47,10 +53,10 @@ def _setup_type(macro):
     return "technical_only"
 def _shortlist_bars(db,symbols:list[str],per_symbol:int=90):
     if not symbols:return {}
-    rows=db.query(NormalizedDailyBar).filter(NormalizedDailyBar.symbol.in_(symbols)).order_by(NormalizedDailyBar.symbol.asc(),NormalizedDailyBar.bar_date.desc()).all();grouped=defaultdict(list)
-    for row in rows:
-        if len(grouped[row.symbol])<per_symbol:grouped[row.symbol].append(row)
-    return {s:list(reversed(v)) for s,v in grouped.items()}
+    ranked=db.query(NormalizedDailyBar.id.label("id"),func.row_number().over(partition_by=NormalizedDailyBar.symbol,order_by=NormalizedDailyBar.bar_date.desc()).label("rn")).filter(NormalizedDailyBar.symbol.in_(symbols)).subquery()
+    rows=db.query(NormalizedDailyBar).join(ranked,NormalizedDailyBar.id==ranked.c.id).filter(ranked.c.rn<=per_symbol).order_by(NormalizedDailyBar.symbol.asc(),NormalizedDailyBar.bar_date.desc()).all();grouped=defaultdict(list)
+    for row in rows:grouped[row.symbol].append(row)
+    return {symbol:list(reversed(values)) for symbol,values in grouped.items()}
 def enqueue_deep_enrichment(db:Session,symbols:list[str])->int:
     added=0
     for symbol in symbols[:DEEP_ENRICHMENT_LIMIT]:
@@ -83,3 +89,32 @@ def build_candidate_funnel(db:Session,rotation:dict,limit:int=50,enqueue_enrichm
     universe_rule="Measured cached stock subset; minimum price and average-dollar-volume filters."
     if not coverage.get("market_wide_ready"):universe_rule+=" Broad-market coverage is partial and is shown explicitly."
     return {"model_version":CANDIDATE_MODEL_VERSION,"coverage":coverage,"verification":scan.get("verification") or {},"archive_state":scan.get("archive_state") or {},"last_cache_update":scan.get("last_cache_update"),"stages":[{"name":"Universe coverage","input":scan.get("counts",{}).get("registry_scannable",0),"output":scan.get("counts",{}).get("cached_symbols_scanned",0),"rule":universe_rule},{"name":"Technical completeness","input":scan.get("counts",{}).get("cached_symbols_scanned",0),"output":scan.get("counts",{}).get("technical_inputs_complete",0),"rule":"Require valid price, Williams %R and 100MA-distance inputs before any setup ranking."},{"name":"Technical setup","input":scan.get("counts",{}).get("technically_eligible",0),"output":len(source),"rule":"Williams %R + approach to 100MA, preserving strong/weak/near buckets."},{"name":"Macro fit","input":len(source),"output":len(source),"rule":"Blend weighted sector/industry/theme rotation exposures; contribution is confidence-weighted."},{"name":"Rank","input":len(source),"output":len(short),"rule":"55% scanner technical, 25% persisted buy score, 15% confidence-weighted macro, plus bounded liquidity/setup bonuses."},{"name":"Convergence","input":len(short),"output":convergence_ready,"rule":"Stage finalists as Extended → Watching → Approaching → Triggered → Invalidated using Williams reset, 100MA approach from above, independent quality, and confirmation filters."},{"name":"Deep enrichment shortlist","input":len(short),"output":len(deep),"rule":f"At most {DEEP_ENRICHMENT_LIMIT} scanner-only finalists are eligible for explicit fundamentals enrichment."}],"candidates":short,"convergence_counts":convergence_counts,"deep_enrichment_symbols":deep,"deep_enrichment_jobs_added":queued,"source_scan_counts":scan.get("counts",{}),"methodology":"Candidate-first/cache-first. Coverage, technical completeness and verification are reported separately. Opportunity Convergence is a staged alert/readiness model and does not alter base rank. Convergence price history is bulk-loaded for the returned shortlist to avoid per-candidate history queries.","generated_at":datetime.now(timezone.utc).isoformat()}
+
+
+def save_candidate_funnel_cache(db:Session,payload:dict)->None:
+    row=db.get(MarketPipelineState,CANDIDATE_CACHE_KEY)
+    stored={**payload,"cache_written_at":datetime.now(timezone.utc).isoformat()}
+    if row:row.payload=stored
+    else:db.add(MarketPipelineState(key=CANDIDATE_CACHE_KEY,payload=stored))
+    db.commit()
+
+def get_candidate_funnel_cache(db:Session,limit:int=50)->dict|None:
+    row=db.get(MarketPipelineState,CANDIDATE_CACHE_KEY)
+    if not row or not row.payload:return None
+    payload=dict(row.payload or {});candidates=list(payload.get("candidates") or [])[:limit];payload["candidates"]=candidates;payload["served_from_cache"]=True
+    payload["deep_enrichment_symbols"]=[s for s in (payload.get("deep_enrichment_symbols") or []) if s in {x.get("symbol") for x in candidates}]
+    return payload
+
+def refresh_candidate_funnel_cache(db:Session,limit:int=CANDIDATE_CACHE_LIMIT)->dict:
+    from .rotation_model_v4 import build_rotation_model
+    payload=build_candidate_funnel(db,build_rotation_model(db),limit=limit,enqueue_enrichment=False)
+    save_candidate_funnel_cache(db,payload);return payload
+
+async def candidate_snapshot_loop():
+    await asyncio.sleep(5)
+    while True:
+        db=SessionLocal()
+        try:await asyncio.to_thread(refresh_candidate_funnel_cache,db,CANDIDATE_CACHE_LIMIT)
+        except Exception:db.rollback()
+        finally:db.close()
+        await asyncio.sleep(CANDIDATE_CACHE_SECONDS)
