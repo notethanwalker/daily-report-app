@@ -1,0 +1,13 @@
+import fs from 'node:fs';
+const source=fs.readFileSync('preflight-ui-exhaustive-v3.mjs','utf8');
+const vpName=process.env.UI_VIEWPORT_NAME;
+const width=Number(process.env.UI_VIEWPORT_WIDTH);
+const height=Number(process.env.UI_VIEWPORT_HEIGHT);
+if(!vpName||!width||!height) throw new Error('Missing viewport shard environment');
+let fixed=source.replace("if(!(await el.isVisible()).catch(()=>false))continue;if((await el.isDisabled().catch(()=>false)))continue;","if(!(await el.isVisible()))continue;if(await el.isDisabled())continue;");
+if(fixed===source) throw new Error('Expected harness patch target was not found');
+const viewportReplacement=`const VIEWPORTS=[{name:${JSON.stringify(vpName)},width:${width},height:${height}}];`;
+const patched=fixed.replace(/const VIEWPORTS=\[[^\n]*\];/,viewportReplacement);
+if(patched===fixed) throw new Error('Viewport patch target was not found');
+fs.writeFileSync('preflight-ui-exhaustive-v3-shard.mjs',patched);
+await import('./preflight-ui-exhaustive-v3-shard.mjs');
