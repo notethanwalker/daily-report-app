@@ -1,0 +1,61 @@
+name: Render Memory Hardening Once
+on:
+  push:
+    branches: [fix-render-memory-and-recovery-20260909]
+    paths: ['.github/workflows/render-memory-fix-once.yml']
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch scheduler memory controls
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('backend/app/services/refresh_scheduler.py')
+          s=p.read_text()
+          s=s.replace('import asyncio\nimport os\nimport time\n', 'import asyncio\nimport gc\nimport os\nimport re\nimport threading\nimport time\n')
+          s=s.replace('_last_cleanup = None\n', '_last_cleanup = None\n_BROAD_BOOTSTRAP_LOCK = threading.Lock()\n')
+          marker='def _broad_stock_eligible(row):\n'
+          helpers='''def _process_rss_mb():\n    try:\n        with open("/proc/self/status", "r", encoding="utf-8") as fh:\n            for line in fh:\n                if line.startswith("VmRSS:"):\n                    return float(line.split()[1]) / 1024.0\n    except Exception:\n        return 0.0\n    return 0.0\n\n\ndef _broad_bootstrap_memory_limit_mb():\n    return float(os.getenv("YAHOO_BOOTSTRAP_MEMORY_LIMIT_MB", "400"))\n\n\ndef _yahoo_safe_symbol(symbol):\n    return bool(re.fullmatch(r"[A-Z][A-Z0-9-]{0,9}", str(symbol or "").upper()))\n\n\n'''
+          s=s.replace(marker, helpers+marker)
+          s=s.replace('''def _broad_stock_eligible(row):\n    if str(row.asset_type or "").lower() not in {"stock", "equity"}:\n        return False\n    name = str(row.name or "").lower()\n    blocked = (" warrant", " warrants", " unit", " units", " right", " rights", " preferred", " preference", " notes due", " bond", " fund")\n    return not any(term in name for term in blocked)\n''','''def _broad_stock_eligible(row):\n    if str(row.asset_type or "").lower() not in {"stock", "equity"}:\n        return False\n    if not _yahoo_safe_symbol(row.symbol):\n        return False\n    name = str(row.name or "").lower()\n    blocked = (" warrant", " warrants", " unit", " units", " right", " rights", " preferred", " preference", " notes due", " bond", " fund")\n    return not any(term in name for term in blocked)\n''')
+          start=s.index('def yahoo_broad_bootstrap_batch(db, limit=None, chunk_size=None):')
+          end=s.index('\n\ndef bootstrap_macro_cache', start)
+          new='''def yahoo_broad_bootstrap_batch(db, limit=None, chunk_size=None):\n    limit = int(limit or os.getenv("YAHOO_BOOTSTRAP_SYMBOLS_PER_CYCLE", "60"))\n    chunk_size = int(chunk_size or os.getenv("YAHOO_BOOTSTRAP_CHUNK_SIZE", "10"))\n    min_bars = int(os.getenv("MARKET_MIN_TECHNICAL_BARS", "120"))\n    memory_limit_mb = _broad_bootstrap_memory_limit_mb()\n    if not _BROAD_BOOTSTRAP_LOCK.acquire(blocking=False):\n        return {"status": "skipped", "reason": "broad bootstrap already running"}\n    try:\n        covered = set(r[0] for r in db.query(NormalizedDailyBar.symbol).group_by(NormalizedDailyBar.symbol).having(func.count(NormalizedDailyBar.id) >= min_bars).all())\n        registry_rows = db.query(SymbolRegistry.symbol, SymbolRegistry.name, SymbolRegistry.asset_type, SymbolRegistry.provider_ids).order_by(SymbolRegistry.symbol).all()\n        rows = [r for r in registry_rows if (r.provider_ids or {}).get("universe_source") == "Nasdaq Trader" and _broad_stock_eligible(r)]\n        del registry_rows\n        gc.collect()\n        if not rows:\n            return {"status": "waiting_for_universe", "requested": 0}\n\n        state = _pipeline_state(db, "yahoo_bootstrap")\n        cursor = str(state.get("cursor") or "")\n        candidates = [r.symbol.upper() for r in rows if r.symbol.upper() not in covered and r.symbol.upper() > cursor]\n        wrapped = False\n        if not candidates:\n            candidates = [r.symbol.upper() for r in rows if r.symbol.upper() not in covered]\n            cursor = ""; wrapped = True\n        selected = candidates[:limit]\n        if not selected:\n            result = {"status": "complete", "eligible_stocks": len(rows), "covered_stocks": len(covered), "requested": 0, "completed_at": datetime.now(timezone.utc).isoformat()}\n            _save_pipeline_state(db, "yahoo_bootstrap", result)\n            return result\n\n        succeeded = failed = snapshots = bars = 0\n        failed_examples = []\n        paused_for_memory = False\n        for i in range(0, len(selected), max(1, chunk_size)):\n            rss_before = _process_rss_mb()\n            if rss_before and rss_before >= memory_limit_mb:\n                paused_for_memory = True\n                break\n            chunk = selected[i:i + max(1, chunk_size)]\n            provider = YahooOhlcvProvider()\n            batch = {}\n            try:\n                batch = provider.batch_daily_history(chunk, period="2y")\n            except Exception as exc:\n                failed += len(chunk)\n                if len(failed_examples) < 10:\n                    failed_examples.append({"symbols": chunk[:5], "error": str(exc)[:180]})\n            else:\n                for symbol in chunk:\n                    data = batch.get(symbol)\n                    if not data or len(data.get("rows") or []) < min_bars:\n                        failed += 1\n                        if len(failed_examples) < 10:\n                            failed_examples.append({"symbol": symbol, "error": "insufficient Yahoo history"})\n                        continue\n                    try:\n                        bars += persist_normalized_history(db, data)\n                        snap = _snapshot_from_normalized(db, symbol)\n                        if snap:\n                            store_market_snapshot(db, symbol, snap, "Yahoo Finance")\n                            snapshots += 1\n                        succeeded += 1\n                    except Exception as exc:\n                        db.rollback(); failed += 1\n                        if len(failed_examples) < 10:\n                            failed_examples.append({"symbol": symbol, "error": str(exc)[:180]})\n            batch.clear()\n            del batch, provider\n            gc.collect()\n\n        status = "paused_memory_guard" if paused_for_memory else "running"\n        result = {\n            "status": status,\n            "source": "Yahoo Finance batch OHLCV",\n            "eligible_stocks": len(rows),\n            "covered_before": len(covered),\n            "requested": len(selected),\n            "succeeded": succeeded,\n            "failed": failed,\n            "snapshots_written": snapshots,\n            "bars_touched": bars,\n            "cursor": selected[min(len(selected) - 1, max(0, succeeded + failed - 1))] if selected else cursor,\n            "wrapped": wrapped,\n            "memory_limit_mb": memory_limit_mb,\n            "rss_mb_after": round(_process_rss_mb(), 1),\n            "failed_examples": failed_examples,\n            "completed_at": datetime.now(timezone.utc).isoformat(),\n        }\n        _save_pipeline_state(db, "yahoo_bootstrap", result)\n        return result\n    finally:\n        gc.collect()\n        _BROAD_BOOTSTRAP_LOCK.release()\n'''
+          s=s[:start]+new+s[end:]
+          p.write_text(s)
+          PY
+      - name: Add regression tests
+        run: |
+          cat > backend/tests/test_bootstrap_memory_guard.py <<'PY'
+          import unittest
+          from unittest.mock import patch
+          from app.services import refresh_scheduler as rs
+
+          class BootstrapMemoryGuardTests(unittest.TestCase):
+              def test_defaults_are_bounded_for_free_render(self):
+                  self.assertEqual(rs._broad_bootstrap_memory_limit_mb(), 400.0)
+                  self.assertTrue(rs._yahoo_safe_symbol("AAPL"))
+                  self.assertTrue(rs._yahoo_safe_symbol("BRK-B"))
+                  self.assertFalse(rs._yahoo_safe_symbol("BAC$E"))
+                  self.assertFalse(rs._yahoo_safe_symbol("BF.A"))
+
+              def test_rss_reader_is_nonnegative(self):
+                  self.assertGreaterEqual(rs._process_rss_mb(), 0.0)
+          PY
+      - name: Validate backend
+        working-directory: backend
+        run: |
+          python -m pip install -r requirements.txt
+          python -m compileall -q app
+          python -m unittest discover -s tests -p 'test_*.py'
+      - name: Commit patch
+        run: |
+          git config user.name "daily-report-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add backend/app/services/refresh_scheduler.py backend/tests/test_bootstrap_memory_guard.py
+          git commit -m "Bound broad market bootstrap memory"
+          git push origin HEAD:fix-render-memory-and-recovery-20260909
