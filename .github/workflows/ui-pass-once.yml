@@ -1,0 +1,35 @@
+name: UI Pass Once
+on:
+  push:
+    branches: [ui-cache-validation-20260909]
+    paths: [".github/workflows/ui-pass-once.yml"]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: ui-cache-validation-20260909}
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Patch V4 shell interaction wiring
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('web/app/v4/page.tsx');s=p.read_text()
+          s=s.replace('import OpportunityTableV4 from "./opportunity-table-v4";','import OpportunityTableV4 from "./opportunity-table-v4";\nimport MacroRotationTableV4 from "./macro-rotation-table-v4";')
+          s=s.replace('onClick={()=>setActive(key)}','onClick={()=>{setError("");setActive(key)}}')
+          old='''<div className="v4-table rotation-table">{(rotation?.leaders||[]).map((x:any)=><button className="table-row-button" key={x.symbol} onClick={()=>openResearch(x.symbol)}><strong>{x.symbol}</strong><span>{x.name}</span><span>{words(x.state)}</span><span>{x.stale_input?"stale":x.transition_ready?`${n(x.delta_3_observations,2)} Δ`:`${x.observations||0} obs`}</span><b>{n(x.rotation_pressure??x.rotation_score,2)}</b></button>)}</div>'''
+          new='''<MacroRotationTableV4 rotation={rotation} onOpen={openResearch}/>'''
+          if old not in s: raise SystemExit('macro table block not found')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+      - name: Commit
+        run: |
+          git config user.name "daily-report-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add web/app/v4/page.tsx
+          git commit -m "Wire sortable macro controls and clean layer switching"
+          git push origin HEAD:ui-cache-validation-20260909
