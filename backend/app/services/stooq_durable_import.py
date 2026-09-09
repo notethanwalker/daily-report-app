@@ -19,6 +19,7 @@ from .market_data_pipeline import (
     _snapshot_from_rows,
     _set_state,
     prune_market_snapshots,
+    prune_normalized_bars,
 )
 
 CANONICAL_STATE_KEY = "stooq_manual_archive"
@@ -355,6 +356,7 @@ def process_batch(db: Session, batch_symbols: int | None = None) -> dict:
 
     if complete:
         prune_market_snapshots(db)
+        prune_normalized_bars(db, keep_per_symbol=NORMALIZED_HISTORY_DAYS)
         db.execute(text("DELETE FROM stooq_import_chunks WHERE upload_id=:id"), {"id": upload_id})
         db.commit()
 
