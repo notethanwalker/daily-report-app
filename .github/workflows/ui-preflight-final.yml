@@ -4,6 +4,7 @@ on:
     branches: [ui-preflight-final-20260909]
     paths:
       - 'web/preflight-ui-final.mjs'
+      - 'web/preflight-ui-diagnostic.mjs'
       - '.github/workflows/ui-preflight-final.yml'
 permissions:
   contents: read
@@ -36,15 +37,15 @@ jobs:
           for i in {1..60}; do curl -fsS http://127.0.0.1:3000/v4 >/dev/null && exit 0; sleep 1; done
           cat /tmp/daily-report-next.log
           exit 1
-      - name: Run browser interaction and layout audit
+      - name: Run focused browser diagnostic
         working-directory: web
-        run: node preflight-ui-final.mjs
+        run: node preflight-ui-diagnostic.mjs
       - name: Upload preflight results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ui-preflight-final-results
           path: |
-            web/preflight-final-report.json
+            web/preflight-final-diagnostic.json
             web/preflight-final-*.png
           retention-days: 3
