@@ -37,13 +37,15 @@ def _score(payload: dict) -> float:
     return score
 
 
-def _daily_snapshots(db: Session, symbol: str, limit_days: int = 8) -> list[MarketSnapshot]:
-    rows = db.query(MarketSnapshot).filter(MarketSnapshot.symbol == symbol).order_by(MarketSnapshot.retrieved_at.desc()).limit(160).all()
-    by_day = {}
+def _all_daily_snapshots(db: Session, limit_days: int = 8) -> dict[str, list[MarketSnapshot]]:
+    symbols=list(SECTORS)
+    rows=db.query(MarketSnapshot).filter(MarketSnapshot.symbol.in_(symbols)).order_by(MarketSnapshot.symbol.asc(),MarketSnapshot.retrieved_at.desc()).all()
+    grouped={symbol:{} for symbol in symbols}
     for row in rows:
-        key = str((row.payload or {}).get("as_of") or row.as_of or row.retrieved_at.date().isoformat())[:10]
-        by_day.setdefault(key, row)
-    return [by_day[k] for k in sorted(by_day, reverse=True)[:limit_days]][::-1]
+        by_day=grouped.setdefault(row.symbol,{})
+        key=str((row.payload or {}).get("as_of") or row.as_of or row.retrieved_at.date().isoformat())[:10]
+        if key not in by_day and len(by_day)<limit_days:by_day[key]=row
+    return {symbol:[days[k] for k in sorted(days)] for symbol,days in grouped.items()}
 
 
 def _state(level: float, delta: float, trend: float) -> tuple[str, str]:
@@ -90,9 +92,9 @@ def _observation_age_hours(row: MarketSnapshot, payload: dict, now: datetime) ->
 
 
 def build_rotation_model(db: Session, persist: bool = False) -> dict:
-    rows=[];now=datetime.now(timezone.utc)
+    rows=[];now=datetime.now(timezone.utc);all_history=_all_daily_snapshots(db)
     for symbol,name in SECTORS.items():
-        history=_daily_snapshots(db,symbol)
+        history=all_history.get(symbol,[])
         if not history:continue
         scores=[_score(r.payload or {}) for r in history];latest_row=history[-1];p=latest_row.payload or {};level=scores[-1];prev=scores[-2] if len(scores)>=2 else level;old=scores[-4] if len(scores)>=4 else scores[0];delta_1=level-prev;delta_3=level-old;trend=((_f(p.get("price_vs_ma100_percent"),0.0) or 0.0)+(_f(p.get("price_vs_ma200_percent"),0.0) or 0.0))/2;state,forward_bias=_state(level,delta_3,trend)
         diffs=[b-a for a,b in zip(scores,scores[1:])];direction_consistency=0.0

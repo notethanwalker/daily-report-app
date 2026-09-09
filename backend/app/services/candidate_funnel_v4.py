@@ -27,6 +27,18 @@ def _latest_market(db,symbol):
     row=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol).order_by(MarketSnapshot.retrieved_at.desc()).first()
     if not row:return {}
     return {**dict(row.payload or {}),"__retrieved_at":row.retrieved_at}
+def _latest_market_map(db:Session,symbols:list[str])->dict[str,dict]:
+    if not symbols:return {}
+    rows=db.query(MarketSnapshot).filter(MarketSnapshot.symbol.in_(symbols)).order_by(MarketSnapshot.symbol.asc(),MarketSnapshot.retrieved_at.desc()).all();out={}
+    for row in rows:
+        if row.symbol not in out:out[row.symbol]={**dict(row.payload or {}),"__retrieved_at":row.retrieved_at}
+    return out
+def _latest_feature_map(db:Session,symbols:list[str])->dict[str,dict]:
+    if not symbols:return {}
+    rows=db.query(FeatureSnapshot).filter(FeatureSnapshot.symbol.in_(symbols)).order_by(FeatureSnapshot.symbol.asc(),FeatureSnapshot.as_of.desc(),FeatureSnapshot.created_at.desc()).all();out={}
+    for row in rows:
+        if row.symbol not in out:out[row.symbol]={**dict(row.payload or {}),"__as_of":row.as_of}
+    return out
 def _setup_type(macro):
     state=macro.get("state")
     if state in {"leading_accelerating","leading_stable"}:return "macro_confirmed"
@@ -51,9 +63,9 @@ def build_candidate_funnel(db:Session,rotation:dict,limit:int=50,enqueue_enrichm
     scan=scan_cached_market(db,include_near=True,limit_per_bucket=max(limit*4,200),include_etfs=False);source=[]
     for bucket,bonus in (("strong",8.0),("weak",4.0),("near",0.0)):
         for row in scan.get(bucket,[]):source.append((row,bonus))
-    registry={x.symbol.upper():x for x in db.query(SymbolRegistry).all()};ranked=[]
+    source_symbols=sorted({row["symbol"] for row,_ in source});registry={x.symbol.upper():x for x in db.query(SymbolRegistry).filter(SymbolRegistry.symbol.in_(source_symbols)).all()};market_map=_latest_market_map(db,source_symbols);feature_map=_latest_feature_map(db,source_symbols);ranked=[]
     for row,bucket_bonus in source:
-        symbol=row["symbol"];reg=registry.get(symbol);market=_latest_market(db,symbol);feature=_latest_feature(db,symbol)
+        symbol=row["symbol"];reg=registry.get(symbol);market=dict(market_map.get(symbol) or {});feature=dict(feature_map.get(symbol) or {})
         sector=(reg.sector if reg else None) or market.get("sector") or row.get("sector");industry=(reg.industry if reg else None) or market.get("industry");themes=(reg.themes if reg else None) or market.get("themes")
         macro=blend_rotation_context(rotation,symbol,sector,industry,themes);pressure=_f(macro.get("rotation_pressure"));conviction=max(0,min(100,_f(macro.get("conviction"))));confidence=conviction/100 if macro.get("transition_ready") else min(conviction/100,.45);macro_fit=max(-15,min(15,pressure*3))*confidence;technical=_f(row.get("score"))
         if feature:base_buy=_f(feature.get("buy_score"),50);base_source="persisted_opportunity_model";enrichment="full"
