@@ -34,13 +34,20 @@ def _save_state(db: Session, payload: dict) -> None:
     db.commit()
 
 
+def _eligible_stock(row: SymbolRegistry) -> bool:
+    if str(row.asset_type or "").lower() not in {"stock", "equity"}:
+        return False
+    name = str(row.name or "").lower()
+    blocked = (
+        " warrant", " warrants", " unit", " units", " right", " rights",
+        " preferred", " preference", " notes due", " bond", " fund",
+    )
+    return not any(term in name for term in blocked)
+
+
 def _coverage(db: Session) -> dict:
     registry_rows = _nasdaq_registry(db)
-    eligible = [
-        r for r in registry_rows
-        if str(r.asset_type or "").lower() in {"stock", "equity"}
-    ]
-    eligible_symbols = {r.symbol.upper() for r in eligible}
+    eligible_symbols = {r.symbol.upper() for r in registry_rows if _eligible_stock(r)}
     covered = {
         symbol for (symbol,) in db.query(NormalizedDailyBar.symbol)
         .filter(NormalizedDailyBar.symbol.in_(eligible_symbols))
@@ -52,6 +59,29 @@ def _coverage(db: Session) -> dict:
         "eligible_stocks": len(eligible_symbols),
         "covered_stocks": len(covered),
         "coverage_percent": round(len(covered) / len(eligible_symbols) * 100.0, 2) if eligible_symbols else 0.0,
+    }
+
+
+def missing_opportunity_symbols(db: Session, *, limit: int = 500, cursor: str = "") -> dict:
+    limit = max(1, min(int(limit), 1000))
+    eligible = sorted(r.symbol.upper() for r in _nasdaq_registry(db) if _eligible_stock(r))
+    covered = {
+        symbol for (symbol,) in db.query(NormalizedDailyBar.symbol)
+        .group_by(NormalizedDailyBar.symbol)
+        .having(func.count(NormalizedDailyBar.id) >= MIN_BARS)
+        .all()
+    }
+    missing = [s for s in eligible if s not in covered and (not cursor or s > cursor)]
+    selected = missing[:limit]
+    return {
+        "symbols": selected,
+        "cursor": selected[-1] if selected else cursor,
+        "remaining_from_cursor": len(missing),
+        "coverage": {
+            "eligible_stocks": len(eligible),
+            "covered_stocks": len(set(eligible) & covered),
+            "coverage_percent": round(len(set(eligible) & covered) / len(eligible) * 100.0, 2) if eligible else 0.0,
+        },
     }
 
 
@@ -88,7 +118,7 @@ def ingest_opportunity_batch(
             continue
 
         registry = registry_by_symbol.get(canonical)
-        if not registry or str(registry.asset_type or "").lower() not in {"stock", "equity"}:
+        if not registry or not _eligible_stock(registry):
             rejected += 1
             if len(rejected_examples) < 12:
                 rejected_examples.append({"symbol": source_symbol, "reason": "not_common_equity"})
