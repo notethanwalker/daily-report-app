@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -8,8 +9,8 @@ from sqlalchemy.orm import Session
 
 from .. import main as stable
 from ..database import get_db
-from ..providers.squawkflow import SquawkFlowProvider
 from ..providers.yahoo_finance import YahooFinanceProvider
+from ..services.flow_ingestion import flow_refresh_loop, refresh_flow_cache
 from ..services.flow_pipeline import NormalizedFlowEvent, score_flow_event
 from ..services.validation import build_secondary_metrics, cross_check_market_snapshot
 
@@ -43,13 +44,6 @@ def _verification_error(primary,error):
 
 @router.get("/markets/{symbol}")
 def verified_market(symbol:str,verify:bool=True,db:Session=Depends(get_db)):
-    """Canonical on-demand market snapshot.
-
-    Twelve Data remains primary. Yahoo Finance is always attempted as the normal
-    secondary cross-check; Alpha Vantage remains available elsewhere as a tertiary,
-    quota-aware source. The legacy verify=false flag no longer disables the normal
-    secondary check because every displayed refresh should carry verification state.
-    """
     primary=stable.get_market_snapshot(symbol,db,verify=False)
     try:
         secondary=build_secondary_metrics(YahooFinanceProvider().daily_history(symbol))
@@ -99,9 +93,9 @@ def _flow_analysis(event,all_events):
 
 @router.get("/flow/recent")
 def scored_flow(limit:int=Query(default=50,ge=1,le=100),symbol:str|None=None,event_type:str|None=None,db:Session=Depends(get_db)):
-    stored=stable._enrich_flow_events(db,stable._stored_flow(db,limit,symbol,event_type))
     try:
-        live=stable._cached_shared(f"flow:unusual:{limit}",stable.FLOW_CACHE_TTL_SECONDS,lambda:SquawkFlowProvider().unusual_options(limit))
+        live=stable._cached_shared(f"flow:unusual:{limit}",stable.FLOW_CACHE_TTL_SECONDS,lambda:refresh_flow_cache(db,limit))
+        stored=stable._enrich_flow_events(db,stable._stored_flow(db,limit,symbol,event_type))
         events=stable._enrich_flow_events(db,live.get("events",[]))
         if symbol:events=[e for e in events if str(e.get("symbol") or "").upper()==symbol.strip().upper()]
         if event_type:events=[e for e in events if str(e.get("event_type") or "").lower()==event_type.strip().lower()]
@@ -115,22 +109,31 @@ def scored_flow(limit:int=Query(default=50,ge=1,le=100),symbol:str|None=None,eve
             **live,
             "events":scored,
             "stored_events":stored,
+            "history_count":len(stored),
             "analysis":{
                 "method":"flow-v2 significance/direction split",
                 "ranked_by":"derived significance score, then provider unusualness score",
                 "direction_counts":dict(direction_counts),
                 "social_sources":"Public social accounts such as Flow God or Unusual Whales can be treated as corroborating discovery signals only when a licensed/API-accessible observation is available; this endpoint does not scrape X or fabricate observations.",
             },
-            "enrichment":"Market cap/price/sector are reused from cached market fundamentals when the flow source omits them. Provider unusualness, premium size, volume/open-interest, execution classification, corroboration and market context feed the significance score.",
+            "enrichment":"Market cap/price/sector are reused from cached market fundamentals when the flow source omits them. Successful provider observations are persisted for 30-day bounded history and last-good fallback.",
         }
     except Exception as exc:
+        db.rollback()
+        stored=stable._enrich_flow_events(db,stable._stored_flow(db,limit,symbol,event_type))
         return {
             "provider":"SquawkFlow",
             "provider_configured":True,
             "events":stored,
             "stored_events":stored,
+            "history_count":len(stored),
             "live_error":"Live unusual-options feed temporarily unavailable",
-            "note":"Showing stored flow observations when available. No synthetic flow is generated.",
+            "note":"Showing last-good stored flow observations. No synthetic flow is generated.",
             "error_detail":str(exc),
             "analysis":{"method":"flow-v2","degraded":True},
         }
+
+
+@router.on_event("startup")
+async def start_flow_refresh_loop():
+    asyncio.create_task(flow_refresh_loop())
