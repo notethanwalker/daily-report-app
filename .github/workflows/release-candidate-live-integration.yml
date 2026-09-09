@@ -17,7 +17,7 @@ jobs:
       - name: Register temporary real test account
         run: |
           set -euo pipefail
-          EMAIL="rc-live-20260909@example.invalid"
+          EMAIL="rc-live-${GITHUB_RUN_ID}@example.invalid"
           PASS="$(openssl rand -hex 18)"
           echo "RC_EMAIL=$EMAIL" >> "$GITHUB_ENV"
           echo "RC_PASS=$PASS" >> "$GITHUB_ENV"
@@ -44,7 +44,6 @@ jobs:
         run: |
           set -euo pipefail
           API=https://daily-report-api-ero2.onrender.com/api/v1
-          AUTH='-b /tmp/rc.cookies'
           curl --fail --silent --show-error --retry 5 --retry-delay 3 "$API/health" | jq -e '.status == "ok"'
           curl --fail --silent --show-error -b /tmp/rc.cookies --retry 3 "$API/stack/overview" | jq -e '.layers.research and .layers.macro and .layers.opportunity and .layers.deployment'
           curl --fail --silent --show-error -b /tmp/rc.cookies --retry 3 "$API/stack/rotation" > /tmp/rotation.json
@@ -54,7 +53,8 @@ jobs:
           curl --fail --silent --show-error -b /tmp/rc.cookies --retry 3 "$API/stack/deployment?basket=ai-buildout&capital=1000" > /tmp/deployment.json
           jq -e '(.eligible|type=="array") and (.unavailable|type=="array") and (((.eligible|length)+(.unavailable|length))>0)' /tmp/deployment.json
           curl --fail --silent --show-error -b /tmp/rc.cookies --retry 3 "$API/events?days=30&limit=100" | jq -e '(.events|type=="array") and (.count>=0)'
-          curl --fail --silent --show-error -b /tmp/rc.cookies --retry 3 "$API/flow?limit=100" | jq -e 'type=="object" or type=="array"'
+          curl --fail --silent --show-error -b /tmp/rc.cookies --retry 3 "$API/flow/recent?limit=100" | jq -e '(.events|type=="array") and (.events|length>0)'
+          curl --fail --silent --show-error -b /tmp/rc.cookies --retry 3 "$API/flow/analytics?hours=72" | jq -e '.rows|type=="array"'
           curl --fail --silent --show-error -b /tmp/rc.cookies --retry 3 "$API/portfolios" | jq -e '.portfolios|type=="array"'
       - name: Install and build exact frontend
         working-directory: web
