@@ -9,6 +9,8 @@ jobs:
   flow-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      PYTHONPATH: backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,7 +26,7 @@ jobs:
         env:
           DATABASE_URL: sqlite:////tmp/flow-smoke.db
         run: |
-          PYTHONPATH=backend python - <<'PY'
+          python - <<'PY'
           from app.database import Base, engine, SessionLocal
           from app.services.flow_ingestion import refresh_flow_cache
           Base.metadata.create_all(bind=engine)
