@@ -3,7 +3,7 @@ on:
   push:
     branches: [ui-exhaustive-pass-20260909]
     paths:
-      - 'web/preflight-ui-exhaustive-v3.mjs'
+      - 'web/preflight-ui-exhaustive-v4.mjs'
       - '.github/workflows/ui-exhaustive-pass.yml'
 permissions:
   contents: read
@@ -38,11 +38,11 @@ jobs:
           exit 1
       - name: Run isolated per-element browser audit
         working-directory: web
-        run: node preflight-ui-exhaustive-v3.mjs
+        run: node preflight-ui-exhaustive-v4.mjs
       - name: Upload exhaustive report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ui-exhaustive-v3-results
+          name: ui-exhaustive-v4-results
           path: web/preflight-exhaustive-v3-report.json
           retention-days: 3
