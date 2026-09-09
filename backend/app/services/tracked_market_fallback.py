@@ -4,6 +4,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..normalized_market_models import NormalizedDailyBar
+from ..providers.stooq import StooqProvider
 from ..providers.yahoo_ohlcv import YahooOhlcvProvider
 from .calculations import build_market_snapshot
 from .market_data_pipeline import (
@@ -51,8 +52,24 @@ def _partial_snapshot_from_normalized(db: Session, symbol: str) -> dict | None:
     return snapshot
 
 
+def _fallback_sources(symbol: str):
+    errors = []
+    for name, loader in (
+        ("Stooq", lambda: StooqProvider().daily_history(symbol)),
+        ("Yahoo Finance", lambda: YahooOhlcvProvider().daily_history(symbol, period="2y")),
+    ):
+        try:
+            data = loader()
+            if len(data.get("rows") or []) >= 14:
+                return data, name, errors
+            errors.append(f"{name}: fewer than 14 OHLCV rows")
+        except Exception as exc:
+            errors.append(f"{name}: {str(exc)[:160]}")
+    raise RuntimeError("; ".join(errors) or f"No fallback history source available for {symbol}")
+
+
 def refresh_tracked_market_snapshot_with_fallback(db: Session, symbol: str) -> tuple[dict, dict]:
-    """Use the normal tracked source first, then repair from Yahoo OHLCV.
+    """Use the normal tracked source first, then per-symbol Stooq/Yahoo repair.
 
     Newly listed tracked symbols are allowed to publish partial technical snapshots:
     Williams %R after 14 sessions, 100MA after 100 sessions, and 200MA after 200.
@@ -62,7 +79,7 @@ def refresh_tracked_market_snapshot_with_fallback(db: Session, symbol: str) -> t
         return _primary_refresh(db, s)
     except Exception as primary_exc:
         db.rollback()
-        data = YahooOhlcvProvider().daily_history(s, period="2y")
+        data, fallback_provider, fallback_errors = _fallback_sources(s)
         persist_normalized_history(db, data)
         snapshot = _snapshot_from_normalized(db, s) or _partial_snapshot_from_normalized(db, s)
         if snapshot is None:
@@ -70,14 +87,16 @@ def refresh_tracked_market_snapshot_with_fallback(db: Session, symbol: str) -> t
                 NormalizedDailyBar.symbol == s
             ).scalar() or 0
             raise RuntimeError(
-                f"Insufficient normalized history to build {s} market snapshot after Yahoo fallback "
+                f"Insufficient normalized history to build {s} market snapshot after fallback "
                 f"({count} bars); primary error: {str(primary_exc)[:160]}"
             ) from primary_exc
-        store_market_snapshot(db, s, snapshot, data.get("provider") or "Yahoo Finance")
+        store_market_snapshot(db, s, snapshot, data.get("provider") or fallback_provider)
         return snapshot, {
-            "mode": "yahoo_history_fallback",
+            "mode": "tracked_history_fallback",
+            "fallback_provider": fallback_provider,
             "bars_received": len(data.get("rows") or []),
             "partial_history": bool(snapshot.get("partial_history")),
             "primary_error": str(primary_exc)[:180],
+            "fallback_errors": fallback_errors,
             "history_days_retained": NORMALIZED_HISTORY_DAYS,
         }
