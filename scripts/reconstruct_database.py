@@ -59,7 +59,23 @@ def reconstruct() -> dict:
                 .first()
             )
         if owner is None:
-            raise RuntimeError("Owner bootstrap environment variables are missing")
+            return {
+                "status": "shared_state_reconstructed_owner_pending",
+                "schema_tables": len(Base.metadata.tables),
+                "shared_watchlist_symbols": db.query(WatchlistItem).count(),
+                "capacity": capacity_status(db),
+                "next_step": "Run this command again where the existing AUTH_BOOTSTRAP_ADMIN_* variables are available.",
+                "not_reconstructed": [
+                    "owner account and owner-scoped defaults",
+                    "Joint Fidelity portfolio and positions",
+                    "other users",
+                    "custom watchlist edits",
+                    "alerts and push subscriptions",
+                    "theses and custom events",
+                    "user preference edits",
+                    "historical snapshots and disposable market caches",
+                ],
+            }
 
         os.environ["OWNER_EMAIL"] = owner.id
         existing_symbols = {

@@ -48,3 +48,6 @@ python scripts/reconstruct_database.py
 ```
 
 The command is idempotent and prints table counts plus current database capacity.
+If the owner bootstrap variables are not available, it completes schema and shared
+watchlist reconstruction and reports the owner restore as pending. Running it again
+inside the application environment completes the encrypted owner and portfolio stage.

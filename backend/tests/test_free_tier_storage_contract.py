@@ -7,6 +7,7 @@ START = (ROOT / "backend/app/start.py").read_text(encoding="utf-8")
 GUARD = (ROOT / "backend/app/services/storage_guard.py").read_text(encoding="utf-8")
 IMPORTER = (ROOT / "backend/app/services/stooq_durable_import.py").read_text(encoding="utf-8")
 MODEL = (ROOT / "backend/app/normalized_market_models.py").read_text(encoding="utf-8")
+RECONSTRUCT = (ROOT / "scripts/reconstruct_database.py").read_text(encoding="utf-8")
 
 
 class FreeTierStorageContract(unittest.TestCase):
@@ -28,6 +29,10 @@ class FreeTierStorageContract(unittest.TestCase):
     def test_disposable_timestamp_index_is_not_recreated(self):
         line = next(line for line in MODEL.splitlines() if "retrieved_at:" in line)
         self.assertNotIn("index=True", line)
+
+    def test_reconstruction_can_complete_before_owner_secret_transfer(self):
+        self.assertIn("shared_state_reconstructed_owner_pending", RECONSTRUCT)
+        self.assertIn("AUTH_BOOTSTRAP_ADMIN_*", RECONSTRUCT)
 
 
 if __name__ == "__main__":
