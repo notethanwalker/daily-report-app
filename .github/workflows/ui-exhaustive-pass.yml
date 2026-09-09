@@ -1,0 +1,48 @@
+name: UI Exhaustive Pass
+on:
+  push:
+    branches: [ui-exhaustive-pass-20260909]
+    paths:
+      - 'web/preflight-ui-exhaustive.mjs'
+      - '.github/workflows/ui-exhaustive-pass.yml'
+permissions:
+  contents: read
+jobs:
+  exhaustive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package.json
+      - name: Install app dependencies
+        working-directory: web
+        run: npm install
+      - name: Install Playwright
+        working-directory: web
+        run: |
+          npm install --no-save playwright
+          npx playwright install chromium
+      - name: Build app
+        working-directory: web
+        run: npm run build
+      - name: Start app
+        working-directory: web
+        run: |
+          nohup npm run start -- -H 0.0.0.0 -p 3000 > /tmp/daily-report-next.log 2>&1 &
+          for i in {1..60}; do curl -fsS http://127.0.0.1:3000/v4 >/dev/null && exit 0; sleep 1; done
+          cat /tmp/daily-report-next.log
+          exit 1
+      - name: Run exhaustive browser audit
+        working-directory: web
+        run: node preflight-ui-exhaustive.mjs
+      - name: Upload exhaustive report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-exhaustive-results
+          path: web/preflight-exhaustive-report.json
+          retention-days: 3
