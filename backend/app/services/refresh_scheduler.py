@@ -326,10 +326,47 @@ def yahoo_broad_bootstrap_batch(db, limit=None, chunk_size=None):
     return result
 
 
+def bootstrap_macro_cache(db, limit=80):
+    """Batch-warm the macro universe from Yahoo OHLCV instead of serial queue jobs.
+
+    This is cache-first infrastructure: only symbols lacking the minimum technical
+    history are requested, and successful results are materialized into the same
+    normalized/snapshot/history layers used everywhere else.
+    """
+    min_bars=int(os.getenv("MARKET_MIN_TECHNICAL_BARS","120"))
+    symbols=sorted(set(SECTORS))
+    covered={r[0] for r in db.query(NormalizedDailyBar.symbol).filter(NormalizedDailyBar.symbol.in_(symbols)).group_by(NormalizedDailyBar.symbol).having(func.count(NormalizedDailyBar.id)>=min_bars).all()}
+    missing=[s for s in symbols if s not in covered][:max(1,int(limit))]
+    if not missing:return {"status":"complete","requested":0,"covered":len(covered),"total":len(symbols)}
+    provider=YahooOhlcvProvider();succeeded=[];failed=[];snapshots=0
+    try:batch=provider.batch_daily_history(missing,period="2y")
+    except Exception as exc:return {"status":"failed","requested":len(missing),"error":str(exc)[:180]}
+    for symbol in missing:
+        data=batch.get(symbol)
+        if not data or len(data.get("rows") or [])<min_bars:
+            failed.append(symbol);continue
+        try:
+            persist_normalized_history(db,data)
+            snap=_snapshot_from_normalized(db,symbol)
+            if snap:store_market_snapshot(db,symbol,snap,"Yahoo Finance");snapshots+=1
+            succeeded.append(symbol)
+        except Exception:
+            db.rollback();failed.append(symbol)
+    if succeeded:
+        seed_historical_from_normalized(db,succeeded)
+        db.query(RefreshQueueItem).filter(RefreshQueueItem.symbol.in_(succeeded),RefreshQueueItem.data_class.in_(["market","history"]),RefreshQueueItem.status=="queued").update({RefreshQueueItem.status:"complete",RefreshQueueItem.error:"satisfied_by_macro_batch_bootstrap",RefreshQueueItem.updated_at:datetime.now(timezone.utc)},synchronize_session=False)
+        db.commit()
+    return {"status":"running" if failed else "complete","requested":len(missing),"succeeded":len(succeeded),"failed":len(failed),"snapshots":snapshots,"failed_symbols":failed[:20]}
+
+
 def run_cycle():
     global _last_cleanup
     db = SessionLocal()
     try:
+        try:
+            bootstrap_macro_cache(db)
+        except Exception:
+            db.rollback()
         seed_historical_from_normalized(db, set(_user_symbols(db)) | set(SECTORS) | DEPLOYMENT_WARM_SYMBOLS)
         enqueue_stale(db); process_queue(db, 4)
         try:
