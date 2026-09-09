@@ -13,7 +13,7 @@ from ..models import PortfolioHolding, UserWatchlistItem
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from ..normalized_market_models import MarketPipelineState
 from ..services.market_data_pipeline import pipeline_status
-from ..services.opportunity_bulk_ingest import ingest_opportunity_batch
+from ..services.opportunity_bulk_ingest import ingest_opportunity_batch, missing_opportunity_symbols
 from ..services.opportunity_scanner import scan_cached_market
 from ..services.stooq_durable_import import (
     create_upload as create_durable_upload,
@@ -251,6 +251,17 @@ def token_finalize_stooq_archive(upload_id: str, request: Request, db: Session =
         return finalize_durable_upload(db, upload_id)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/bulk-missing")
+def bulk_missing_opportunities(
+    request: Request,
+    limit: int = Query(default=500, ge=1, le=1000),
+    cursor: str = Query(default=""),
+    db: Session = Depends(get_db),
+):
+    _require_import_token(request)
+    return missing_opportunity_symbols(db, limit=limit, cursor=cursor.strip().upper())
 
 
 @router.post("/bulk-ingest")
