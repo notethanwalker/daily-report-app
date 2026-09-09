@@ -1,0 +1,55 @@
+name: Opportunity Coverage Expansion
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Maximum missing symbols to attempt"
+        required: false
+        default: "400"
+  schedule:
+    - cron: "17 * * * *"
+  push:
+    paths:
+      - ".github/workflows/opportunity-coverage.yml"
+
+concurrency:
+  group: opportunity-coverage-expansion
+  cancel-in-progress: false
+
+jobs:
+  expand-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: read
+    env:
+      DAILY_REPORT_API_BASE: https://daily-report-api-ero2.onrender.com
+      STOOQ_IMPORT_TOKEN: ${{ secrets.STOOQ_IMPORT_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install market worker dependencies
+        run: python -m pip install --disable-pip-version-check "yfinance>=0.2.54" "pandas>=2.2"
+
+      - name: Verify secure ingest token is configured
+        run: |
+          if [ -z "${STOOQ_IMPORT_TOKEN}" ]; then
+            echo "Repository secret STOOQ_IMPORT_TOKEN is required for secure bulk ingest."
+            exit 3
+          fi
+
+      - name: Expand missing Opportunity coverage
+        env:
+          INPUT_LIMIT: ${{ github.event.inputs.limit }}
+        run: |
+          LIMIT="${INPUT_LIMIT:-400}"
+          python scripts/opportunity_bulk_worker.py --limit "$LIMIT" --download-chunk 40 --upload-batch 100 --sleep 2
