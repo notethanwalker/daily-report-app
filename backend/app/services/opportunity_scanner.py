@@ -107,10 +107,18 @@ def _blocked_security(registry: SymbolRegistry | None, payload: dict) -> bool:
     asset = _asset_type(registry, payload)
     if any(term in asset for term in ("warrant", "unit", "right", "preferred", "preference", "bond", "note", "fund")):
         return True
-    name = str((registry.name if registry else None) or payload.get("name") or "").lower()
+    symbol = str((registry.symbol if registry else None) or payload.get("symbol") or "").upper()
+    if "$" in symbol:
+        return True
+    name = f" {str((registry.name if registry else None) or payload.get('name') or '').lower()} "
     blocked = (
-        " warrant", " warrants", " unit", " units", " right", " rights",
-        " preferred", " preference", " notes due", " bond", " fund",
+        " warrant", " warrants", " redeemable warrant", " unit", " units",
+        " right", " rights", " preferred", " preference", " preferred stock",
+        " preferred share", " preferred shares", " notes due", " note due",
+        " senior notes", " senior note", " subordinated notes", " subordinated note",
+        " debenture", " debentures", " bond", " bonds", " income fund",
+        " closed-end fund", " closed end fund", " exchange traded note",
+        " etn ", " trust preferred",
     )
     return any(term in name for term in blocked)
 
@@ -260,7 +268,7 @@ def scan_cached_market(
             "registry_scannable": registry_scannable,
             "cached_scannable": scanned,
             "technical_complete": technical_complete,
-            "limitation": None if broad_state == "ready" else "Results are valid for the currently cached equity subset while background coverage converges toward at least 95%.",
+            "limitation": None if broad_state == "ready" else "Results are valid for the currently cached common-equity subset while background coverage converges toward at least 95%.",
         },
         "verification": {
             "verified": verified,
