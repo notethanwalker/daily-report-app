@@ -1,13 +1,31 @@
 import os
+from urllib.parse import quote
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-DATABASE_URL = os.environ["DATABASE_URL"]
 
-# Render supplies a PostgreSQL URL such as:
-# postgresql://user:password@host/database
-#
+def _database_url() -> str:
+    direct = os.getenv("DATABASE_URL")
+    if direct:
+        return direct
+
+    password = os.getenv("AIVEN_DB_PASSWORD")
+    if not password:
+        raise RuntimeError("DATABASE_URL or AIVEN_DB_PASSWORD is required")
+
+    user = os.getenv("AIVEN_DB_USER", "avnadmin")
+    host = os.environ["AIVEN_DB_HOST"]
+    port = os.getenv("AIVEN_DB_PORT", "28265")
+    database = os.getenv("AIVEN_DB_NAME", "defaultdb")
+    return (
+        f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}"
+        f"@{host}:{port}/{database}?sslmode=require"
+    )
+
+
+DATABASE_URL = _database_url()
+
 # Explicitly tell SQLAlchemy to use psycopg v3.
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace(
