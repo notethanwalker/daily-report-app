@@ -8,11 +8,12 @@ from ..intelligence_cache_models import SecurityIntelligenceCache
 from ..models import FundamentalCache, RefreshQueueItem
 from .provider_orchestrator import FRESHNESS_POLICIES, is_stale
 
-CONTEXT_MODEL_VERSION = "candidate-context-v4.2"
+CONTEXT_MODEL_VERSION = "candidate-context-v4.3"
 NEWS_TTL = timedelta(minutes=30)
 FLOW_TTL = timedelta(minutes=30)
 CATALYST_TTL = timedelta(hours=12)
 FUNDAMENTAL_TARGET_LIMIT = 12
+INTELLIGENCE_REFRESH_LIMIT = 5
 
 
 def _now() -> datetime:
@@ -75,22 +76,9 @@ def candidate_context_map(db: Session, symbols: list[str]) -> dict[str, dict]:
         out[symbol] = {
             "model_version": CONTEXT_MODEL_VERSION,
             "sections": sections,
-            "news": {
-                "count": len(articles),
-                "top": articles[:3],
-                "provider": news.get("provider"),
-            },
-            "flow": {
-                "kind": flow.get("kind") or "none",
-                "count": len(events),
-                "top": events[:3],
-                "provider": flow.get("provider"),
-                "note": flow.get("note"),
-            },
-            "catalysts": {
-                "count": len(upcoming),
-                "upcoming": upcoming[:4],
-            },
+            "news": {"count": len(articles), "top": articles[:3], "provider": news.get("provider")},
+            "flow": {"kind": flow.get("kind") or "none", "count": len(events), "top": events[:3], "provider": flow.get("provider"), "note": flow.get("note")},
+            "catalysts": {"count": len(upcoming), "upcoming": upcoming[:4]},
             "cache_only": True,
         }
     return out
@@ -117,6 +105,22 @@ def candidate_fundamental_targets(candidates: list[dict], limit: int = FUNDAMENT
     return targets
 
 
+def candidate_intelligence_targets(candidates: list[dict], limit: int = INTELLIGENCE_REFRESH_LIMIT) -> list[str]:
+    selected = sorted(candidates, key=_context_priority, reverse=True)
+    targets: list[str] = []
+    for candidate in selected:
+        sections = (candidate.get("candidate_context") or {}).get("sections") or {}
+        stale = any(not (sections.get(name) or {}).get("fresh") for name in ("news", "flow", "catalysts"))
+        if not stale:
+            continue
+        symbol = str(candidate.get("symbol") or "").upper()
+        if symbol and symbol not in targets:
+            targets.append(symbol)
+        if len(targets) >= max(0, min(limit, INTELLIGENCE_REFRESH_LIMIT)):
+            break
+    return targets
+
+
 def enqueue_candidate_fundamentals(db: Session, candidates: list[dict], limit: int = FUNDAMENTAL_TARGET_LIMIT) -> list[str]:
     targets = candidate_fundamental_targets(candidates, limit)
     queued: list[str] = []
@@ -128,16 +132,33 @@ def enqueue_candidate_fundamentals(db: Session, candidates: list[dict], limit: i
         ).first()
         if active:
             continue
-        db.add(RefreshQueueItem(
-            symbol=symbol,
-            data_class="fundamentals",
-            priority=max(75, FRESHNESS_POLICIES["fundamentals"].priority),
-            requested_by="opportunity_formula_funnel",
-        ))
+        db.add(RefreshQueueItem(symbol=symbol, data_class="fundamentals", priority=max(75, FRESHNESS_POLICIES["fundamentals"].priority), requested_by="opportunity_formula_funnel"))
         queued.append(symbol)
     if queued:
         db.commit()
     return queued
+
+
+def refresh_candidate_intelligence(db: Session, candidates: list[dict], limit: int = INTELLIGENCE_REFRESH_LIMIT) -> dict:
+    from .security_intelligence_service import refresh_security_intelligence
+
+    targets = candidate_intelligence_targets(candidates, limit)
+    refreshed: list[str] = []
+    errors: list[dict] = []
+    for symbol in targets:
+        try:
+            refresh_security_intelligence(db, symbol, refresh_missing=True, force=False, history_days=90)
+            refreshed.append(symbol)
+        except Exception as exc:
+            db.rollback()
+            errors.append({"symbol": symbol, "error": str(exc)[:180]})
+    return {
+        "requested": targets,
+        "refreshed": refreshed,
+        "errors": errors,
+        "limit": INTELLIGENCE_REFRESH_LIMIT,
+        "policy": "Explicit bounded refresh only; automatic shortlist refresh never calls news/flow/catalyst providers.",
+    }
 
 
 def attach_candidate_context(db: Session, candidates: list[dict]) -> dict:
