@@ -23,14 +23,23 @@ jobs:
     env:
       API_BASE: https://daily-report-api-ero2.onrender.com
     steps:
-      - name: Acquire restricted smoke identity
+      - name: Wait for matching backend deployment
         shell: bash
         run: |
           set -euo pipefail
-          TOKEN=$(curl --fail --silent --show-error -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-smoke" | jq -r '.value')
-          test -n "$TOKEN" && test "$TOKEN" != "null"
-          echo "::add-mask::$TOKEN"
-          echo "SMOKE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          for attempt in $(seq 1 36); do
+            TOKEN=$(curl --fail --silent --show-error -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-smoke" | jq -r '.value')
+            test -n "$TOKEN" && test "$TOKEN" != "null"
+            echo "::add-mask::$TOKEN"
+            if curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer ${TOKEN}" "${API_BASE}/api/v1/events?days=1&limit=1" -o /dev/null; then
+              echo "SMOKE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "Backend has not activated this smoke identity yet (attempt ${attempt}/36)."
+            sleep 10
+          done
+          echo "Matching backend deployment did not become ready." >&2
+          exit 1
 
       - name: Check backend health
         run: |
