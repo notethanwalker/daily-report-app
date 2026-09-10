@@ -17,7 +17,7 @@ from ..services.fundamental_context_v4 import build_fundamental_context, persist
 router=APIRouter(prefix="/api/v1",tags=["fundamentals-v2"])
 
 FIELDS=("pe_ratio","price_to_sales_ratio","peg_ratio")
-REFRESH_VERSION=6
+REFRESH_VERSION=7
 
 
 def _complete(p:dict)->bool:
