@@ -8,6 +8,7 @@ from .. import main as stable
 from ..intelligence_cache_models import SecurityIntelligenceCache
 from ..models import FundamentalCache, HistoricalDailyBar, SymbolRegistry
 from ..providers.gdelt import GdeltProvider
+from ..providers.sec_filings import SecFilingsProvider
 from ..providers.squawkflow import SquawkFlowProvider
 from ..providers.yahoo_finance import YahooFinanceProvider
 from ..providers.yahoo_options import YahooOptionsProvider
@@ -17,6 +18,7 @@ FLOW_TTL = timedelta(minutes=30)
 OPTIONS_ACTIVITY_TTL = timedelta(hours=4)
 NEWS_TTL = timedelta(minutes=30)
 CATALYST_TTL = timedelta(hours=12)
+FILINGS_TTL = timedelta(hours=6)
 
 
 def _now() -> datetime:
@@ -136,6 +138,13 @@ def _linked_news(db: Session, symbol: str) -> dict:
     return {"articles": matched[:16], "provider": data.get("provider") or "GDELT", "retrieved_at": _now().isoformat(), "query": query}
 
 
+def _recent_filings(symbol: str) -> dict:
+    try:
+        return SecFilingsProvider().recent(symbol, limit=12)
+    except Exception as exc:
+        return {"symbol": symbol, "filings": [], "provider": "SEC EDGAR", "retrieved_at": _now().isoformat(), "error": str(exc)[:180], "policy": "SEC filing lookup failed; no directional inference is made from missing filing data."}
+
+
 def _history(db: Session, symbol: str, days: int) -> dict:
     rows = db.query(HistoricalDailyBar).filter(HistoricalDailyBar.symbol == symbol).order_by(HistoricalDailyBar.bar_date.desc()).limit(max(30, min(days, 730))).all()
     rows = list(reversed(rows))
@@ -157,10 +166,13 @@ def refresh_security_intelligence(db: Session, symbol: str, *, refresh_missing: 
     if force or not _fresh(payload, "news", NEWS_TTL):
         payload["news"] = _linked_news(db, s)
         stamps["news"] = _now().isoformat()
+    if force or not _fresh(payload, "filings", FILINGS_TTL):
+        payload["filings"] = _recent_filings(s)
+        stamps["filings"] = _now().isoformat()
     payload["history"] = _history(db, s, history_days)
     stamps["history"] = _now().isoformat()
     payload["section_retrieved_at"] = stamps
     payload["symbol"] = s
-    payload["cache_policy"] = {"unusual_flow_minutes": int(FLOW_TTL.total_seconds()/60), "options_activity_hours": int(OPTIONS_ACTIVITY_TTL.total_seconds()/3600), "news_minutes": int(NEWS_TTL.total_seconds()/60), "catalysts_hours": int(CATALYST_TTL.total_seconds()/3600), "shared_across_tabs": True}
+    payload["cache_policy"] = {"unusual_flow_minutes": int(FLOW_TTL.total_seconds()/60), "options_activity_hours": int(OPTIONS_ACTIVITY_TTL.total_seconds()/3600), "news_minutes": int(NEWS_TTL.total_seconds()/60), "catalysts_hours": int(CATALYST_TTL.total_seconds()/3600), "filings_hours": int(FILINGS_TTL.total_seconds()/3600), "shared_across_tabs": True}
     _save(db, s, payload)
     return payload
