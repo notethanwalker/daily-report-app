@@ -12,7 +12,7 @@ from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from ..normalized_market_models import NormalizedDailyBar
 from .opportunity_model import SECTOR_PROXY
 
-MODEL_VERSION = "portfolio-scenarios-v4.1"
+MODEL_VERSION = "portfolio-scenarios-v4.2"
 HISTORY_DAYS = 260
 MIN_OBSERVATIONS = 40
 HEDGE_PROXIES = ("SPY", "QQQ")
@@ -42,12 +42,19 @@ def _returns(db:Session,symbols:list[str])->dict[str,dict[str,float]]:
 
 
 def _weighted(returns:dict[str,dict[str,float]],weights:dict[str,float])->dict[str,float]:
-    dates=sorted({d for s in weights for d in returns.get(s,{})});out={}
+    """Return account-level returns while preserving explicit cash weight.
+
+    Missing asset histories are renormalized only within the invested sleeve. Cash is
+    left at zero return instead of scaling the available holdings back to 100%.
+    """
+    dates=sorted({d for s in weights for d in returns.get(s,{})});out={};target_asset_weight=sum(weights.values())
+    if target_asset_weight<=0:return out
     for day in dates:
         present=[(w,returns.get(s,{}).get(day)) for s,w in weights.items() if returns.get(s,{}).get(day) is not None]
         represented=sum(w for w,_ in present)
-        if represented<.60:continue
-        out[day]=sum((w/represented)*r for w,r in present)
+        if represented < target_asset_weight*.60:continue
+        sleeve_scale=target_asset_weight/represented
+        out[day]=sum(w*r for w,r in present)*sleeve_scale
     return out
 
 
@@ -160,5 +167,5 @@ def build_buy_scenario(db:Session,user:str,portfolio_id:int,symbol:str,amount:fl
         "changes":{"cash_percent_points":round(after_cash/after_total*100-cash/before_total*100,2) if before_total and after_total else None,"symbol_exposure_points":round(after_symbol-current_symbol,2),"sector_exposure_points":round(sector_after-sector_before,2) if sector_before is not None and sector_after is not None else None,"annualized_volatility_points":round(after_vol-before_vol,2) if before_vol is not None and after_vol is not None else None,"historical_max_drawdown_points":round(after_dd-before_dd,2) if before_dd is not None and after_dd is not None else None},
         "candidate_risk":{"portfolio_correlation":round(corr,3) if corr is not None else None,"correlation_observations":n,"standalone_annualized_volatility_percent":round(candidate_vol,2) if candidate_vol is not None else None,"standalone_max_drawdown_percent":round(candidate_dd,2) if candidate_dd is not None else None,"approx_drawdown_contribution_points":round(abs(candidate_dd)*candidate_weight/100,2) if candidate_dd is not None else None,"scenario_weight_percent":round(candidate_weight,2)},
         "theme_changes":theme_changes,"hedge_reference":hedge,
-        "policy":"Read-only scenario analysis. No holdings or cash are mutated. Historical volatility, correlation and drawdown are descriptive estimates from stored daily returns; they are not forecasts, expected-return scores, or automatic sizing recommendations."
+        "policy":"Read-only scenario analysis. No holdings or cash are mutated. Historical volatility, correlation and drawdown are descriptive estimates from stored daily returns; cash is modeled at zero return and is not renormalized away. These metrics are not forecasts, expected-return scores, or automatic sizing recommendations."
     }
