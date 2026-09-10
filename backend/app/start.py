@@ -51,7 +51,7 @@ from .routers.portfolio_access import _permissions, router as portfolio_access_r
 from .services.auth_security import SESSION_COOKIE, account_from_session, bootstrap_admin
 from .services.calibration_v4 import calibration_loop
 from .services.feature_model_v4 import feature_version_loop
-from .services.github_actions_oidc import verify_daily_report_maintenance_token
+from .services.github_actions_oidc import verify_daily_report_maintenance_token, verify_live_smoke_token
 from .services import refresh_scheduler as _refresh_scheduler
 from .services.refresh_scheduler import bulk_market_loop, scheduler_loop, yahoo_bootstrap_loop
 from .services.tracked_market_fallback import refresh_tracked_market_snapshot_with_fallback
@@ -104,6 +104,10 @@ def _inject_subject(scope,user_id):
         clean.append((key,value))
     clean.append((b"x-user-email",user_id.encode("utf-8")));clean.append((b"x-auth-user-id",user_id.encode("utf-8")));scope["headers"]=clean
 
+def _bearer(request):
+    auth=request.headers.get("authorization") or ""
+    return auth.split(" ",1)[1].strip() if auth.lower().startswith("bearer ") else ""
+
 def _maintenance_request_authorized(request):
     path=request.url.path;method=request.method.upper()
     allowed=(
@@ -113,9 +117,26 @@ def _maintenance_request_authorized(request):
         method=="POST" and path=="/api/v1/report/generate",
     )
     if not any(allowed):return False
-    auth=request.headers.get("authorization") or ""
-    if not auth.lower().startswith("bearer "):return False
-    try:verify_daily_report_maintenance_token(auth.split(" ",1)[1].strip());return True
+    token=_bearer(request)
+    if not token:return False
+    try:verify_daily_report_maintenance_token(token);return True
+    except Exception:return False
+
+def _smoke_request_authorized(request):
+    path=request.url.path;method=request.method.upper()
+    if method!="GET":return False
+    allowed=(
+        path=="/api/v1/events",
+        path.startswith("/api/v1/markets/") and path.endswith("/fundamentals"),
+        path=="/api/v1/portfolios",
+        path.startswith("/api/v1/portfolios/"),
+        path=="/api/v1/alerts/v2",
+        path=="/api/v1/push/config",
+    )
+    if not any(allowed):return False
+    token=_bearer(request)
+    if not token:return False
+    try:verify_live_smoke_token(token);return True
     except Exception:return False
 
 @app.middleware("http")
@@ -125,9 +146,10 @@ async def authenticated_session_gate(request,call_next):
     token=_cookie_from_scope(request.scope,SESSION_COOKIE);db=SessionLocal()
     try:
         account=None
-        if _maintenance_request_authorized(request):
+        machine_request=_maintenance_request_authorized(request) or _smoke_request_authorized(request)
+        if machine_request:
             account=db.query(AuthAccount).filter(AuthAccount.role=="owner",AuthAccount.status=="approved",AuthAccount.enabled.is_(True)).order_by(AuthAccount.created_at.asc()).first()
-            if not account:return JSONResponse({"detail":"Maintenance owner account unavailable"},status_code=503)
+            if not account:return JSONResponse({"detail":"Machine-auth owner account unavailable"},status_code=503)
         else:
             account=account_from_session(db,token)
         if not account:return JSONResponse({"detail":"Authentication required"},status_code=401)
