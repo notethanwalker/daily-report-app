@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..services.candidate_context_v4 import attach_candidate_context, refresh_candidate_intelligence
 from ..services.candidate_funnel_formula_v4 import build_formula_candidate_funnel
+from ..services.decision_card_v4 import attach_decision_cards
 from ..services.opportunity_criterion_governance import governed_catalog
 from ..services.opportunity_formula_v4 import (
     CRITERIA,
@@ -145,6 +146,8 @@ def opportunity_formula_funnel(
         result["live_context_refresh"] = refresh_candidate_intelligence(db, result.get("candidates") or [])
         result["candidate_context"] = attach_candidate_context(db, result.get("candidates") or [])
     result["portfolio_fit"] = attach_portfolio_fit(db, user, result.get("candidates") or [])
+    attach_decision_cards(result.get("candidates") or [])
+    result["decision_card_policy"] = "Transparent synthesis only; no master decision score is created."
     return record_funnel_state(db, user=user, criteria=criteria, filters=filters, payload=result)
 
 
