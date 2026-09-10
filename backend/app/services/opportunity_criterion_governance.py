@@ -29,6 +29,14 @@ CRITERION_GOVERNANCE = {
         "validation_status": "experimental",
         "evidence_basis": "Optional V4 confirmation hypothesis; not yet promoted by independent-sample evidence.",
     },
+    "fundamental_quality": {
+        "validation_status": "experimental",
+        "evidence_basis": "Optional cached-fundamental composite covering growth, profitability, cash flow and balance-sheet quality. It is not yet calibrated against independent forward-return samples and is unavailable when cached inputs are insufficient.",
+    },
+    "valuation_quality": {
+        "validation_status": "experimental",
+        "evidence_basis": "Optional cached valuation composite using applicable P/E, forward P/E, P/S and PEG inputs. It explicitly avoids treating non-meaningful P/E as cheapness but is not yet calibrated against independent forward-return samples.",
+    },
 }
 
 
