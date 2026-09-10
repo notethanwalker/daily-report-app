@@ -32,6 +32,13 @@ def _series_values(frame, names, limit=5):
     return []
 
 
+def _margin_change_points(numerators, denominators):
+    if len(numerators)<5 or len(denominators)<5 or not denominators[0] or not denominators[4]:return None
+    current=numerators[0]/denominators[0]
+    prior=numerators[4]/denominators[4]
+    return (current-prior)*100.0
+
+
 def _date_text(value):
     try:
         if value is None:return None
@@ -137,6 +144,8 @@ class YahooFinanceProvider:
         quote=quote or _float(fast.get("last_price")) or num("currentPrice","regularMarketPrice")
         revenues=_series_values(income,["Total Revenue"])
         eps_values=_series_values(income,["Diluted EPS","Basic EPS"])
+        net_incomes=_series_values(income,["Net Income","Net Income Common Stockholders"])
+        operating_incomes=_series_values(income,["Operating Income"])
         shares=_float(fast.get("shares")) or num("sharesOutstanding","impliedSharesOutstanding")
         revenue_ttm=sum(revenues[:4]) if len(revenues)>=4 else num("totalRevenue")
         eps_ttm=sum(eps_values[:4]) if len(eps_values)>=4 else num("trailingEps","forwardEps")
@@ -154,6 +163,8 @@ class YahooFinanceProvider:
         peg=num("pegRatio","trailingPegRatio")
         if peg is None and pe and earnings_growth and earnings_growth>0:
             peg=pe/(earnings_growth*100 if earnings_growth<=5 else earnings_growth)
+        profit_margin_change=_margin_change_points(net_incomes,revenues)
+        operating_margin_change=_margin_change_points(operating_incomes,revenues)
 
         earnings_date=_calendar_value(calendar,"Earnings Date")
         ex_dividend_date=_calendar_value(calendar,"Ex-Dividend Date") or _date_text(info.get("exDividendDate"))
@@ -173,6 +184,8 @@ class YahooFinanceProvider:
             "profit_margin": num("profitMargins"),
             "gross_margin": num("grossMargins"),
             "operating_margin": num("operatingMargins"),
+            "profit_margin_change_yoy_points": profit_margin_change,
+            "operating_margin_change_yoy_points": operating_margin_change,
             "return_on_equity": num("returnOnEquity"),
             "return_on_assets": num("returnOnAssets"),
             "debt_to_equity": num("debtToEquity"),
@@ -194,7 +207,7 @@ class YahooFinanceProvider:
             "provider": self.name,
             "source_url": f"{SOURCE_ROOT}/{s}",
             "retrieved_at": datetime.now(timezone.utc).isoformat(),
-            "valuation_refresh_version": 6,
+            "valuation_refresh_version": 7,
         }
         if all(payload.get(k) is None for k in ["pe_ratio", "peg_ratio", "price_to_sales_ratio", "eps", "revenue_ttm", "shares_outstanding", "market_cap"]):
             raise YahooFinanceError(f"Yahoo Finance returned no usable valuation fields for {s}")
