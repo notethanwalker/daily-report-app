@@ -1,3 +1,4 @@
+# Coverage worker: broad bootstrap transitions automatically to incremental maintenance at 95%.
 name: Opportunity Coverage Expansion
 
 on:
