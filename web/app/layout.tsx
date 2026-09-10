@@ -3,6 +3,7 @@ import "./globals.css";
 import "./auth.css";
 import PwaRegister from "./pwa-register";
 import DestructiveActionGuard from "./destructive-action-guard";
+import AccessibilityRuntime from "./accessibility-runtime";
 
 export const metadata: Metadata = {
   title: "Daily Report",
@@ -24,5 +25,5 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return <html lang="en"><body><PwaRegister /><DestructiveActionGuard />{children}</body></html>;
+  return <html lang="en"><body><PwaRegister /><AccessibilityRuntime /><DestructiveActionGuard />{children}</body></html>;
 }
