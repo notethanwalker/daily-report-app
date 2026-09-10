@@ -1,0 +1,57 @@
+name: Opportunity Factor Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Comma-separated ticker basket (blank uses research default)"
+        required: false
+        default: ""
+      start:
+        description: "Start date YYYY-MM-DD"
+        required: false
+        default: "2010-01-01"
+      end:
+        description: "End date YYYY-MM-DD (blank = latest available)"
+        required: false
+        default: ""
+      split:
+        description: "Chronological discovery fraction"
+        required: false
+        default: "0.70"
+  push:
+    paths:
+      - ".github/workflows/opportunity-factor-validation.yml"
+      - "scripts/opportunity_factor_validation.py"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-factors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install research dependencies
+        run: python -m pip install --disable-pip-version-check "yfinance>=0.2.54" "pandas>=2.2"
+      - name: Validate Opportunity factors
+        shell: bash
+        run: |
+          START="${{ github.event.inputs.start || '2010-01-01' }}"
+          END="${{ github.event.inputs.end }}"
+          SPLIT="${{ github.event.inputs.split || '0.70' }}"
+          SYMBOLS="${{ github.event.inputs.symbols }}"
+          ARGS=(--start "$START" --split "$SPLIT" --output opportunity_factor_validation.json)
+          if [ -n "$END" ]; then ARGS+=(--end "$END"); fi
+          if [ -n "$SYMBOLS" ]; then ARGS+=(--symbols "$SYMBOLS"); fi
+          python scripts/opportunity_factor_validation.py "${ARGS[@]}"
+      - name: Upload validation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: opportunity-factor-validation
+          path: opportunity_factor_validation.json
+          retention-days: 30
