@@ -8,14 +8,10 @@ on:
         description: "Maximum missing or stale symbols to attempt"
         required: false
         default: "1000"
-  # Run hourly at minute 17; manual dispatch remains available.
+  # Run hourly at minute 17; manual dispatch remains available. Do not run directly
+  # from source pushes because the backend may still be deploying the matching OIDC code.
   schedule:
     - cron: "17 * * * *"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/opportunity-coverage.yml"
-      - "scripts/opportunity_bulk_worker.py"
 
 concurrency:
   group: opportunity-coverage-expansion
