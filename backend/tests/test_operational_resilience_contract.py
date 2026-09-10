@@ -14,6 +14,7 @@ CI = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 PROXY = (ROOT / "web/app/backend/[...path]/route.ts").read_text(encoding="utf-8")
 NEXT = (ROOT / "web/next.config.ts").read_text(encoding="utf-8")
 PACKAGE = (ROOT / "web/package.json").read_text(encoding="utf-8")
+PACKAGE_LOCK = ROOT / "web/package-lock.json"
 TSCONFIG = (ROOT / "web/tsconfig.json").read_text(encoding="utf-8")
 PLAYWRIGHT = (ROOT / "web/playwright.config.ts").read_text(encoding="utf-8")
 
@@ -79,7 +80,10 @@ class OperationalResilienceContract(unittest.TestCase):
         self.assertIn('"strict": true', TSCONFIG)
         self.assertIn('"typecheck": "tsc --noEmit"', PACKAGE)
         self.assertIn('"test:e2e": "playwright test"', PACKAGE)
+        self.assertTrue(PACKAGE_LOCK.exists(), "web/package-lock.json must be committed")
         self.assertIn("iPhone 15", PLAYWRIGHT)
+        self.assertIn("npm ci", CI)
+        self.assertNotIn("- run: npm install\n", CI)
         self.assertIn("npm audit --audit-level=high", CI)
         self.assertIn("npm run typecheck", CI)
         self.assertIn("npm run test:e2e", CI)
