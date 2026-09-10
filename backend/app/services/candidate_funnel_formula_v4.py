@@ -5,20 +5,19 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from ..models import FeatureSnapshot, MarketSnapshot, SymbolRegistry
+from .candidate_context_v4 import attach_candidate_context, candidate_fundamental_targets, enqueue_candidate_fundamentals
 from .candidate_funnel_v4 import (
-    DEEP_ENRICHMENT_LIMIT,
     _f,
     _latest_feature_map,
     _latest_market_map,
     _setup_type,
     _shortlist_bars,
-    enqueue_deep_enrichment,
 )
 from .classification_v4 import blend_rotation_context
 from .opportunity_convergence import evaluate_convergence_inputs
 from .opportunity_formula_v4 import build_opportunity_index, formula_metadata
 
-FORMULA_FUNNEL_MODEL_VERSION = "candidate-funnel-formula-v4.1"
+FORMULA_FUNNEL_MODEL_VERSION = "candidate-funnel-formula-v4.2"
 SOURCE_MULTIPLIER = 4
 MIN_SOURCE_ROWS = 200
 
@@ -26,10 +25,10 @@ MIN_SOURCE_ROWS = 200
 def _attention_stage(item: dict) -> str:
     score = _f(item.get("formula_score"), 0)
     state = str((item.get("convergence") or {}).get("state") or "extended")
-    enriched = item.get("enrichment_status") == "full"
+    feature_ready = item.get("feature_context_status") == "available"
     rotation = str(item.get("rotation_state") or "")
 
-    if score >= 80 and state in {"approaching", "triggered"} and enriched and rotation in {"leading_accelerating", "leading_stable", "recovering"}:
+    if score >= 80 and state in {"approaching", "triggered"} and feature_ready and rotation in {"leading_accelerating", "leading_stable", "recovering"}:
         return "high_conviction"
     if score >= 70 and state in {"approaching", "triggered"}:
         return "actionable"
@@ -39,7 +38,7 @@ def _attention_stage(item: dict) -> str:
 
 
 def _context_score(formula_score: float, macro_fit: float, base_buy: float, feature_ready: bool) -> float:
-    """Formula remains dominant; enrichment can refine priority but cannot replace discovery."""
+    """Formula remains dominant; cached context can refine priority but cannot replace discovery."""
     base_weight = 0.80 if feature_ready else 0.90
     feature_weight = 0.10 if feature_ready else 0.0
     value = formula_score * base_weight + (50.0 + macro_fit) * 0.10 + base_buy * feature_weight
@@ -93,11 +92,11 @@ def build_formula_candidate_funnel(
         if feature:
             base_buy = _f(feature.get("buy_score"), 50.0)
             base_source = "persisted_opportunity_model"
-            enrichment = "full"
+            feature_context = "available"
         else:
             base_buy = 50.0
-            base_source = "neutral_pending_enrichment"
-            enrichment = "scanner_only"
+            base_source = "neutral_without_feature_snapshot"
+            feature_context = "missing"
 
         contextual = _context_score(formula_score, macro_fit, base_buy, bool(feature))
         raw_criteria = dict(row.get("raw_criteria") or {})
@@ -130,14 +129,13 @@ def build_formula_candidate_funnel(
             "provider": row.get("provider"),
             "source_url": row.get("source_url"),
             "verification_status": row.get("verification_status"),
-            "enrichment_status": enrichment,
-            "needs_deep_enrichment": enrichment != "full",
+            "feature_context_status": feature_context,
             "_market": market,
             "_feature": feature,
             "explain": {
                 "stage_1_universe": "Full cached scannable stock universe after explicit technical/liquidity eligibility and optional hard screens.",
                 "stage_2_formula": f"Formula rank #{row.get('formula_rank')} at {formula_score:.1f}/100 using the active weighted criteria.",
-                "stage_3_context": f"Rotation contribution is bounded and confidence-weighted ({confidence:.2f}); persisted buy score contributes only when already cached.",
+                "stage_3_context": f"Rotation contribution is bounded and confidence-weighted ({confidence:.2f}); persisted feature score contributes only when already cached.",
                 "stage_4_priority": "Formula score remains dominant. Liquidity adds no ranking bonus because it is already an eligibility gate.",
             },
         })
@@ -173,8 +171,9 @@ def build_formula_candidate_funnel(
         item["attention_stage"] = _attention_stage(item)
         attention_counts[item["attention_stage"]] += 1
 
-    deep = [x["symbol"] for x in short if x["needs_deep_enrichment"]][:DEEP_ENRICHMENT_LIMIT]
-    queued = enqueue_deep_enrichment(db, deep) if enqueue_enrichment and deep else 0
+    context_summary = attach_candidate_context(db, short)
+    fundamental_targets = candidate_fundamental_targets(short)
+    queued_fundamentals = enqueue_candidate_fundamentals(db, short) if enqueue_enrichment else []
     counts = index.get("counts") or {}
     return {
         "model_version": FORMULA_FUNNEL_MODEL_VERSION,
@@ -184,8 +183,11 @@ def build_formula_candidate_funnel(
         "candidates": short,
         "attention_counts": attention_counts,
         "convergence_counts": convergence_counts,
-        "deep_enrichment_symbols": deep,
-        "deep_enrichment_jobs_added": queued,
+        "candidate_context": context_summary,
+        "fundamental_enrichment_targets": fundamental_targets,
+        "fundamental_jobs_added": queued_fundamentals,
+        "deep_enrichment_symbols": fundamental_targets,
+        "deep_enrichment_jobs_added": len(queued_fundamentals),
         "last_cache_update": index.get("last_cache_update"),
         "stages": [
             {"name": "Universe", "input": counts.get("scannable", 0), "output": counts.get("liquidity_eligible", 0), "rule": "Cached scannable stocks with required technicals and liquidity."},
@@ -193,8 +195,9 @@ def build_formula_candidate_funnel(
             {"name": "Formula rank", "input": counts.get("formula_complete", 0), "output": len(source), "rule": f"Take up to {source_limit} highest active-formula scores for cheap contextual evaluation."},
             {"name": "Context", "input": len(source), "output": len(short), "rule": "Formula remains dominant; bounded rotation and already-cached feature context refine priority. No provider calls."},
             {"name": "Readiness", "input": len(short), "output": attention_counts["actionable"] + attention_counts["high_conviction"], "rule": "Classify Watch → Developing → Actionable → High Conviction using formula strength plus convergence and available confirmation."},
-            {"name": "Deep enrichment", "input": len(short), "output": len(deep), "rule": f"At most {DEEP_ENRICHMENT_LIMIT} finalists missing cached enrichment are eligible for an explicit enrichment request."},
+            {"name": "Cached intelligence", "input": len(short), "output": context_summary.get("available", {}).get("news", 0), "rule": "Attach cached fundamentals, linked news, catalysts and flow without provider calls; freshness is reported separately."},
+            {"name": "Fundamental refresh targets", "input": len(short), "output": len(fundamental_targets), "rule": "At most 12 highest-priority candidates with missing/stale fundamentals are eligible for the existing bounded refresh queue."},
         ],
-        "methodology": "Formula-first candidate funnel. The active Opportunity Formula defines discovery across the full cached universe; contextual layers can refine priority but cannot redefine formula rank. Liquidity is a gate, never a bonus. Ranking itself performs zero provider calls.",
+        "methodology": "Formula-first candidate funnel. The active Opportunity Formula defines discovery across the full cached universe; contextual layers can refine priority but cannot redefine formula rank. Liquidity is a gate, never a bonus. Automatic ranking and shortlist refresh perform zero provider calls. Feature context, fundamentals, news, catalysts and flow are tracked as distinct data states.",
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
