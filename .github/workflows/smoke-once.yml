@@ -31,7 +31,7 @@ jobs:
             TOKEN=$(curl --fail --silent --show-error -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-smoke" | jq -r '.value')
             test -n "$TOKEN" && test "$TOKEN" != "null"
             echo "::add-mask::$TOKEN"
-            if curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer ${TOKEN}" "${API_BASE}/api/v1/events?days=1&limit=1" -o /dev/null; then
+            if curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer ${TOKEN}" "${API_BASE}/api/v1/events?days=7&limit=1" -o /dev/null; then
               echo "SMOKE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
               exit 0
             fi
