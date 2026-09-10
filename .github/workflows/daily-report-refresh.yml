@@ -5,56 +5,64 @@ on:
     - cron: "30 22 * * 1-5"
   workflow_dispatch:
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      API_BASE: https://daily-report-api-ero2.onrender.com
     steps:
       - name: Fetch current watchlist
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --retry 5 --retry-delay 5 https://daily-report-api-ero2.onrender.com/api/v1/watchlist > watchlist.json
+          OIDC=$(curl --fail --silent --show-error -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-maintenance" | jq -r '.value')
+          test -n "$OIDC" && test "$OIDC" != "null"
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 -H "Authorization: Bearer ${OIDC}" "${API_BASE}/api/v1/watchlist" > watchlist.json
           jq -e '.tickers | type == "array"' watchlist.json
 
       - name: Refresh watchlist snapshots
         run: |
           set -u
+          OIDC=$(curl --fail --silent --show-error -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-maintenance" | jq -r '.value')
           mapfile -t symbols < <(jq -r '.tickers[]' watchlist.json)
           for symbol in "${symbols[@]}"; do
             encoded=$(jq -rn --arg v "$symbol" '$v|@uri')
-            # Twelve Data already provides the primary history used by the app. Do not
-            # spend Alpha Vantage's small free daily budget re-verifying every ticker;
-            # reserve that budget for valuation fundamentals instead.
-            curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${encoded}?verify=false" -o /dev/null || true
+            curl --fail --silent --show-error --retry 2 --retry-delay 5 -H "Authorization: Bearer ${OIDC}" "${API_BASE}/api/v1/markets/${encoded}?verify=false" -o /dev/null || true
             sleep 9
           done
 
       - name: Refresh macro rotation universe
         run: |
           set -u
+          OIDC=$(curl --fail --silent --show-error -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-maintenance" | jq -r '.value')
           symbols=(SPY QQQ XLK XLF XLE XLV XLI XLY XLP XLB XLU XLRE XLC SMH EUV DRAM NCLD IGV CIBR ARKX NLR QTUM BOTZ GLD ITA PAVE KRE XBI IYT URA COPX XME)
           for symbol in "${symbols[@]}"; do
-            curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${symbol}?verify=false" -o /dev/null || true
+            curl --fail --silent --show-error --retry 2 --retry-delay 5 -H "Authorization: Bearer ${OIDC}" "${API_BASE}/api/v1/markets/${symbol}?verify=false" -o /dev/null || true
             sleep 9
           done
 
       - name: Refresh valuation fundamentals
         run: |
           set -u
-          # Company fundamentals only. Broad ETFs normally do not have meaningful
-          # P/E, P/S or PEG in Alpha Vantage OVERVIEW and are intentionally skipped.
+          OIDC=$(curl --fail --silent --show-error -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-maintenance" | jq -r '.value')
           symbols=(AAOI NBIS SNDK AXTI CRBS IONQ OKLO)
           for symbol in "${symbols[@]}"; do
-            curl --fail --silent --show-error --retry 1 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${symbol}/fundamentals" -o /dev/null || true
-            # Stay comfortably inside free-provider burst limits.
+            curl --fail --silent --show-error --retry 1 -H "Authorization: Bearer ${OIDC}" "${API_BASE}/api/v1/markets/${symbol}/fundamentals" -o /dev/null || true
             sleep 13
           done
 
       - name: Warm live flow cache
         run: |
-          curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/flow/recent?limit=100" -o /dev/null || true
+          set -euo pipefail
+          OIDC=$(curl --fail --silent --show-error -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-maintenance" | jq -r '.value')
+          curl --fail --silent --show-error --retry 2 --retry-delay 5 -H "Authorization: Bearer ${OIDC}" "${API_BASE}/api/v1/flow/recent?limit=100" -o /dev/null
 
       - name: Persist daily report snapshot
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --retry 5 --retry-delay 5 -X POST https://daily-report-api-ero2.onrender.com/api/v1/report/generate | jq '{id, report_date, market_data_count, missing_market_symbols, verification_summary}'
+          OIDC=$(curl --fail --silent --show-error -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-maintenance" | jq -r '.value')
+          curl --fail --silent --show-error --retry 5 --retry-delay 5 -H "Authorization: Bearer ${OIDC}" -X POST "${API_BASE}/api/v1/report/generate" | jq '{id, report_date, market_data_count, missing_market_symbols, verification_summary}'
