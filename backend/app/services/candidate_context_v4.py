@@ -8,9 +8,10 @@ from ..intelligence_cache_models import SecurityIntelligenceCache
 from ..models import FundamentalCache, RefreshQueueItem
 from .candidate_evidence_v4 import classify_candidate_evidence
 from .flow_confirmation_v4 import build_flow_confirmation_map
+from .fundamental_assessment_v4 import assess_fundamentals
 from .provider_orchestrator import FRESHNESS_POLICIES, is_stale
 
-CONTEXT_MODEL_VERSION = "candidate-context-v4.6"
+CONTEXT_MODEL_VERSION = "candidate-context-v4.7"
 NEWS_TTL = timedelta(minutes=30)
 FLOW_TTL = timedelta(minutes=30)
 CATALYST_TTL = timedelta(hours=12)
@@ -64,7 +65,9 @@ def candidate_context_map(db: Session, symbols: list[str]) -> dict[str, dict]:
     out: dict[str, dict] = {}
     for symbol in symbols:
         irow = intel.get(symbol)
+        frow = funds.get(symbol)
         payload = dict(irow.payload or {}) if irow else {}
+        fundamental_payload = dict(frow.payload or {}) if frow else {}
         news = dict(payload.get("news") or {})
         flow = dict(payload.get("flow") or {})
         catalysts = dict(payload.get("catalysts") or {})
@@ -74,7 +77,7 @@ def candidate_context_map(db: Session, symbols: list[str]) -> dict[str, dict]:
             "flow": _section_state(payload, "flow", FLOW_TTL, now),
             "catalysts": _section_state(payload, "catalysts", CATALYST_TTL, now),
             "filings": _section_state(payload, "filings", FILINGS_TTL, now),
-            "fundamentals": _fundamental_state(funds.get(symbol), now),
+            "fundamentals": _fundamental_state(frow, now),
         }
         articles = list(news.get("articles") or [])
         events = list(flow.get("events") or [])
@@ -88,6 +91,12 @@ def candidate_context_map(db: Session, symbols: list[str]) -> dict[str, dict]:
             "persistent_flow": flow_confirmations.get(symbol) or {},
             "catalysts": {"count": len(upcoming), "upcoming": upcoming[:4]},
             "filings": {"count": len(recent_filings), "top": recent_filings[:4], "provider": filings.get("provider"), "source_url": filings.get("source_url"), "error": filings.get("error")},
+            "fundamentals": {
+                "assessment": assess_fundamentals(fundamental_payload) if fundamental_payload else None,
+                "provider": frow.provider if frow else None,
+                "retrieved_at": frow.retrieved_at.isoformat() if frow and frow.retrieved_at else None,
+                "source_url": fundamental_payload.get("source_url") if fundamental_payload else None,
+            },
             "cache_only": True,
         }
         bundle["evidence"] = classify_candidate_evidence(bundle)
@@ -193,5 +202,5 @@ def attach_candidate_context(db: Session, candidates: list[dict]) -> dict:
         "candidate_count": len(candidates),
         "available": coverage,
         "fresh": fresh,
-        "policy": "Cache-first context only. Persistent flow uses one batched stored-event read. Evidence labels are descriptive and do not alter Opportunity scores. Ranking and automatic shortlist refresh perform zero news/flow/event/filing provider calls.",
+        "policy": "Cache-first context only. Persistent flow and fundamental assessment reuse batched stored data. Evidence labels are descriptive and do not alter Opportunity scores. Ranking and automatic shortlist refresh perform zero news/flow/event/filing provider calls.",
     }
