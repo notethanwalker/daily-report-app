@@ -6,10 +6,12 @@ from ..models import AlertEvent, AlertRule, FeatureSnapshot, MarketSnapshot
 from ..v2_models import AlertDeliveryPreference, PushSubscription
 from ..v4_models import AlertEvaluationStateV4
 from .alert_transition_logic_v4 import transition_entered
+from .candidate_alert_context_v4 import CONTEXT_ALERT_KINDS, evaluate_candidate_context_alert
 from .opportunity_formula_alerts_v4 import FORMULA_ALERT_KINDS, evaluate_formula_alert_values
 from .typed_alerts import evaluate_typed_value, typed_trigger
 
-TRANSITION_KINDS={"opportunity_convergence","williams_oversold_entry","williams_oversold_recovery","ma100_approach_from_above","williams_ma100_trigger","opportunity_invalidated",*FORMULA_ALERT_KINDS}
+SPECIAL_TRANSITION_KINDS={"portfolio_concentration_breach",*CONTEXT_ALERT_KINDS}
+TRANSITION_KINDS={"opportunity_convergence","williams_oversold_entry","williams_oversold_recovery","ma100_approach_from_above","williams_ma100_trigger","opportunity_invalidated",*FORMULA_ALERT_KINDS,*SPECIAL_TRANSITION_KINDS}
 TYPED_KINDS={"ma100_proximity","ma200_proximity","catalyst_days","persistent_flow","portfolio_position_weight","regime_transition",*TRANSITION_KINDS}
 
 
@@ -32,7 +34,7 @@ def _legacy_triggered(value,operator,threshold):
 def _transition_trigger(db,rule,meta,default_triggered):
     if rule.kind not in TRANSITION_KINDS:return default_triggered,False
     meta=meta or {};current=str(meta.get("state") or "unavailable");row=db.get(AlertEvaluationStateV4,rule.id);previous=row.state if row else None;entered=transition_entered(rule.kind,previous,current,meta)
-    payload={"previous_state":previous,"current_state":current,"model_version":meta.get("model_version"),"model_config_hash":meta.get("model_config_hash"),"score":meta.get("score"),"rank":meta.get("rank"),"formula_id":meta.get("formula_id")}
+    payload={"previous_state":previous,"current_state":current,"model_version":meta.get("model_version"),"model_config_hash":meta.get("model_config_hash"),"score":meta.get("score"),"rank":meta.get("rank"),"formula_id":meta.get("formula_id"),"label":meta.get("label"),"verdict":meta.get("verdict"),"event_risk":meta.get("event_risk"),"largest_symbol":meta.get("largest_symbol")}
     if row:
         row.kind=rule.kind;row.symbol=rule.symbol;row.state=current;row.state_as_of=meta.get("as_of") or meta.get("last_cache_update");row.payload=payload
     else:
@@ -57,6 +59,9 @@ def _send_pushes(db,event:AlertEvent,rule:AlertRule,pref:AlertDeliveryPreference
         "opportunity_invalidated":f"{rule.symbol} Opportunity convergence became Invalidated",
         "opportunity_formula_score":f"{rule.symbol} crossed the {meta.get('formula_name','saved formula')} score threshold · {meta.get('score','—')}",
         "opportunity_formula_rank":f"{rule.symbol} entered top {meta.get('top_n','—')} for {meta.get('formula_name','saved formula')} · rank #{meta.get('rank','—')}",
+        "candidate_context_changed":f"{rule.symbol} company context changed · {meta.get('label','—')}{' · event risk' if meta.get('event_risk') else ''}",
+        "candidate_flow_changed":f"{rule.symbol} flow confirmation changed · {meta.get('verdict','—')} · {meta.get('confidence','—')} confidence",
+        "portfolio_concentration_breach":f"Portfolio concentration breached {rule.threshold}% · {meta.get('largest_symbol','largest position')} at {event.value if event.value is not None else '—'}%",
     }
     body=transition_bodies.get(rule.kind) or f"{rule.label}: {event.value if event.value is not None else 'condition met'}"
     payload=json.dumps({"title":f"{rule.symbol or 'Market'} alert","body":body,"url":"/?tab=Alerts","tag":f"daily-report-alert-{rule.id}","alert_id":rule.id});stale=[]
@@ -73,6 +78,10 @@ def evaluate_alerts(db):
         typed=rule.kind in TYPED_KINDS;meta={}
         if rule.kind in FORMULA_ALERT_KINDS:
             value,meta=formula_values.get(rule.id,(None,{"state":"unavailable","reason":"formula_value_missing"}));triggered=False
+        elif rule.kind in CONTEXT_ALERT_KINDS:
+            value,meta=evaluate_candidate_context_alert(db,rule.kind,rule.symbol or "");triggered=False
+        elif rule.kind=="portfolio_concentration_breach":
+            value,base=evaluate_typed_value(db,rule.user_email,"portfolio_position_weight",rule.symbol);breached=bool(value is not None and rule.threshold is not None and value>=rule.threshold);meta={**(base or {}),"state":"breached" if breached else "within_limit","as_of":now.isoformat()};triggered=False
         elif typed:
             value,meta=evaluate_typed_value(db,rule.user_email,rule.kind,rule.symbol);triggered=typed_trigger(rule.kind,value,rule.operator,rule.threshold)
         else:
