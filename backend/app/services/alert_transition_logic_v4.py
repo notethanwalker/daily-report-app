@@ -63,4 +63,10 @@ def transition_entered(kind: str, previous: str | None, current: str, meta: dict
         return current == "at_or_above" and previous == "below"
     if kind == "opportunity_formula_rank":
         return current == "inside" and previous == "outside"
+    if kind == "candidate_context_changed":
+        return previous is not None and current != previous and current != "unavailable"
+    if kind == "candidate_flow_changed":
+        return previous is not None and current != previous and current in {"confirmation", "contradiction", "mixed"}
+    if kind == "portfolio_concentration_breach":
+        return current == "breached" and previous == "within_limit"
     return False
