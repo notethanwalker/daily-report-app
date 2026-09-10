@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..services.candidate_context_v4 import attach_candidate_context, refresh_candidate_intelligence
 from ..services.candidate_funnel_formula_v4 import build_formula_candidate_funnel
 from ..services.opportunity_criterion_governance import governed_catalog
 from ..services.opportunity_formula_v4 import (
@@ -138,6 +139,7 @@ def opportunity_formula_funnel(
     payload: FormulaDefinition,
     limit: int = Query(default=50, ge=1, le=200),
     enrich: bool = Query(default=False),
+    refresh_context: bool = Query(default=False),
     db: Session = Depends(get_db),
     user: str = Depends(current_user),
 ):
@@ -153,6 +155,9 @@ def opportunity_formula_funnel(
         limit=limit,
         enqueue_enrichment=enrich,
     )
+    if refresh_context:
+        result["live_context_refresh"] = refresh_candidate_intelligence(db, result.get("candidates") or [])
+        result["candidate_context"] = attach_candidate_context(db, result.get("candidates") or [])
     return record_funnel_state(
         db,
         user=user,
