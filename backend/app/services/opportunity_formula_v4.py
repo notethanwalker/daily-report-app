@@ -22,6 +22,8 @@ DEFAULT_FORMULA = {
     "ma100_slope": 5.0,
     "approach_velocity": 5.0,
 }
+SORT_FIELDS = {"score", "williams", "ma100_proximity", "ma100_slope", "approach_velocity", "liquidity", "symbol"}
+SORT_DIRECTIONS = {"asc", "desc"}
 
 CRITERIA = {
     "williams": {
@@ -59,34 +61,10 @@ CRITERIA = {
 }
 
 FILTER_FIELDS = {
-    "williams_r_14": {
-        "key": "williams_r_14",
-        "label": "Williams %R",
-        "operators": ["<=", ">="],
-        "default_operator": "<=",
-        "default_value": -80.0,
-    },
-    "price_vs_ma100_percent": {
-        "key": "price_vs_ma100_percent",
-        "label": "Distance above 100MA (%)",
-        "operators": ["<=", ">="],
-        "default_operator": ">=",
-        "default_value": 0.0,
-    },
-    "ma100_slope_20d_percent": {
-        "key": "ma100_slope_20d_percent",
-        "label": "100MA 20D slope (%)",
-        "operators": ["<=", ">="],
-        "default_operator": ">=",
-        "default_value": 0.0,
-    },
-    "approach_velocity_100_5d": {
-        "key": "approach_velocity_100_5d",
-        "label": "5D approach velocity",
-        "operators": ["<=", ">="],
-        "default_operator": ">=",
-        "default_value": 0.0,
-    },
+    "williams_r_14": {"key": "williams_r_14", "label": "Williams %R", "operators": ["<=", ">="], "default_operator": "<=", "default_value": -80.0},
+    "price_vs_ma100_percent": {"key": "price_vs_ma100_percent", "label": "Distance above 100MA (%)", "operators": ["<=", ">="], "default_operator": ">=", "default_value": 0.0},
+    "ma100_slope_20d_percent": {"key": "ma100_slope_20d_percent", "label": "100MA 20D slope (%)", "operators": ["<=", ">="], "default_operator": ">=", "default_value": 0.0},
+    "approach_velocity_100_5d": {"key": "approach_velocity_100_5d", "label": "5D approach velocity", "operators": ["<=", ">="], "default_operator": ">=", "default_value": 0.0},
 }
 
 
@@ -134,6 +112,16 @@ def validate_filters(filters: list[dict] | None) -> list[dict]:
     if len(clean) > 12:
         raise ValueError("Opportunity formulas support at most 12 hard filters")
     return clean
+
+
+def validate_sort(sort_by: str, sort_dir: str) -> tuple[str, str]:
+    by = str(sort_by or "score").strip().lower()
+    direction = str(sort_dir or "desc").strip().lower()
+    if by not in SORT_FIELDS:
+        raise ValueError(f"Unsupported Opportunity sort field: {by}")
+    if direction not in SORT_DIRECTIONS:
+        raise ValueError(f"Unsupported Opportunity sort direction: {direction}")
+    return by, direction
 
 
 def normalized_weights(criteria: dict | None) -> dict[str, float]:
@@ -192,6 +180,31 @@ def formula_metadata(criteria: dict | None, filters: list[dict] | None = None) -
     }
 
 
+def _sort_value(item: dict, sort_by: str):
+    if sort_by == "score":
+        return item.get("score")
+    if sort_by == "symbol":
+        return item.get("symbol")
+    if sort_by == "liquidity":
+        return item.get("average_dollar_volume_20d")
+    return (item.get("raw_criteria") or {}).get(sort_by)
+
+
+def sort_index_rows(rows: list[dict], sort_by: str = "score", sort_dir: str = "desc") -> tuple[list[dict], str, str]:
+    by, direction = validate_sort(sort_by, sort_dir)
+    present = [item for item in rows if _sort_value(item, by) is not None]
+    missing = [item for item in rows if _sort_value(item, by) is None]
+    reverse = direction == "desc"
+    if by == "symbol":
+        present.sort(key=lambda item: str(_sort_value(item, by)), reverse=reverse)
+    else:
+        present.sort(key=lambda item: (float(_sort_value(item, by)), item.get("symbol") or ""), reverse=reverse)
+    ordered = present + missing
+    for position, item in enumerate(ordered, 1):
+        item["display_position"] = position
+    return ordered, by, direction
+
+
 def build_opportunity_index(
     db: Session,
     *,
@@ -199,9 +212,12 @@ def build_opportunity_index(
     filters: list[dict] | None = None,
     include_etfs: bool = False,
     limit: int = 300,
+    sort_by: str = "score",
+    sort_dir: str = "desc",
 ) -> dict:
     weights = validate_formula(criteria)
     clean_filters = validate_filters(filters)
+    requested_sort, requested_direction = validate_sort(sort_by, sort_dir)
     registry = _registry_map(db)
     latest_rows = _latest_snapshot_rows(db)
     rows: list[dict] = []
@@ -264,13 +280,15 @@ def build_opportunity_index(
             "source_url": payload.get("source_url"),
         })
 
-    rows.sort(key=lambda item: (float(item["score"]), item["symbol"]), reverse=True)
-    for rank, item in enumerate(rows, 1):
-        item["rank"] = rank
+    formula_ranked = sorted(rows, key=lambda item: (float(item["score"]), item["symbol"]), reverse=True)
+    for rank, item in enumerate(formula_ranked, 1):
+        item["formula_rank"] = rank
+    ordered, requested_sort, requested_direction = sort_index_rows(formula_ranked, requested_sort, requested_direction)
     result_limit = max(1, min(int(limit), 1000))
     return {
-        "rows": rows[:result_limit],
+        "rows": ordered[:result_limit],
         "formula": formula_metadata(weights, clean_filters),
+        "sort": {"by": requested_sort, "direction": requested_direction},
         "criteria_catalog": list(CRITERIA.values()),
         "filter_catalog": list(FILTER_FIELDS.values()),
         "counts": {
@@ -280,14 +298,11 @@ def build_opportunity_index(
             "liquidity_eligible": liquidity_eligible,
             "filtered_out": filtered_out,
             "formula_complete": formula_complete,
-            "returned": min(len(rows), result_limit),
+            "returned": min(len(ordered), result_limit),
         },
-        "liquidity_filter": {
-            "min_price": MIN_PRICE,
-            "min_average_dollar_volume_20d": MIN_AVG_DOLLAR_VOLUME_20D,
-        },
+        "liquidity_filter": {"min_price": MIN_PRICE, "min_average_dollar_volume_20d": MIN_AVG_DOLLAR_VOLUME_20D},
         "include_etfs": include_etfs,
         "last_cache_update": newest.isoformat() if newest else None,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "data_strategy": "Ranks the full cached, technically complete and liquid universe after optional hard screens, before truncating results. The index performs zero provider calls.",
+        "data_strategy": "Ranks the full cached, technically complete and liquid universe after optional hard screens, then applies the requested full-universe sort before truncating results. The index performs zero provider calls.",
     }
