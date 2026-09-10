@@ -1,7 +1,7 @@
 from pathlib import Path
 import unittest
 ROOT=Path(__file__).resolve().parents[2]
-OP=(ROOT/'web/app/v4/opportunity-table-v4.tsx').read_text()
+OP=(ROOT/'web/app/v4/opportunity-formula-builder-v4.tsx').read_text()
 MAC=(ROOT/'web/app/v4/macro-rotation-table-v4.tsx').read_text()
 CSS=(ROOT/'web/app/v4/v4.css').read_text()
 class StrengthColorContract(unittest.TestCase):
