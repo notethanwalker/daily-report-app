@@ -9,7 +9,7 @@ import ResearchMetricStripV4 from "./research-metric-strip-v4";
 import "./v4.css";
 
 const API="/backend";
-const REQUEST_TIMEOUT_MS=12000;
+const REQUEST_TIMEOUT_MS=35000;
 type LayerKey="research"|"macro"|"opportunity"|"deployment";
 type Overview={version:string;pipeline:string[];layers:Record<LayerKey,any>;sources?:any[]};
 type Deployment={basket:string;capital:number;eligible:any[];unavailable:any[];methodology:string;model:string;fundamental_score_policy?:string};
