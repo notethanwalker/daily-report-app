@@ -2,9 +2,10 @@
 
 import {FormEvent,useEffect,useMemo,useState} from "react";
 import PortfolioScenarioV4 from "./v4/portfolio-scenario-v4";
+import {V4_TIMEOUT_HEAVY_MS} from "./v4/request-policy";
 
 const API="/backend";
-async function api(path:string,options:RequestInit={},timeout=12000){const c=new AbortController(),t=setTimeout(()=>c.abort(),timeout);try{const r=await fetch(`${API}${path}`,{cache:"no-store",credentials:"include",...options,headers:{...(options.headers||{})},signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d?.detail||`HTTP ${r.status}`);return d}catch(e:any){if(e?.name==="AbortError")throw new Error("Portfolio request timed out. Retry this view.");throw e}finally{clearTimeout(t)}}
+async function api(path:string,options:RequestInit={},timeout=V4_TIMEOUT_HEAVY_MS){const c=new AbortController(),t=setTimeout(()=>c.abort(),timeout);try{const r=await fetch(`${API}${path}`,{cache:"no-store",credentials:"include",...options,headers:{...(options.headers||{})},signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d?.detail||`HTTP ${r.status}`);return d}catch(e:any){if(e?.name==="AbortError")throw new Error("Portfolio request timed out. Retry this view.");throw e}finally{clearTimeout(t)}}
 const money=(v:any)=>v==null?"—":Math.abs(Number(v))>=1e9?`$${(Number(v)/1e9).toFixed(2)}B`:Math.abs(Number(v))>=1e6?`$${(Number(v)/1e6).toFixed(2)}M`:Number(v).toLocaleString(undefined,{style:"currency",currency:"USD",maximumFractionDigits:2});
 const pct=(v:any)=>v==null?"—":`${Number(v)>=0?"+":""}${Number(v).toFixed(2)}%`;const cls=(v:any)=>v==null?"":Number(v)>=0?"positive":"negative";
 const qty=(v:any)=>v==null?"—":Number(v).toLocaleString(undefined,{maximumFractionDigits:4});
