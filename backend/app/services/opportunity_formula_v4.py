@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from ..models import FundamentalCache
+from .fundamental_assessment_v4 import assess_fundamentals
 from .opportunity_quality_v4 import attach_opportunity_quality
 from .opportunity_scanner import (
     MIN_AVG_DOLLAR_VOLUME_20D,
@@ -23,7 +25,7 @@ DEFAULT_FORMULA = {
     "ma100_slope": 5.0,
     "approach_velocity": 5.0,
 }
-SORT_FIELDS = {"score", "quality_adjusted_score", "quality_confidence", "williams", "ma100_proximity", "ma50_proximity", "ma100_slope", "approach_velocity", "relative_volume", "liquidity", "symbol"}
+SORT_FIELDS = {"score", "quality_adjusted_score", "quality_confidence", "williams", "ma100_proximity", "ma50_proximity", "ma100_slope", "approach_velocity", "relative_volume", "fundamental_quality", "valuation_quality", "liquidity", "symbol"}
 SORT_DIRECTIONS = {"asc", "desc"}
 
 CRITERIA = {
@@ -33,6 +35,8 @@ CRITERIA = {
     "ma100_slope": {"key":"ma100_slope","label":"100MA slope","description":"Rewards a positively sloped 100-day moving average.","raw_field":"ma100_slope_20d_percent","higher_score_is_better":True,"min_sessions":120,"coverage_class":"broad_cache_safe","hypothesis":"A rising 100-day moving average provides trend confirmation and may distinguish constructive pullbacks from structural deterioration."},
     "approach_velocity": {"key":"approach_velocity","label":"5D approach velocity","description":"Rewards movement toward the 100MA over the latest five sessions.","raw_field":"approach_velocity_100_5d","higher_score_is_better":True,"min_sessions":105,"coverage_class":"broad_cache_safe","hypothesis":"A measured approach toward support can identify developing entries before the static distance condition is fully reached."},
     "relative_volume": {"key":"relative_volume","label":"Relative volume","description":"Rewards current participation relative to the prior 20-session average; 0.5x scores 0 and 2.0x or higher scores 100.","raw_field":"relative_volume","higher_score_is_better":True,"min_sessions":21,"coverage_class":"broad_cache_safe","hypothesis":"Elevated participation can strengthen the information content of an otherwise similar technical setup, but is treated only as optional confirmation."},
+    "fundamental_quality": {"key":"fundamental_quality","label":"Fundamental quality","description":"Rewards growth, profitability, cash generation and balance-sheet strength using the latest cached fundamental assessment. Missing fundamentals are never imputed.","raw_field":"fundamental_assessment.quality_score","higher_score_is_better":True,"min_sessions":1,"coverage_class":"cached_fundamentals_only","hypothesis":"Stronger underlying business quality can improve the durability of a technical opportunity and reduce value-trap risk."},
+    "valuation_quality": {"key":"valuation_quality","label":"Valuation quality","description":"Rewards more favorable cached valuation context while respecting P/E applicability. A low or meaningless P/E alone cannot create a high score.","raw_field":"fundamental_assessment.valuation_score","higher_score_is_better":True,"min_sessions":1,"coverage_class":"cached_fundamentals_only","hypothesis":"More favorable valuation can improve entry asymmetry when paired with adequate business quality, but valuation alone is not treated as a buy signal."},
 }
 
 FILTER_FIELDS = {
@@ -86,9 +90,10 @@ def validate_sort(sort_by:str,sort_dir:str)->tuple[str,str]:
 def normalized_weights(criteria:dict|None)->dict[str,float]:
     clean=validate_formula(criteria);total=sum(clean.values());return {key:round(value/total*100.0,4) for key,value in clean.items()}
 
-def score_components(payload:dict)->dict[str,float|None]:
+def score_components(payload:dict,fundamental_payload:dict|None=None)->dict[str,float|None]:
     williams=_f(payload.get("williams_r_14"));ma50_distance=_f(payload.get("price_vs_ma50_percent"));ma100_distance=_f(payload.get("price_vs_ma100_percent"));relative_volume=_f(payload.get("relative_volume"));_,confirmation=_confirmation_score(payload)
-    return {"williams":None if williams is None else round(_williams_score(williams),4),"ma100_proximity":None if ma100_distance is None else round(_ma100_score(ma100_distance),4),"ma50_proximity":None if ma50_distance is None else round(_ma100_score(ma50_distance),4),"ma100_slope":_f(confirmation.get("ma_slope_score")),"approach_velocity":_f(confirmation.get("approach_score")),"relative_volume":None if relative_volume is None else round(_relative_volume_score(relative_volume),4)}
+    fundamental=assess_fundamentals(fundamental_payload) if fundamental_payload else None
+    return {"williams":None if williams is None else round(_williams_score(williams),4),"ma100_proximity":None if ma100_distance is None else round(_ma100_score(ma100_distance),4),"ma50_proximity":None if ma50_distance is None else round(_ma100_score(ma50_distance),4),"ma100_slope":_f(confirmation.get("ma_slope_score")),"approach_velocity":_f(confirmation.get("approach_score")),"relative_volume":None if relative_volume is None else round(_relative_volume_score(relative_volume),4),"fundamental_quality":_f((fundamental or {}).get("quality_score")),"valuation_quality":_f((fundamental or {}).get("valuation_score"))}
 
 def formula_score(components:dict[str,float|None],criteria:dict|None)->float|None:
     weights=validate_formula(criteria)
@@ -106,8 +111,8 @@ def passes_filters(payload:dict,filters:list[dict]|None)->bool:
     return True
 
 def formula_metadata(criteria:dict|None,filters:list[dict]|None=None)->dict:
-    clean=validate_formula(criteria);clean_filters=validate_filters(filters);effective=normalized_weights(clean);required_sessions=max(CRITERIA[key]["min_sessions"] for key in clean)
-    return {"schema_version":SCHEMA_VERSION,"criteria":clean,"filters":clean_filters,"effective_weights_percent":effective,"required_sessions":required_sessions,"label":" + ".join(f"{effective[key]:.1f}% {CRITERIA[key]['label']}" for key in clean),"score_semantics":"Relative Opportunity Index (0–100). It is a ranking score, not an expected-return or probability estimate.","filter_semantics":"Hard screens determine universe membership before ranking and never contribute points to the Opportunity Index.","quality_semantics":"Raw formula score/rank remain authoritative for the selected formula. Quality-adjusted score/rank are separate confidence-weighted decision aids and never rewrite the user formula."}
+    clean=validate_formula(criteria);clean_filters=validate_filters(filters);effective=normalized_weights(clean);required_sessions=max(CRITERIA[key]["min_sessions"] for key in clean);fundamental_limited=any(CRITERIA[key].get("coverage_class")=="cached_fundamentals_only" for key in clean)
+    return {"schema_version":SCHEMA_VERSION,"criteria":clean,"filters":clean_filters,"effective_weights_percent":effective,"required_sessions":required_sessions,"label":" + ".join(f"{effective[key]:.1f}% {CRITERIA[key]['label']}" for key in clean),"score_semantics":"Relative Opportunity Index (0–100). It is a ranking score, not an expected-return or probability estimate.","filter_semantics":"Hard screens determine universe membership before ranking and never contribute points to the Opportunity Index.","quality_semantics":"Raw formula score/rank remain authoritative for the selected formula. Quality-adjusted score/rank are separate confidence-weighted decision aids and never rewrite the user formula.","coverage_warning":"This formula uses cached fundamental criteria. Symbols without sufficient cached fundamental assessment are excluded rather than assigned neutral values; no provider calls occur during ranking." if fundamental_limited else None}
 
 def _sort_value(item:dict,sort_by:str):
     if sort_by=="score":return item.get("score")
@@ -128,6 +133,8 @@ def sort_index_rows(rows:list[dict],sort_by:str="score",sort_dir:str="desc")->tu
 
 def build_opportunity_index(db:Session,*,criteria:dict|None=None,filters:list[dict]|None=None,include_etfs:bool=False,limit:int=300,sort_by:str="score",sort_dir:str="desc",target_symbols:list[str]|set[str]|None=None)->dict:
     weights=validate_formula(criteria);clean_filters=validate_filters(filters);requested_sort,requested_direction=validate_sort(sort_by,sort_dir);registry=_registry_map(db);latest_rows=_latest_snapshot_rows(db);rows=[];scannable=technical_complete=liquidity_eligible=formula_complete=filtered_out=0;newest=None
+    needs_fundamentals=bool({"fundamental_quality","valuation_quality"}&(set(weights)|{requested_sort}))
+    fundamental_rows={r.symbol.upper():r for r in db.query(FundamentalCache).all()} if needs_fundamentals else {}
     for row in latest_rows:
         payload=row.payload or {};reg=registry.get(row.symbol.upper())
         if not _is_scannable(reg,payload,include_etfs):continue
@@ -137,16 +144,17 @@ def build_opportunity_index(db:Session,*,criteria:dict|None=None,filters:list[di
         if price<MIN_PRICE or avg_dollar_volume is None or avg_dollar_volume<MIN_AVG_DOLLAR_VOLUME_20D:continue
         liquidity_eligible+=1
         if not passes_filters(payload,clean_filters):filtered_out+=1;continue
-        components=score_components(payload);score=formula_score(components,weights)
+        fundamental_row=fundamental_rows.get(row.symbol.upper()) if needs_fundamentals else None;fundamental_payload=(fundamental_row.payload or {}) if fundamental_row else None;fundamental=assess_fundamentals(fundamental_payload) if fundamental_payload else None
+        components=score_components(payload,fundamental_payload);score=formula_score(components,weights)
         if score is None:continue
-        formula_complete+=1;raw={"williams":round(williams,2),"ma50_proximity":_f(payload.get("price_vs_ma50_percent")),"ma100_proximity":round(ma100_distance,3),"ma100_slope":_f(payload.get("ma100_slope_20d_percent")),"approach_velocity":_f(payload.get("approach_velocity_100_5d")),"relative_volume":_f(payload.get("relative_volume"))}
-        rows.append({"symbol":row.symbol.upper(),"name":(reg.name if reg else None) or payload.get("name"),"sector":(reg.sector if reg else None) or payload.get("sector"),"industry":(reg.industry if reg else None) or payload.get("industry"),"asset_type":(reg.asset_type if reg else None) or payload.get("asset_type"),"score":score,"criterion_scores":components,"raw_criteria":raw,"price":round(price,4),"ma50":_f(payload.get("ma50")),"ma100":_f(payload.get("ma100")),"ma200":_f(payload.get("ma200")),"change_percent":_f(payload.get("change_percent")),"seven_day_percent":_f(payload.get("seven_day_percent")),"thirty_day_percent":_f(payload.get("thirty_day_percent")),"average_dollar_volume_20d":round(avg_dollar_volume,2),"as_of":payload.get("as_of") or row.as_of,"retrieved_at":row.retrieved_at.isoformat(),"provider":payload.get("provider") or row.provider,"technical_source":payload.get("technical_source"),"source_url":payload.get("source_url"),"verification_status":payload.get("verification_status")})
+        formula_complete+=1;raw={"williams":round(williams,2),"ma50_proximity":_f(payload.get("price_vs_ma50_percent")),"ma100_proximity":round(ma100_distance,3),"ma100_slope":_f(payload.get("ma100_slope_20d_percent")),"approach_velocity":_f(payload.get("approach_velocity_100_5d")),"relative_volume":_f(payload.get("relative_volume")),"fundamental_quality":_f((fundamental or {}).get("quality_score")),"valuation_quality":_f((fundamental or {}).get("valuation_score"))}
+        rows.append({"symbol":row.symbol.upper(),"name":(reg.name if reg else None) or payload.get("name"),"sector":(reg.sector if reg else None) or payload.get("sector"),"industry":(reg.industry if reg else None) or payload.get("industry"),"asset_type":(reg.asset_type if reg else None) or payload.get("asset_type"),"score":score,"criterion_scores":components,"raw_criteria":raw,"fundamental_assessment":fundamental,"fundamental_provider":fundamental_row.provider if fundamental_row else None,"fundamental_retrieved_at":fundamental_row.retrieved_at.isoformat() if fundamental_row else None,"price":round(price,4),"ma50":_f(payload.get("ma50")),"ma100":_f(payload.get("ma100")),"ma200":_f(payload.get("ma200")),"change_percent":_f(payload.get("change_percent")),"seven_day_percent":_f(payload.get("seven_day_percent")),"thirty_day_percent":_f(payload.get("thirty_day_percent")),"average_dollar_volume_20d":round(avg_dollar_volume,2),"as_of":payload.get("as_of") or row.as_of,"retrieved_at":row.retrieved_at.isoformat(),"provider":payload.get("provider") or row.provider,"technical_source":payload.get("technical_source"),"source_url":payload.get("source_url"),"verification_status":payload.get("verification_status")})
     formula_ranked=sorted(rows,key=lambda item:(float(item["score"]),item["symbol"]),reverse=True)
     for rank,item in enumerate(formula_ranked,1):item["formula_rank"]=rank
     attach_opportunity_quality(formula_ranked)
     target_set={str(x).strip().upper() for x in (target_symbols or []) if str(x).strip()};target_rows=[item for item in formula_ranked if item["symbol"] in target_set] if target_set else []
     ordered,requested_sort,requested_direction=sort_index_rows(formula_ranked,requested_sort,requested_direction);result_limit=max(1,min(int(limit),1000))
     quality_counts={state:sum(1 for x in formula_ranked if (x.get("data_quality") or {}).get("state")==state) for state in ("verified","fresh","degraded","incomplete","failed")}
-    result={"rows":ordered[:result_limit],"formula":formula_metadata(weights,clean_filters),"sort":{"by":requested_sort,"direction":requested_direction},"criteria_catalog":list(CRITERIA.values()),"filter_catalog":list(FILTER_FIELDS.values()),"counts":{"latest_snapshot_symbols":len(latest_rows),"scannable":scannable,"technical_complete":technical_complete,"liquidity_eligible":liquidity_eligible,"filtered_out":filtered_out,"formula_complete":formula_complete,"returned":min(len(ordered),result_limit)},"quality_counts":quality_counts,"liquidity_filter":{"min_price":MIN_PRICE,"min_average_dollar_volume_20d":MIN_AVG_DOLLAR_VOLUME_20D},"include_etfs":include_etfs,"last_cache_update":newest.isoformat() if newest else None,"generated_at":datetime.now(timezone.utc).isoformat(),"data_strategy":"Ranks the full cached, technically complete and liquid universe after optional hard screens, then applies the requested full-universe sort before truncating results. The index performs zero provider calls. Raw formula rank and confidence-adjusted rank are both preserved."}
+    result={"rows":ordered[:result_limit],"formula":formula_metadata(weights,clean_filters),"sort":{"by":requested_sort,"direction":requested_direction},"criteria_catalog":list(CRITERIA.values()),"filter_catalog":list(FILTER_FIELDS.values()),"counts":{"latest_snapshot_symbols":len(latest_rows),"scannable":scannable,"technical_complete":technical_complete,"liquidity_eligible":liquidity_eligible,"filtered_out":filtered_out,"formula_complete":formula_complete,"returned":min(len(ordered),result_limit)},"quality_counts":quality_counts,"fundamental_cache":{"used":needs_fundamentals,"cached_symbols":len(fundamental_rows) if needs_fundamentals else None},"liquidity_filter":{"min_price":MIN_PRICE,"min_average_dollar_volume_20d":MIN_AVG_DOLLAR_VOLUME_20D},"include_etfs":include_etfs,"last_cache_update":newest.isoformat() if newest else None,"generated_at":datetime.now(timezone.utc).isoformat(),"data_strategy":"Ranks the full cached, technically complete and liquid universe after optional hard screens, then applies the requested full-universe sort before truncating results. The index performs zero provider calls. Fundamental criteria, when selected, use one batched read of cached fundamentals and never impute missing values. Raw formula rank and confidence-adjusted rank are both preserved."}
     if target_set:result["target_rows"]=target_rows
     return result
