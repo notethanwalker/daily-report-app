@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from ..models import AlertEvent, AlertRule, FeatureSnapshot, MarketSnapshot
 from ..v2_models import AlertDeliveryPreference, PushSubscription
 from ..v4_models import AlertEvaluationStateV4
+from .alert_transition_logic_v4 import transition_entered
 from .typed_alerts import evaluate_typed_value, typed_trigger
 
 TRANSITION_KINDS={"opportunity_convergence","williams_oversold_entry","williams_oversold_recovery","ma100_approach_from_above","williams_ma100_trigger","opportunity_invalidated"}
@@ -25,17 +26,6 @@ def _legacy_value(rule,market,features):
 def _legacy_triggered(value,operator,threshold):
     if value is None or threshold is None:return False
     return {">=":value>=threshold,"<=":value<=threshold,">":value>threshold,"<":value<threshold,"==":value==threshold}.get(operator,False)
-
-
-def transition_entered(kind:str,previous:str|None,current:str,meta:dict|None=None)->bool:
-    meta=meta or {}
-    if kind=="opportunity_convergence":return current=="triggered" and previous!="triggered" and bool(meta.get("alert_ready"))
-    if kind=="williams_oversold_entry":return current=="oversold" and previous is not None and previous!="oversold"
-    if kind=="williams_oversold_recovery":return current=="recovered" and previous=="oversold"
-    if kind=="ma100_approach_from_above":return current=="approaching" and previous=="extended"
-    if kind=="williams_ma100_trigger":return current=="triggered" and previous is not None and previous!="triggered"
-    if kind=="opportunity_invalidated":return current=="invalidated" and previous is not None and previous!="invalidated"
-    return False
 
 
 def _transition_trigger(db,rule,meta,default_triggered):
