@@ -59,4 +59,8 @@ def transition_entered(kind: str, previous: str | None, current: str, meta: dict
         return current == "triggered" and previous is not None and previous != "triggered"
     if kind == "opportunity_invalidated":
         return current == "invalidated" and previous is not None and previous != "invalidated"
+    if kind == "opportunity_formula_score":
+        return current == "at_or_above" and previous == "below"
+    if kind == "opportunity_formula_rank":
+        return current == "inside" and previous == "outside"
     return False
