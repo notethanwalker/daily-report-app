@@ -8,25 +8,34 @@ class FormulaCandidateFunnelV4Test(unittest.TestCase):
         item = {
             "formula_score": 92,
             "convergence": {"state": "extended"},
-            "enrichment_status": "full",
+            "feature_context_status": "available",
             "rotation_state": "leading_accelerating",
         }
         self.assertEqual(_attention_stage(item), "developing")
 
-    def test_high_conviction_requires_readiness_enrichment_and_rotation_support(self):
+    def test_high_conviction_requires_readiness_feature_context_and_rotation_support(self):
         item = {
             "formula_score": 86,
             "convergence": {"state": "triggered"},
-            "enrichment_status": "full",
+            "feature_context_status": "available",
             "rotation_state": "leading_stable",
         }
         self.assertEqual(_attention_stage(item), "high_conviction")
 
-    def test_actionable_does_not_require_full_enrichment(self):
+    def test_high_conviction_fails_without_feature_context(self):
+        item = {
+            "formula_score": 90,
+            "convergence": {"state": "triggered"},
+            "feature_context_status": "missing",
+            "rotation_state": "leading_stable",
+        }
+        self.assertEqual(_attention_stage(item), "actionable")
+
+    def test_actionable_does_not_require_feature_context(self):
         item = {
             "formula_score": 75,
             "convergence": {"state": "approaching"},
-            "enrichment_status": "scanner_only",
+            "feature_context_status": "missing",
             "rotation_state": "unknown",
         }
         self.assertEqual(_attention_stage(item), "actionable")
