@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..multiuser_models import PortfolioDefinition, PortfolioPosition
+from ..services.portfolio_scenarios_v4 import build_buy_scenario
 from ..v2_models import PortfolioBaseline, PortfolioPositionBaseline, PortfolioPositionRevision
 from ..v3_models import PortfolioValueSnapshot
 from .intelligence import _latest_market, _opportunity_components, current_user
@@ -21,6 +22,12 @@ class LivePositionIn(BaseModel):
     shares:float=Field(ge=0)
     average_cost:float=Field(ge=0)
     note:str|None=Field(default=None,max_length=256)
+
+
+class BuyScenarioIn(BaseModel):
+    symbol:str=Field(min_length=1,max_length=20)
+    amount:float=Field(gt=0,le=100_000_000)
+    funding_source:str=Field(default="cash",pattern="^(cash|external)$")
 
 
 def _ensure_position_baseline(db:Session,pos:PortfolioPosition,market:dict|None=None):
@@ -75,9 +82,6 @@ def _position_payload(db:Session,pos:PortfolioPosition,total_live:float):
 
 
 def _persist_value_snapshot(db:Session,p:PortfolioDefinition,holdings:list[dict],invested:float,total:float):
-    # One end-state snapshot per calendar day is enough for portfolio history while
-    # keeping database churn and provider demand negligible. Repeated live requests
-    # update the same row instead of creating minute-by-minute noise.
     as_of=date.today().isoformat()
     row=db.query(PortfolioValueSnapshot).filter(PortfolioValueSnapshot.portfolio_id==p.id,PortfolioValueSnapshot.as_of==as_of).first()
     payload={"positions":[{"symbol":h["symbol"],"shares":h["shares"],"price":h["price"],"market_value":h["market_value"],"account_percent":h["account_percent"]} for h in holdings]}
@@ -107,6 +111,15 @@ def portfolio_live(portfolio_id:int,user:str=Depends(current_user),db:Session=De
         "baseline":{"initial_cash":round(baseline.initial_cash,2),"initial_invested_value":round(baseline.initial_invested_value,2),"initial_total_value":round(baseline.initial_total_value,2),"recorded_at":baseline.recorded_at.isoformat() if baseline.recorded_at else None},
         "live_note":"Current prices, account percentages, portfolio value and unrealized P/L are recalculated from the latest shared market snapshot on every request. Original position metrics remain preserved in the baseline/imported snapshot. One portfolio-value history point is persisted per day.",
     }
+
+
+@router.post("/portfolios/{portfolio_id}/scenario/buy")
+def portfolio_buy_scenario(portfolio_id:int,body:BuyScenarioIn,user:str=Depends(current_user),db:Session=Depends(get_db)):
+    _require(db,user,"can_manage_portfolios")
+    try:
+        return build_buy_scenario(db,user,portfolio_id,body.symbol.strip().upper(),body.amount,body.funding_source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400,detail=str(exc)) from exc
 
 
 @router.post("/portfolios/{portfolio_id}/positions/live")
