@@ -7,9 +7,10 @@ from sqlalchemy.orm import Session
 from ..intelligence_cache_models import SecurityIntelligenceCache
 from ..models import FundamentalCache, RefreshQueueItem
 from .candidate_evidence_v4 import classify_candidate_evidence
+from .flow_confirmation_v4 import build_flow_confirmation_map
 from .provider_orchestrator import FRESHNESS_POLICIES, is_stale
 
-CONTEXT_MODEL_VERSION = "candidate-context-v4.5"
+CONTEXT_MODEL_VERSION = "candidate-context-v4.6"
 NEWS_TTL = timedelta(minutes=30)
 FLOW_TTL = timedelta(minutes=30)
 CATALYST_TTL = timedelta(hours=12)
@@ -57,6 +58,7 @@ def candidate_context_map(db: Session, symbols: list[str]) -> dict[str, dict]:
     now = _now()
     intel_rows = db.query(SecurityIntelligenceCache).filter(SecurityIntelligenceCache.symbol.in_(symbols)).all()
     fund_rows = db.query(FundamentalCache).filter(FundamentalCache.symbol.in_(symbols)).all()
+    flow_confirmations = build_flow_confirmation_map(db, symbols, lookback_hours=72, now=now)
     intel = {row.symbol.upper(): row for row in intel_rows}
     funds = {row.symbol.upper(): row for row in fund_rows}
     out: dict[str, dict] = {}
@@ -83,6 +85,7 @@ def candidate_context_map(db: Session, symbols: list[str]) -> dict[str, dict]:
             "sections": sections,
             "news": {"count": len(articles), "top": articles[:3], "provider": news.get("provider")},
             "flow": {"kind": flow.get("kind") or "none", "count": len(events), "top": events[:3], "provider": flow.get("provider"), "note": flow.get("note")},
+            "persistent_flow": flow_confirmations.get(symbol) or {},
             "catalysts": {"count": len(upcoming), "upcoming": upcoming[:4]},
             "filings": {"count": len(recent_filings), "top": recent_filings[:4], "provider": filings.get("provider"), "source_url": filings.get("source_url"), "error": filings.get("error")},
             "cache_only": True,
@@ -171,7 +174,7 @@ def refresh_candidate_intelligence(db: Session, candidates: list[dict], limit: i
 
 def attach_candidate_context(db: Session, candidates: list[dict]) -> dict:
     context = candidate_context_map(db, [x.get("symbol") for x in candidates])
-    coverage = {"fundamentals": 0, "news": 0, "flow": 0, "catalysts": 0, "filings": 0}
+    coverage = {"fundamentals": 0, "news": 0, "flow": 0, "catalysts": 0, "filings": 0, "persistent_flow": 0}
     fresh = {"fundamentals": 0, "news": 0, "flow": 0, "catalysts": 0, "filings": 0}
     for candidate in candidates:
         bundle = context.get(str(candidate.get("symbol") or "").upper(), {})
@@ -183,10 +186,12 @@ def attach_candidate_context(db: Session, candidates: list[dict]) -> dict:
                 coverage[section] += 1
             if state.get("fresh"):
                 fresh[section] += 1
+        if (bundle.get("persistent_flow") or {}).get("active_event_count", 0) > 0:
+            coverage["persistent_flow"] += 1
     return {
         "model_version": CONTEXT_MODEL_VERSION,
         "candidate_count": len(candidates),
         "available": coverage,
         "fresh": fresh,
-        "policy": "Cache-first context only. Evidence labels are descriptive and do not alter Opportunity scores. Ranking and automatic shortlist refresh perform zero news/flow/event/filing provider calls.",
+        "policy": "Cache-first context only. Persistent flow uses one batched stored-event read. Evidence labels are descriptive and do not alter Opportunity scores. Ranking and automatic shortlist refresh perform zero news/flow/event/filing provider calls.",
     }
