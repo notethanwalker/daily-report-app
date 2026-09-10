@@ -17,7 +17,7 @@ on:
 
 concurrency:
   group: opportunity-coverage-expansion
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   expand-coverage:
