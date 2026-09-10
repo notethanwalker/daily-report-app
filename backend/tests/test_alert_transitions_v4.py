@@ -41,6 +41,23 @@ class AlertTransitionsV4Test(unittest.TestCase):
         self.assertTrue(transition_entered("opportunity_formula_rank", "outside", "inside", {}))
         self.assertFalse(transition_entered("opportunity_formula_rank", "inside", "inside", {}))
 
+    def test_candidate_context_change_ignores_initial_and_unavailable_states(self):
+        self.assertFalse(transition_entered("candidate_context_changed", None, "supportive|event_risk:0", {}))
+        self.assertTrue(transition_entered("candidate_context_changed", "neutral|event_risk:0", "contradictory|event_risk:0", {}))
+        self.assertFalse(transition_entered("candidate_context_changed", "supportive|event_risk:0", "unavailable", {}))
+        self.assertTrue(transition_entered("candidate_context_changed", "supportive|event_risk:0", "supportive|event_risk:1", {}))
+
+    def test_candidate_flow_change_requires_semantic_flow_state(self):
+        self.assertFalse(transition_entered("candidate_flow_changed", None, "confirmation", {}))
+        self.assertTrue(transition_entered("candidate_flow_changed", "mixed", "confirmation", {}))
+        self.assertTrue(transition_entered("candidate_flow_changed", "confirmation", "contradiction", {}))
+        self.assertFalse(transition_entered("candidate_flow_changed", "confirmation", "unavailable", {}))
+
+    def test_portfolio_concentration_breach_is_entry_only(self):
+        self.assertFalse(transition_entered("portfolio_concentration_breach", None, "breached", {}))
+        self.assertTrue(transition_entered("portfolio_concentration_breach", "within_limit", "breached", {}))
+        self.assertFalse(transition_entered("portfolio_concentration_breach", "breached", "breached", {}))
+
     def test_market_state_classifiers(self):
         _, oversold = williams_state({"williams_r_14": -82, "as_of": "2026-09-10"})
         _, recovered = williams_state({"williams_r_14": -79, "as_of": "2026-09-10"})
