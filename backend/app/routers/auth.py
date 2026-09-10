@@ -1,21 +1,18 @@
 from __future__ import annotations
 
 import secrets
-import time
-from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..auth_models import AuthAccount, AuthSession
+from ..auth_models import AuthAccount, AuthRateLimit, AuthSession
 from ..database import get_db
 from ..services.auth_security import SESSION_COOKIE, SESSION_DAYS, account_from_session, create_session, decrypt_text, email_lookup, encrypt_text, ensure_user_defaults, hash_password, normalize_email, revoke_all_sessions, revoke_session, safe_account, validate_password, verify_password
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
-_login_attempts: dict[str, deque[float]] = defaultdict(deque)
-_register_attempts: dict[str, deque[float]] = defaultdict(deque)
 
 class Credentials(BaseModel):
     email: str
@@ -29,16 +26,43 @@ class PasswordUpdate(BaseModel):
     new_password: str
 
 
-def _client_key(request: Request, suffix: str) -> str:
-    ip = request.client.host if request.client else "unknown"
-    return f"{ip}:{suffix}"
+def _utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
-def _rate_limit(store: dict[str, deque[float]], key: str, max_attempts: int, window_seconds: int) -> None:
-    now=time.time();q=store[key]
-    while q and q[0]<now-window_seconds:q.popleft()
-    if len(q)>=max_attempts:raise HTTPException(429,"Too many attempts. Try again later.")
-    q.append(now)
-def _clear_rate(store: dict[str, deque[float]], key: str) -> None:store.pop(key,None)
+
+def _rate_limit(db: Session, key: str, max_attempts: int, window_seconds: int) -> None:
+    """Apply a persistent per-key throttle using a row lock when supported."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=window_seconds)
+    row = db.query(AuthRateLimit).filter(AuthRateLimit.key == key).with_for_update().first()
+    if row is None:
+        db.add(AuthRateLimit(key=key, window_started_at=now, attempts=1))
+        try:
+            db.commit()
+            return
+        except IntegrityError:
+            # Another worker created the same key concurrently. Retry against that row.
+            db.rollback()
+            row = db.query(AuthRateLimit).filter(AuthRateLimit.key == key).with_for_update().first()
+            if row is None:
+                raise
+    if _utc(row.window_started_at) <= cutoff:
+        row.window_started_at = now
+        row.attempts = 1
+        db.commit()
+        return
+    if row.attempts >= max_attempts:
+        db.rollback()
+        raise HTTPException(429, "Too many attempts. Try again later.")
+    row.attempts += 1
+    db.commit()
+
+
+def _clear_rate(db: Session, key: str) -> None:
+    db.query(AuthRateLimit).filter(AuthRateLimit.key == key).delete(synchronize_session=False)
+    db.commit()
+
+
 def _set_session_cookie(response: Response, token: str) -> None:response.set_cookie(SESSION_COOKIE,token,max_age=SESSION_DAYS*24*60*60,httponly=True,secure=True,samesite="lax",path="/")
 def _account_or_401(request: Request, db: Session) -> AuthAccount:
     account=account_from_session(db,request.cookies.get(SESSION_COOKIE))
@@ -51,10 +75,14 @@ def _owner_or_403(request: Request, db: Session) -> AuthAccount:
 
 @router.post("/register")
 def register(body: Credentials, request: Request, db: Session = Depends(get_db)):
-    _rate_limit(_register_attempts,_client_key(request,"register"),5,3600)
-    try:email=normalize_email(body.email);validate_password(body.password)
+    try:
+        email=normalize_email(body.email)
+        validate_password(body.password)
     except ValueError as exc:raise HTTPException(400,str(exc)) from exc
-    lookup=email_lookup(email);existing=db.query(AuthAccount).filter(AuthAccount.email_lookup==lookup).first()
+    lookup=email_lookup(email)
+    # Per-address limiting is stable across proxies/workers and does not expose plaintext email.
+    _rate_limit(db,f"register:{lookup}",3,24*60*60)
+    existing=db.query(AuthAccount).filter(AuthAccount.email_lookup==lookup).first()
     if not existing:
         account=AuthAccount(id="usr_"+secrets.token_hex(16),email_ciphertext=encrypt_text(email),email_lookup=lookup,password_hash=hash_password(body.password),name_ciphertext=None,role="approved_user",status="pending",enabled=False)
         db.add(account);db.commit()
@@ -64,14 +92,15 @@ def register(body: Credentials, request: Request, db: Session = Depends(get_db))
 def login(body: Credentials, request: Request, response: Response, db: Session = Depends(get_db)):
     try:lookup=email_lookup(normalize_email(body.email))
     except ValueError:lookup="invalid"
-    rate_key=_client_key(request,lookup[:16]);_rate_limit(_login_attempts,rate_key,10,900)
+    # Login throttling is account-keyed rather than proxy-IP-keyed, preventing a shared
+    # Vercel egress address from rate-limiting unrelated users.
+    rate_key=f"login:{lookup}"
+    _rate_limit(db,rate_key,10,900)
     account=db.query(AuthAccount).filter(AuthAccount.email_lookup==lookup).first() if lookup!="invalid" else None
     if not account or not verify_password(body.password,account.password_hash):raise HTTPException(401,"Invalid email or password")
     if account.status=="pending":raise HTTPException(403,"Account is awaiting administrator approval")
     if account.status=="rejected" or not account.enabled:raise HTTPException(403,"Account access is not enabled")
-    _clear_rate(_login_attempts,rate_key)
-    # Materialize all per-user rows before the frontend fans out into parallel API calls.
-    # This prevents intelligence routes from racing to create the same UserProfile.
+    _clear_rate(db,rate_key)
     ensure_user_defaults(db,account)
     token=create_session(db,account.id);account.last_login_at=datetime.now(timezone.utc);db.commit();_set_session_cookie(response,token)
     return {"account":safe_account(account)}
