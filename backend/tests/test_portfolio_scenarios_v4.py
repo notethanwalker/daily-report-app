@@ -8,7 +8,7 @@ from app.database import Base
 from app.models import MarketSnapshot, SymbolRegistry
 from app.multiuser_models import PortfolioDefinition, PortfolioPosition
 from app.normalized_market_models import NormalizedDailyBar
-from app.services.portfolio_scenarios_v4 import _corr, _max_dd, build_buy_scenario
+from app.services.portfolio_scenarios_v4 import _corr, _max_dd, _weighted, build_buy_scenario
 
 
 class PortfolioScenariosV4Test(unittest.TestCase):
@@ -61,6 +61,17 @@ class PortfolioScenariosV4Test(unittest.TestCase):
 
     def test_cash_funded_scenario_rejects_overspend(self):
         with self.assertRaises(ValueError):build_buy_scenario(self.db,self.user,self.pid,"AAA",6000,"cash")
+
+    def test_cash_weight_is_not_renormalized_away(self):
+        returns={"AAA":{"d1":.10,"d2":.10},"BBB":{"d1":.10,"d2":.10}}
+        result=_weighted(returns,{"AAA":.25,"BBB":.25})
+        self.assertAlmostEqual(result["d1"],.05)
+        self.assertAlmostEqual(result["d2"],.05)
+
+    def test_missing_history_renormalizes_only_invested_sleeve(self):
+        returns={"AAA":{"d1":.10},"BBB":{}}
+        result=_weighted(returns,{"AAA":.30,"BBB":.20})
+        self.assertAlmostEqual(result["d1"],.05)
 
     def test_risk_helpers_require_overlap_and_measure_drawdown(self):
         a={f"d{i}":i*.001 for i in range(39)};b={f"d{i}":i*.002 for i in range(39)}
