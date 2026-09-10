@@ -1,5 +1,7 @@
 "use client";
 
+import "./opportunity-decision-card-v4.css";
+
 const words=(v:any)=>String(v||"—").replaceAll("_"," ").replace(/\b\w/g,c=>c.toUpperCase());
 const n=(v:any,d=1)=>v==null?"—":Number(v).toFixed(d);
 
