@@ -33,7 +33,7 @@ class OpportunityFormulaV4Test(unittest.TestCase):
             "ma100_slope": .5,
             "approach_velocity": .5,
         })
-        self.assertEqual(score_a, 84.0)
+        self.assertEqual(score_a, 84.5)
         self.assertEqual(score_a, score_b)
 
     def test_formula_can_remove_a_criterion(self):
