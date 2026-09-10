@@ -23,6 +23,7 @@ from ..services.opportunity_formula_v4 import (
     validate_sort,
 )
 from ..services.opportunity_funnel_state_v4 import record_funnel_state
+from ..services.portfolio_fit_v4 import attach_portfolio_fit
 from ..services.rotation_model_v4 import build_rotation_model
 from ..v4_models import OpportunityFormulaPresetV4
 from .intelligence import current_user
@@ -123,15 +124,7 @@ def opportunity_index(
         sort_by, sort_dir = validate_sort(sort_by, sort_dir)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return build_opportunity_index(
-        db,
-        criteria=criteria,
-        filters=filters,
-        include_etfs=include_etfs,
-        limit=limit,
-        sort_by=sort_by,
-        sort_dir=sort_dir,
-    )
+    return build_opportunity_index(db, criteria=criteria, filters=filters, include_etfs=include_etfs, limit=limit, sort_by=sort_by, sort_dir=sort_dir)
 
 
 @router.post("/funnel")
@@ -147,64 +140,30 @@ def opportunity_formula_funnel(
         criteria, filters = _clean_definition(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    result = build_formula_candidate_funnel(
-        db,
-        build_rotation_model(db),
-        criteria=criteria,
-        filters=filters,
-        limit=limit,
-        enqueue_enrichment=enrich,
-    )
+    result = build_formula_candidate_funnel(db, build_rotation_model(db), criteria=criteria, filters=filters, limit=limit, enqueue_enrichment=enrich)
     if refresh_context:
         result["live_context_refresh"] = refresh_candidate_intelligence(db, result.get("candidates") or [])
         result["candidate_context"] = attach_candidate_context(db, result.get("candidates") or [])
-    return record_funnel_state(
-        db,
-        user=user,
-        criteria=criteria,
-        filters=filters,
-        payload=result,
-    )
+    result["portfolio_fit"] = attach_portfolio_fit(db, user, result.get("candidates") or [])
+    return record_funnel_state(db, user=user, criteria=criteria, filters=filters, payload=result)
 
 
 @router.get("/formulas")
 def list_opportunity_formulas(db: Session = Depends(get_db), user: str = Depends(current_user)):
-    rows = (
-        db.query(OpportunityFormulaPresetV4)
-        .filter(OpportunityFormulaPresetV4.user_id == user)
-        .order_by(OpportunityFormulaPresetV4.name.asc())
-        .all()
-    )
+    rows = db.query(OpportunityFormulaPresetV4).filter(OpportunityFormulaPresetV4.user_id == user).order_by(OpportunityFormulaPresetV4.name.asc()).all()
     return {
-        "default": {
-            "id": "default",
-            "name": "Default Opportunity",
-            "built_in": True,
-            "schema_version": SCHEMA_VERSION,
-            "criteria": DEFAULT_FORMULA,
-            "filters": [],
-            "formula": formula_metadata(DEFAULT_FORMULA, []),
-        },
+        "default": {"id": "default", "name": "Default Opportunity", "built_in": True, "schema_version": SCHEMA_VERSION, "criteria": DEFAULT_FORMULA, "filters": [], "formula": formula_metadata(DEFAULT_FORMULA, [])},
         "saved": [_preset(row) for row in rows],
     }
 
 
 @router.post("/formulas", status_code=201)
-def create_opportunity_formula(
-    payload: FormulaPresetCreate,
-    db: Session = Depends(get_db),
-    user: str = Depends(current_user),
-):
+def create_opportunity_formula(payload: FormulaPresetCreate, db: Session = Depends(get_db), user: str = Depends(current_user)):
     try:
         criteria, filters = _clean_definition(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    row = OpportunityFormulaPresetV4(
-        user_id=user,
-        name=_clean_name(payload.name),
-        schema_version=SCHEMA_VERSION,
-        criteria=_stored_config(criteria, filters),
-    )
+    row = OpportunityFormulaPresetV4(user_id=user, name=_clean_name(payload.name), schema_version=SCHEMA_VERSION, criteria=_stored_config(criteria, filters))
     db.add(row)
     try:
         db.commit()
@@ -216,26 +175,15 @@ def create_opportunity_formula(
 
 
 @router.put("/formulas/{formula_id}")
-def update_opportunity_formula(
-    formula_id: int,
-    payload: FormulaPresetUpdate,
-    db: Session = Depends(get_db),
-    user: str = Depends(current_user),
-):
-    row = (
-        db.query(OpportunityFormulaPresetV4)
-        .filter(OpportunityFormulaPresetV4.id == formula_id, OpportunityFormulaPresetV4.user_id == user)
-        .first()
-    )
+def update_opportunity_formula(formula_id: int, payload: FormulaPresetUpdate, db: Session = Depends(get_db), user: str = Depends(current_user)):
+    row = db.query(OpportunityFormulaPresetV4).filter(OpportunityFormulaPresetV4.id == formula_id, OpportunityFormulaPresetV4.user_id == user).first()
     if not row:
         raise HTTPException(status_code=404, detail="Saved Opportunity formula not found")
     try:
         criteria, filters = _clean_definition(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    row.name = _clean_name(payload.name)
-    row.criteria = _stored_config(criteria, filters)
-    row.schema_version = SCHEMA_VERSION
+    row.name = _clean_name(payload.name); row.criteria = _stored_config(criteria, filters); row.schema_version = SCHEMA_VERSION
     try:
         db.commit()
     except IntegrityError as exc:
@@ -246,18 +194,8 @@ def update_opportunity_formula(
 
 
 @router.delete("/formulas/{formula_id}", status_code=204)
-def delete_opportunity_formula(
-    formula_id: int,
-    db: Session = Depends(get_db),
-    user: str = Depends(current_user),
-):
-    row = (
-        db.query(OpportunityFormulaPresetV4)
-        .filter(OpportunityFormulaPresetV4.id == formula_id, OpportunityFormulaPresetV4.user_id == user)
-        .first()
-    )
+def delete_opportunity_formula(formula_id: int, db: Session = Depends(get_db), user: str = Depends(current_user)):
+    row = db.query(OpportunityFormulaPresetV4).filter(OpportunityFormulaPresetV4.id == formula_id, OpportunityFormulaPresetV4.user_id == user).first()
     if not row:
         raise HTTPException(status_code=404, detail="Saved Opportunity formula not found")
-    db.delete(row)
-    db.commit()
-    return None
+    db.delete(row); db.commit(); return None
