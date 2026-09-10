@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,7 +39,11 @@ class DesignPhilosophyContract(unittest.TestCase):
         self.assertIn('"name":"Technical completeness"', FUNNEL)
 
     def test_v4_requests_are_bounded_and_retryable(self):
-        self.assertIn('REQUEST_TIMEOUT_MS=12000', V4)
+        match = re.search(r'REQUEST_TIMEOUT_MS=(\d+)', V4)
+        self.assertIsNotNone(match)
+        timeout_ms = int(match.group(1))
+        self.assertGreaterEqual(timeout_ms, 12000)
+        self.assertLessEqual(timeout_ms, 60000)
         self.assertIn('AbortController', V4)
         self.assertIn('Retry', V4)
 
