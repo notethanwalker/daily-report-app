@@ -30,9 +30,24 @@ def _utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+def _prune_expired_rate_limits(db: Session, now: datetime) -> None:
+    """Opportunistically bound persistent throttle-table growth.
+
+    Registration has the longest active window (24 hours), so rows older than 25
+    hours cannot affect any live throttle decision. Sampling keeps ordinary login
+    requests cheap while ensuring stale spray keys are eventually removed.
+    """
+    if secrets.randbelow(64) != 0:
+        return
+    cutoff = now - timedelta(hours=25)
+    db.query(AuthRateLimit).filter(AuthRateLimit.window_started_at < cutoff).delete(synchronize_session=False)
+    db.commit()
+
+
 def _rate_limit(db: Session, key: str, max_attempts: int, window_seconds: int) -> None:
     """Apply a persistent per-key throttle using a row lock when supported."""
     now = datetime.now(timezone.utc)
+    _prune_expired_rate_limits(db, now)
     cutoff = now - timedelta(seconds=window_seconds)
     row = db.query(AuthRateLimit).filter(AuthRateLimit.key == key).with_for_update().first()
     if row is None:
