@@ -69,9 +69,42 @@ class OpportunityFormulaV4Test(unittest.TestCase):
         self.assertEqual(CRITERIA["ma50_proximity"]["coverage_class"], "broad_cache_safe")
         self.assertEqual(CRITERIA["relative_volume"]["min_sessions"], 21)
 
+    def test_cached_fundamental_criteria_are_opt_in_and_not_imputed(self):
+        market = {"williams_r_14": -85, "price_vs_ma100_percent": 3}
+        without = score_components(market)
+        self.assertIsNone(without["fundamental_quality"])
+        self.assertIsNone(without["valuation_quality"])
+        self.assertEqual(CRITERIA["fundamental_quality"]["coverage_class"], "cached_fundamentals_only")
+        self.assertEqual(CRITERIA["valuation_quality"]["coverage_class"], "cached_fundamentals_only")
+        self.assertEqual(DEFAULT_FORMULA, {"williams":60.0,"ma100_proximity":30.0,"ma100_slope":5.0,"approach_velocity":5.0})
+
+    def test_cached_fundamental_criteria_use_v4_assessment(self):
+        components = score_components(
+            {"williams_r_14": -85, "price_vs_ma100_percent": 3},
+            {
+                "eps": 5,
+                "pe_ratio": 18,
+                "price_to_sales_ratio": 3,
+                "peg_ratio": 1.1,
+                "quarterly_revenue_growth_yoy": .22,
+                "quarterly_earnings_growth_yoy": .25,
+                "profit_margin": .18,
+                "return_on_equity": .22,
+                "free_cash_flow": 1_000_000,
+                "debt_to_equity": 40,
+            },
+        )
+        self.assertIsNotNone(components["fundamental_quality"])
+        self.assertIsNotNone(components["valuation_quality"])
+        self.assertGreater(components["fundamental_quality"], 60)
+        self.assertGreater(components["valuation_quality"], 50)
+        self.assertIsNotNone(formula_score(components, {"williams":60,"fundamental_quality":40}))
+
     def test_formula_metadata_exposes_history_requirement(self):
         self.assertEqual(formula_metadata({"relative_volume": 1})["required_sessions"], 21)
         self.assertEqual(formula_metadata(DEFAULT_FORMULA)["required_sessions"], 120)
+        self.assertIsNone(formula_metadata(DEFAULT_FORMULA)["coverage_warning"])
+        self.assertIn("cached fundamental", formula_metadata({"fundamental_quality":1})["coverage_warning"])
 
     def test_hard_filters_screen_before_ranking(self):
         filters = validate_filters([
@@ -97,6 +130,10 @@ class OpportunityFormulaV4Test(unittest.TestCase):
         self.assertEqual([x["formula_rank"] for x in ordered], [2, 3, 1])
         self.assertEqual([x["display_position"] for x in ordered], [1, 2, 3])
         self.assertEqual((by, direction), ("williams", "asc"))
+
+    def test_fundamental_fields_are_sortable(self):
+        self.assertEqual(validate_sort("fundamental_quality", "desc"), ("fundamental_quality", "desc"))
+        self.assertEqual(validate_sort("valuation_quality", "asc"), ("valuation_quality", "asc"))
 
     def test_invalid_sort_is_rejected(self):
         with self.assertRaises(ValueError):
