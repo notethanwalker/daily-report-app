@@ -16,6 +16,7 @@ from .intelligence import _latest_market, _opportunity_components, current_user
 from .portfolio_access import _portfolio_or_404, _require
 
 router=APIRouter(prefix="/api/v1",tags=["alerts-v2"])
+TRANSITION_NATIVE_KINDS={"williams_oversold_entry","williams_oversold_recovery","ma100_approach_from_above","williams_ma100_trigger","opportunity_invalidated"}
 
 SUPPORTED_VARIABLES={
     "price":{"label":"Price","unit":"USD","source":"Markets","description":"Latest shared market price."},
@@ -39,6 +40,11 @@ SUPPORTED_VARIABLES={
 }
 
 TYPED_VARIABLES={
+    "williams_oversold_entry":{"label":"Williams enters oversold","unit":"state change","scope":"ticker","description":"Fires once when Williams %R crosses into <= -80 after the alert has established prior state."},
+    "williams_oversold_recovery":{"label":"Williams recovers from oversold","unit":"state change","scope":"ticker","description":"Fires once when Williams %R moves back above -80 after previously being <= -80."},
+    "ma100_approach_from_above":{"label":"Approach 100MA from above","unit":"state change","scope":"ticker","description":"Fires when signed 100MA distance moves from >5% above to the 0-5% approach zone; crossing upward from below does not count."},
+    "williams_ma100_trigger":{"label":"Williams + 100MA combined trigger","unit":"state change","scope":"ticker","description":"Fires when Williams %R <= -80 and price is simultaneously 0-5% above the 100-day moving average."},
+    "opportunity_invalidated":{"label":"Opportunity invalidated","unit":"state change","scope":"ticker","description":"Fires when the Opportunity convergence model newly enters Invalidated."},
     "ma100_proximity":{"label":"100MA proximity","unit":"absolute % distance","scope":"ticker","description":"Absolute price distance from the 100-day moving average; unlike signed distance this does not fire simply because price is far below the average."},
     "ma200_proximity":{"label":"200MA proximity","unit":"absolute % distance","scope":"ticker","description":"Absolute price distance from the 200-day moving average."},
     "catalyst_days":{"label":"Days to next catalyst","unit":"days","scope":"ticker","description":"Minimum non-negative days to cached earnings/dividend dates or a user custom event for the ticker."},
@@ -88,7 +94,7 @@ def alerts_v2(user:str=Depends(current_user),db:Session=Depends(get_db)):
         pref=db.query(AlertDeliveryPreference).filter(AlertDeliveryPreference.alert_id==r.id).first();value,meta=current_value(db,r)
         if r.kind in TYPED_VARIABLES:triggered=typed_trigger(r.kind,value,r.operator,r.threshold)
         else:triggered=value is not None and r.threshold is not None and {">=":value>=r.threshold,"<=":value<=r.threshold,">":value>r.threshold,"<":value<r.threshold,"==":value==r.threshold}.get(r.operator,False)
-        out.append({"id":r.id,"symbol":r.symbol,"kind":r.kind,"operator":r.operator,"threshold":r.threshold,"label":r.label,"enabled":r.enabled,"current_value":value,"current_meta":meta,"triggered":triggered,"typed":r.kind in TYPED_VARIABLES,"delivery":{"channels":(pref.channels if pref else {"in_app":True,"push":False}),"cooldown_minutes":pref.cooldown_minutes if pref else 360}})
+        out.append({"id":r.id,"symbol":r.symbol,"kind":r.kind,"operator":r.operator,"threshold":r.threshold,"label":r.label,"enabled":r.enabled,"current_value":value,"current_meta":meta,"triggered":triggered,"typed":r.kind in TYPED_VARIABLES,"transition_native":r.kind in TRANSITION_NATIVE_KINDS or r.kind=="opportunity_convergence","delivery":{"channels":(pref.channels if pref else {"in_app":True,"push":False}),"cooldown_minutes":pref.cooldown_minutes if pref else 360}})
     return {"alerts":out,"variables":SUPPORTED_VARIABLES,"typed_variables":TYPED_VARIABLES,"push":{"configured":bool(os.getenv("VAPID_PUBLIC_KEY") and os.getenv("VAPID_PRIVATE_KEY")),"subscriptions":db.query(PushSubscription).filter(PushSubscription.user_email==user,PushSubscription.enabled.is_(True)).count()}}
 
 @router.post("/alerts/v2")
@@ -106,12 +112,12 @@ def create_alerts(body:AlertBatchIn,user:str=Depends(current_user),db:Session=De
 def preview_typed_alert(body:TypedAlertIn,user:str=Depends(current_user),db:Session=Depends(get_db)):
     _require(db,user,"can_manage_alerts");target=_typed_target(db,user,body);value,meta=evaluate_typed_value(db,user,body.kind,target)
     threshold=3.0 if body.kind=="opportunity_convergence" else body.threshold
-    return {"kind":body.kind,"scope":TYPED_VARIABLES[body.kind]["scope"],"target":target,"current_value":value,"current_meta":meta,"would_trigger":typed_trigger(body.kind,value,body.operator,threshold)}
+    return {"kind":body.kind,"scope":TYPED_VARIABLES[body.kind]["scope"],"target":target,"current_value":value,"current_meta":meta,"would_trigger":typed_trigger(body.kind,value,body.operator,threshold),"transition_native":body.kind in TRANSITION_NATIVE_KINDS or body.kind=="opportunity_convergence","note":"Transition-native previews report current state; actual delivery occurs only after a qualifying state transition is observed." if body.kind in TRANSITION_NATIVE_KINDS or body.kind=="opportunity_convergence" else None}
 
 @router.post("/alerts/v3")
 def create_typed_alert(body:TypedAlertIn,user:str=Depends(current_user),db:Session=Depends(get_db)):
     _require(db,user,"can_manage_alerts");target=_typed_target(db,user,body)
-    if body.kind=="regime_transition":operator="changed";threshold=None
+    if body.kind=="regime_transition" or body.kind in TRANSITION_NATIVE_KINDS:operator="changed";threshold=None
     elif body.kind=="opportunity_convergence":operator=">=";threshold=3.0
     else:
         operator=body.operator
@@ -121,7 +127,7 @@ def create_typed_alert(body:TypedAlertIn,user:str=Depends(current_user),db:Sessi
     if existing:
         value,meta=evaluate_typed_value(db,user,existing.kind,existing.symbol);return {"id":existing.id,"status":"already_exists","kind":existing.kind,"target":existing.symbol,"current_value":value,"current_meta":meta}
     row=AlertRule(user_email=user,symbol=target,kind=body.kind,operator=operator,threshold=threshold,label=body.label,enabled=True);db.add(row);db.flush();db.add(AlertDeliveryPreference(alert_id=row.id,user_email=user,channels={"in_app":bool(body.channels.get("in_app",True)),"push":bool(body.channels.get("push",False))},cooldown_minutes=body.cooldown_minutes));db.commit();value,meta=evaluate_typed_value(db,user,row.kind,row.symbol)
-    return {"id":row.id,"status":"created","kind":row.kind,"target":row.symbol,"current_value":value,"current_meta":meta}
+    return {"id":row.id,"status":"created","kind":row.kind,"target":row.symbol,"current_value":value,"current_meta":meta,"transition_native":row.kind in TRANSITION_NATIVE_KINDS or row.kind=="opportunity_convergence"}
 
 @router.delete("/alerts/v2/{alert_id}")
 def delete_alert_v2(alert_id:int,user:str=Depends(current_user),db:Session=Depends(get_db)):
