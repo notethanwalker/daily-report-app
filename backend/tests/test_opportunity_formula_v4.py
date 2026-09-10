@@ -5,6 +5,8 @@ from app.services.opportunity_formula_v4 import (
     formula_metadata,
     formula_score,
     normalized_weights,
+    passes_filters,
+    validate_filters,
     validate_formula,
 )
 
@@ -46,9 +48,23 @@ class OpportunityFormulaV4Test(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_formula({"williams": 0})
 
+    def test_hard_filters_screen_before_ranking(self):
+        filters = validate_filters([
+            {"field": "williams_r_14", "operator": "<=", "value": -80},
+            {"field": "price_vs_ma100_percent", "operator": ">=", "value": 0},
+        ])
+        self.assertTrue(passes_filters({"williams_r_14": -85, "price_vs_ma100_percent": 2}, filters))
+        self.assertFalse(passes_filters({"williams_r_14": -75, "price_vs_ma100_percent": 2}, filters))
+        self.assertFalse(passes_filters({"williams_r_14": -85, "price_vs_ma100_percent": -1}, filters))
+
+    def test_unknown_filter_is_rejected(self):
+        with self.assertRaises(ValueError):
+            validate_filters([{"field": "future_leak", "operator": ">=", "value": 1}])
+
     def test_score_is_explicitly_not_probability(self):
         meta = formula_metadata(DEFAULT_FORMULA)
         self.assertIn("not an expected-return or probability estimate", meta["score_semantics"])
+        self.assertIn("never contribute points", meta["filter_semantics"])
         self.assertEqual(meta["schema_version"], "opportunity-formula-v1")
 
 
