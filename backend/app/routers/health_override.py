@@ -1,11 +1,11 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from .. import main as stable
 from ..database import get_db
-from ..models import FeatureSnapshot, FundamentalCache, HistoricalDailyBar, MarketSnapshot, RefreshQueueItem, SymbolRegistry, UserWatchlistItem, WatchlistItem
+from ..models import FeatureSnapshot, FlowEvent, FundamentalCache, HistoricalDailyBar, MarketSnapshot, RefreshQueueItem, SymbolRegistry, UserWatchlistItem, WatchlistItem
 from ..services.provider_orchestrator import FRESHNESS_POLICIES, ProviderOrchestrator, is_stale
 from ..services.rotation import SECTORS
 
@@ -21,7 +21,31 @@ def _history_state(db,symbol,now):
     return ("fresh" if age<=3 else "stale"),str(latest.bar_date),count
 
 
-@router.get("/system/data-health")
+def _flow_health(db:Session,now:datetime)->dict:
+    latest=db.query(FlowEvent).order_by(FlowEvent.occurred_at.desc()).first()
+    stored=db.query(FlowEvent).count()
+    recent=db.query(FlowEvent).filter(FlowEvent.occurred_at>=now-timedelta(hours=72)).count()
+    providers=[x[0] for x in db.query(FlowEvent.provider).distinct().all() if x[0]]
+    last_at=latest.occurred_at if latest else None
+    if last_at and last_at.tzinfo is None:last_at=last_at.replace(tzinfo=timezone.utc)
+    age_hours=max(0.0,(now-last_at).total_seconds()/3600) if last_at else None
+    state="recent_data" if recent>0 else "stale_data" if stored>0 else "unverified"
+    return {
+        "integration_available":True,
+        "credentials_required":False,
+        "state":state,
+        "stored_events":stored,
+        "recent_events_72h":recent,
+        "last_event_at":last_at.isoformat() if last_at else None,
+        "last_event_age_hours":round(age_hours,1) if age_hours is not None else None,
+        "stored_providers":providers,
+        "reachability":"not_probed_by_health_endpoint",
+        "cache_seconds":30,
+        "analysis":"flow-v2 local significance/direction model",
+        "policy":"Health reflects persisted evidence. Provider reachability is not inferred from a hardcoded configured flag and is not actively probed on this endpoint."
+    }
+
+
 def data_health_override(db:Session=Depends(get_db)):
     symbols={r.symbol for r in db.query(WatchlistItem).all()};symbols|={r.symbol for r in db.query(UserWatchlistItem).all() if r.symbol!="__INITIALIZED__"};now=datetime.now(timezone.utc);market_fresh=0;fund_fresh=0;history_fresh=0;verified=0;discrepancies=0;primary_only=0;stale=[];coverage=[]
     for s in sorted(symbols):
@@ -44,6 +68,6 @@ def data_health_override(db:Session=Depends(get_db)):
         "verification":{"verified_or_partially_verified":verified,"discrepancy":discrepancies,"primary_only":primary_only,"policy":"Twelve Data primary + Yahoo Finance daily-history cross-check on refreshed snapshots"},
         "feature_snapshots":db.query(FeatureSnapshot).count(),"registry_symbols":db.query(SymbolRegistry).count(),"queue":queue,"stale":stale[:100],"coverage":coverage,
         "macro_history":{"tracked":len(macro_states),"fresh":sum(1 for x in macro_states if x["history"]=="fresh"),"stale_or_missing":[x for x in macro_states if x["history"]!="fresh"]},
-        "provider_status":{"twelve_data":{"configured":bool(__import__('os').getenv('TWELVE_DATA_API_KEY'))},"alpha_vantage":{"configured":bool(__import__('os').getenv('ALPHA_VANTAGE_API_KEY')),"budget":20,"used_today":alpha_used,"remaining":max(20-alpha_used,0) if alpha_used is not None else None,"role":"tertiary/quota-aware"},"yahoo_finance":{"configured":True,"role":"fundamentals fallback + independent market verification"},"squawkflow":{"configured":True,"cache_seconds":30,"analysis":"flow-v2 local significance/direction model"},"frankfurter":{"configured":True},"gdelt":{"configured":True},"macroradar":{"configured":True}},
+        "provider_status":{"twelve_data":{"configured":bool(__import__('os').getenv('TWELVE_DATA_API_KEY'))},"alpha_vantage":{"configured":bool(__import__('os').getenv('ALPHA_VANTAGE_API_KEY')),"budget":20,"used_today":alpha_used,"remaining":max(20-alpha_used,0) if alpha_used is not None else None,"role":"tertiary/quota-aware"},"yahoo_finance":{"configured":True,"role":"fundamentals fallback + independent market verification"},"squawkflow":_flow_health(db,now),"frankfurter":{"configured":True},"gdelt":{"configured":True},"macroradar":{"configured":True}},
         "cache_state":{"market_memory_entries":len(getattr(stable,'_market_cache',{})),"shared_memory_entries":len(getattr(stable,'_shared_cache',{}))},"provider_policy":ProviderOrchestrator().describe(),"freshness_policies":{k:{"ttl_seconds":v.ttl_seconds,"priority":v.priority} for k,v in FRESHNESS_POLICIES.items()},"architecture":"Global symbol, history, fundamentals, flow and feature data are shared. User watchlists, holdings, alerts and theses contain references only, so duplicate users do not multiply provider calls for the same symbol."
     }
