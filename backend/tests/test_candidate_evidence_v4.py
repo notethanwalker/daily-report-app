@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from app.services.candidate_evidence_v4 import classify_catalysts, classify_flow, classify_news
+from app.services.candidate_evidence_v4 import classify_catalysts, classify_flow, classify_news, synthesize_context_verdict
 
 
 class CandidateEvidenceV4Test(unittest.TestCase):
@@ -35,6 +35,30 @@ class CandidateEvidenceV4Test(unittest.TestCase):
         result = classify_flow(bundle)
         self.assertEqual(result["label"], "mixed")
         self.assertEqual(result["confidence"], "low")
+
+    def test_positive_news_is_supportive_but_score_effect_stays_zero(self):
+        result = synthesize_context_verdict(
+            {"label": "potentially_positive"},
+            {"label": "none_known", "urgency": "low"},
+        )
+        self.assertEqual(result["label"], "supportive")
+        self.assertEqual(result["score_effect"], 0)
+
+    def test_urgent_catalyst_is_event_risk_not_directional_confirmation(self):
+        result = synthesize_context_verdict(
+            {"label": "neutral"},
+            {"label": "upcoming", "urgency": "high"},
+        )
+        self.assertEqual(result["label"], "neutral")
+        self.assertTrue(result["event_risk"])
+        self.assertEqual(result["score_effect"], 0)
+
+    def test_missing_news_and_catalyst_are_insufficient(self):
+        result = synthesize_context_verdict(
+            {"label": "missing"},
+            {"label": "missing", "urgency": "unknown"},
+        )
+        self.assertEqual(result["label"], "insufficient")
 
 
 if __name__ == "__main__":
