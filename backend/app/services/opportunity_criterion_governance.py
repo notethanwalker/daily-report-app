@@ -45,5 +45,12 @@ def criterion_governance(key: str) -> dict:
 def governed_catalog(criteria: dict[str, dict]) -> list[dict]:
     rows = []
     for key, definition in criteria.items():
-        rows.append({**definition, **criterion_governance(key)})
+        governance = criterion_governance(key)
+        status_label = governance["validation_status"].replace("_", " ").title()
+        rows.append({
+            **definition,
+            **governance,
+            "label": f"{definition['label']} · {status_label}",
+            "canonical_label": definition["label"],
+        })
     return rows
