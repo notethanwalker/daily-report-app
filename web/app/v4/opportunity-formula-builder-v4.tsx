@@ -5,6 +5,7 @@ import {useEffect,useMemo,useState} from "react";
 const API="/backend";
 const DEFAULT={williams:60,ma100_proximity:30,ma100_slope:5,approach_velocity:5};
 type CriteriaMap=Record<string,number>;
+type HardFilter={field:string;operator:string;value:number};
 type SortKey="score"|"williams"|"ma100_proximity"|"ma100_slope"|"approach_velocity"|"liquidity"|"symbol";
 
 async function api(path:string,init?:RequestInit){
@@ -25,25 +26,29 @@ function opportunityTone(x:any){
 }
 
 export default function OpportunityFormulaBuilderV4({onOpen}:{onOpen:(symbol:string)=>void}){
- const[catalog,setCatalog]=useState<any[]>([]),[criteria,setCriteria]=useState<CriteriaMap>(DEFAULT),[rows,setRows]=useState<any[]>([]),[meta,setMeta]=useState<any>(null),[presets,setPresets]=useState<any[]>([]);
- const[loading,setLoading]=useState(true),[error,setError]=useState(""),[addKey,setAddKey]=useState(""),[saveName,setSaveName]=useState(""),[expanded,setExpanded]=useState<string|null>(null);
+ const[catalog,setCatalog]=useState<any[]>([]),[filterCatalog,setFilterCatalog]=useState<any[]>([]),[criteria,setCriteria]=useState<CriteriaMap>(DEFAULT),[filters,setFilters]=useState<HardFilter[]>([]),[rows,setRows]=useState<any[]>([]),[meta,setMeta]=useState<any>(null),[presets,setPresets]=useState<any[]>([]);
+ const[loading,setLoading]=useState(true),[error,setError]=useState(""),[addKey,setAddKey]=useState(""),[addFilterKey,setAddFilterKey]=useState(""),[saveName,setSaveName]=useState(""),[expanded,setExpanded]=useState<string|null>(null);
  const[sortKey,setSortKey]=useState<SortKey>("score"),[sortDir,setSortDir]=useState<"asc"|"desc">("desc");
 
  async function loadPresets(){const d=await api("/api/v1/opportunities/formulas");setPresets([d.default,...(d.saved||[])]);}
- async function run(next:CriteriaMap=criteria){setLoading(true);setError("");try{const d=await api("/api/v1/opportunities/index?limit=500",{method:"POST",body:JSON.stringify({criteria:next})});setRows(d.rows||[]);setMeta(d)}catch(e:any){setError(e?.message||String(e))}finally{setLoading(false)}}
- useEffect(()=>{(async()=>{try{const[c,p]=await Promise.all([api("/api/v1/opportunities/criteria"),api("/api/v1/opportunities/formulas")]);setCatalog(c.criteria||[]);setPresets([p.default,...(p.saved||[])]);setCriteria(c.default_formula?.criteria||DEFAULT);await run(c.default_formula?.criteria||DEFAULT)}catch(e:any){setError(e?.message||String(e));setLoading(false)}})()},[]);
+ async function run(next:CriteriaMap=criteria,nextFilters:HardFilter[]=filters){setLoading(true);setError("");try{const d=await api("/api/v1/opportunities/index?limit=500",{method:"POST",body:JSON.stringify({criteria:next,filters:nextFilters})});setRows(d.rows||[]);setMeta(d)}catch(e:any){setError(e?.message||String(e))}finally{setLoading(false)}}
+ useEffect(()=>{(async()=>{try{const[c,p]=await Promise.all([api("/api/v1/opportunities/criteria"),api("/api/v1/opportunities/formulas")]);setCatalog(c.criteria||[]);setFilterCatalog(c.filters||[]);setPresets([p.default,...(p.saved||[])]);setCriteria(c.default_formula?.criteria||DEFAULT);setFilters(c.default_formula?.filters||[]);await run(c.default_formula?.criteria||DEFAULT,c.default_formula?.filters||[])}catch(e:any){setError(e?.message||String(e));setLoading(false)}})()},[]);
 
  const activeKeys=Object.keys(criteria);
  const available=catalog.filter(c=>!activeKeys.includes(c.key));
  const effective=useMemo(()=>{const total=Object.values(criteria).reduce((a,b)=>a+Number(b||0),0);return Object.fromEntries(Object.entries(criteria).map(([k,v])=>[k,total?Number(v)/total*100:0]))},[criteria]);
  const labelFor=(key:string)=>catalog.find(c=>c.key===key)?.label||key;
+ const filterInfo=(field:string)=>filterCatalog.find(c=>c.key===field)||{label:field,operators:["<=",">="]};
  const sorted=useMemo(()=>[...rows].sort((a,b)=>{let av:any,bv:any;if(sortKey==="score"){av=a.score;bv=b.score}else if(sortKey==="symbol"){av=a.symbol;bv=b.symbol}else if(sortKey==="liquidity"){av=a.average_dollar_volume_20d;bv=b.average_dollar_volume_20d}else{av=a.raw_criteria?.[sortKey];bv=b.raw_criteria?.[sortKey]}if(av==null&&bv==null)return 0;if(av==null)return 1;if(bv==null)return-1;const d=typeof av==="string"?String(av).localeCompare(String(bv)):Number(av)-Number(bv);return sortDir==="asc"?d:-d}),[rows,sortKey,sortDir]);
  function sort(key:SortKey){if(sortKey===key)setSortDir(d=>d==="desc"?"asc":"desc");else{setSortKey(key);setSortDir(key==="symbol"?"asc":"desc")}}
  function changeWeight(key:string,value:number){if(!Number.isFinite(value)||value<=0)return;setCriteria(c=>({...c,[key]:value}))}
  function remove(key:string){if(activeKeys.length<=1)return;const next={...criteria};delete next[key];setCriteria(next)}
  function add(){if(!addKey)return;setCriteria(c=>({...c,[addKey]:10}));setAddKey("")}
- function usePreset(p:any){const next={...(p.criteria||DEFAULT)};setCriteria(next);setExpanded(null);run(next)}
- async function save(){const name=saveName.trim();if(!name)return;setError("");try{await api("/api/v1/opportunities/formulas",{method:"POST",body:JSON.stringify({name,criteria})});setSaveName("");await loadPresets()}catch(e:any){setError(e?.message||String(e))}}
+ function addFilter(){const info=filterInfo(addFilterKey);if(!addFilterKey||!info)return;setFilters(xs=>[...xs,{field:addFilterKey,operator:info.default_operator||info.operators?.[0]||"<=",value:Number(info.default_value??0)}]);setAddFilterKey("")}
+ function updateFilter(i:number,patch:Partial<HardFilter>){setFilters(xs=>xs.map((x,j)=>j===i?{...x,...patch}:x))}
+ function removeFilter(i:number){setFilters(xs=>xs.filter((_,j)=>j!==i))}
+ function usePreset(p:any){const next={...(p.criteria||DEFAULT)},nextFilters=[...(p.filters||[])];setCriteria(next);setFilters(nextFilters);setExpanded(null);run(next,nextFilters)}
+ async function save(){const name=saveName.trim();if(!name)return;setError("");try{await api("/api/v1/opportunities/formulas",{method:"POST",body:JSON.stringify({name,criteria,filters})});setSaveName("");await loadPresets()}catch(e:any){setError(e?.message||String(e))}}
  async function del(p:any){if(p.built_in)return;setError("");try{await api(`/api/v1/opportunities/formulas/${p.id}`,{method:"DELETE"});await loadPresets()}catch(e:any){setError(e?.message||String(e))}}
 
  return <div className="formula-builder-v4">
@@ -54,10 +59,12 @@ export default function OpportunityFormulaBuilderV4({onOpen}:{onOpen:(symbol:str
 
   <div className="formula-criteria" aria-label="Active formula criteria">{activeKeys.map(key=><div className="formula-criterion" key={key}><div><b>{labelFor(key)}</b><small>{n(effective[key],1)}% effective</small></div><label>Weight <input aria-label={`${labelFor(key)} weight`} type="number" min="0.1" max="1000" step="0.5" value={criteria[key]} onChange={e=>changeWeight(key,Number(e.target.value))}/></label><button aria-label={`Remove ${labelFor(key)}`} onClick={()=>remove(key)} disabled={activeKeys.length<=1}>×</button></div>)}</div>
 
+  <div className="formula-filters"><div className="filter-heading"><div><span className="label">Hard screens</span><p className="muted">Optional requirements applied before ranking. They add no points to the index.</p></div><div className="filter-add"><select aria-label="Add hard screen" value={addFilterKey} onChange={e=>setAddFilterKey(e.target.value)}><option value="">Add Filter…</option>{filterCatalog.map(f=><option key={f.key} value={f.key}>{f.label}</option>)}</select><button onClick={addFilter} disabled={!addFilterKey}>Add</button></div></div>{filters.length>0&&<div className="filter-list">{filters.map((f,i)=>{const info=filterInfo(f.field);return <div className="filter-rule" key={`${f.field}-${i}`}><b>{info.label}</b><select aria-label={`${info.label} operator`} value={f.operator} onChange={e=>updateFilter(i,{operator:e.target.value})}>{(info.operators||[]).map((op:string)=><option key={op} value={op}>{op}</option>)}</select><input aria-label={`${info.label} threshold`} type="number" step="0.1" value={f.value} onChange={e=>updateFilter(i,{value:Number(e.target.value)})}/><button aria-label={`Remove ${info.label} filter`} onClick={()=>removeFilter(i)}>×</button></div>})}</div>}</div>
+
   <div className="formula-presets"><div className="preset-list"><span className="label">Saved formulas</span>{presets.map(p=><div className="preset-pill" key={String(p.id)}><button onClick={()=>usePreset(p)}>{p.name}</button>{!p.built_in&&<button className="preset-delete" aria-label={`Delete ${p.name}`} onClick={()=>del(p)}>×</button>}</div>)}</div><div className="save-formula"><input value={saveName} onChange={e=>setSaveName(e.target.value)} placeholder="Formula name" aria-label="Formula name"/><button onClick={save} disabled={!saveName.trim()}>Save Formula</button></div></div>
   {error&&<div className="v4-error"><span>{error}</span></div>}
 
-  <div className="opportunity-index-head"><div><span className="label">Opportunity index</span><h2>Full-universe ranking</h2></div><div className="mini-stats"><span>Eligible <b>{meta?.counts?.formula_complete??"—"}</b></span><span>Returned <b>{rows.length}</b></span><span>Cache <b>{meta?.last_cache_update?new Date(meta.last_cache_update).toLocaleString():"—"}</b></span></div></div>
+  <div className="opportunity-index-head"><div><span className="label">Opportunity index</span><h2>Full-universe ranking</h2></div><div className="mini-stats"><span>Eligible <b>{meta?.counts?.formula_complete??"—"}</b></span><span>Filtered <b>{meta?.counts?.filtered_out??0}</b></span><span>Returned <b>{rows.length}</b></span><span>Cache <b>{meta?.last_cache_update?new Date(meta.last_cache_update).toLocaleString():"—"}</b></span></div></div>
   <div className="metric-sort-bar formula-sort" role="group" aria-label="Click a metric to sort opportunity index"><button aria-pressed={sortKey==="score"} className={sortKey==="score"?"active":""} onClick={()=>sort("score")}>Index</button><button aria-pressed={sortKey==="williams"} className={sortKey==="williams"?"active":""} onClick={()=>sort("williams")}>Williams %R</button><button aria-pressed={sortKey==="ma100_proximity"} className={sortKey==="ma100_proximity"?"active":""} onClick={()=>sort("ma100_proximity")}>100MA distance</button><button aria-pressed={sortKey==="ma100_slope"} className={sortKey==="ma100_slope"?"active":""} onClick={()=>sort("ma100_slope")}>100MA slope</button><button aria-pressed={sortKey==="approach_velocity"} className={sortKey==="approach_velocity"?"active":""} onClick={()=>sort("approach_velocity")}>Approach</button><button aria-pressed={sortKey==="liquidity"} className={sortKey==="liquidity"?"active":""} onClick={()=>sort("liquidity")}>Liquidity</button><button aria-pressed={sortKey==="symbol"} className={sortKey==="symbol"?"active":""} onClick={()=>sort("symbol")}>Ticker</button><span className="muted">{sortDir==="desc"?"↓":"↑"}</span></div>
   {loading&&!rows.length?<p className="muted" role="status">Ranking cached market universe…</p>:<div className="opportunity-index-table">
    <div className="opportunity-index-row header"><b>#</b><b>Ticker</b><span>Index</span><span>W%R</span><span>100MA</span><span>Slope</span><span>Approach</span><span>Liquidity</span></div>
