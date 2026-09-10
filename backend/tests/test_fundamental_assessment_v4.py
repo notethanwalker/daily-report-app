@@ -24,6 +24,22 @@ class FundamentalAssessmentV4Test(unittest.TestCase):
         self.assertLess(result["quality_score"],45)
         self.assertGreaterEqual(result["valuation_score"],70)
 
+    def test_margin_compression_is_explicit_deterioration(self):
+        result=assess_fundamentals({
+            "eps":3.0,
+            "pe_ratio":10.0,
+            "price_to_sales_ratio":1.5,
+            "quarterly_revenue_growth_yoy":0.02,
+            "quarterly_earnings_growth_yoy":-0.08,
+            "profit_margin":0.10,
+            "profit_margin_change_yoy_points":-5.0,
+            "free_cash_flow":500000,
+            "debt_to_equity":80,
+        })
+        self.assertTrue(any(x["code"]=="margin_compression" for x in result["flags"]))
+        self.assertLess(result["scores"]["profitability"],70)
+        self.assertEqual(result["anomaly"],"value_trap_risk")
+
     def test_quality_at_reasonable_value_is_separate_from_raw_cheapness(self):
         result=assess_fundamentals({
             "eps":5.0,
