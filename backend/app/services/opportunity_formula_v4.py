@@ -22,7 +22,7 @@ DEFAULT_FORMULA = {
     "ma100_slope": 5.0,
     "approach_velocity": 5.0,
 }
-SORT_FIELDS = {"score", "williams", "ma100_proximity", "ma100_slope", "approach_velocity", "liquidity", "symbol"}
+SORT_FIELDS = {"score", "williams", "ma100_proximity", "ma50_proximity", "ma100_slope", "approach_velocity", "relative_volume", "liquidity", "symbol"}
 SORT_DIRECTIONS = {"asc", "desc"}
 
 CRITERIA = {
@@ -32,6 +32,8 @@ CRITERIA = {
         "description": "Rewards deeper oversold conditions. Default-model primary signal.",
         "raw_field": "williams_r_14",
         "higher_score_is_better": True,
+        "min_sessions": 14,
+        "coverage_class": "broad_cache_safe",
         "hypothesis": "Deep short-term oversold states can create asymmetric mean-reversion entries when other setup conditions are supportive.",
     },
     "ma100_proximity": {
@@ -40,7 +42,19 @@ CRITERIA = {
         "description": "Rewards price approaching the 100-day moving average from above.",
         "raw_field": "price_vs_ma100_percent",
         "higher_score_is_better": True,
+        "min_sessions": 100,
+        "coverage_class": "broad_cache_safe",
         "hypothesis": "Pullbacks toward an established medium-term trend reference can improve entry asymmetry without requiring a trend break.",
+    },
+    "ma50_proximity": {
+        "key": "ma50_proximity",
+        "label": "50MA proximity",
+        "description": "Rewards price approaching the 50-day moving average from above using the same proximity transform as the 100MA factor.",
+        "raw_field": "price_vs_ma50_percent",
+        "higher_score_is_better": True,
+        "min_sessions": 50,
+        "coverage_class": "broad_cache_safe",
+        "hypothesis": "A pullback toward shorter intermediate-trend support may identify earlier entries than the 100MA while retaining trend context.",
     },
     "ma100_slope": {
         "key": "ma100_slope",
@@ -48,6 +62,8 @@ CRITERIA = {
         "description": "Rewards a positively sloped 100-day moving average.",
         "raw_field": "ma100_slope_20d_percent",
         "higher_score_is_better": True,
+        "min_sessions": 120,
+        "coverage_class": "broad_cache_safe",
         "hypothesis": "A rising 100-day moving average provides trend confirmation and may distinguish constructive pullbacks from structural deterioration.",
     },
     "approach_velocity": {
@@ -56,15 +72,30 @@ CRITERIA = {
         "description": "Rewards movement toward the 100MA over the latest five sessions.",
         "raw_field": "approach_velocity_100_5d",
         "higher_score_is_better": True,
+        "min_sessions": 105,
+        "coverage_class": "broad_cache_safe",
         "hypothesis": "A measured approach toward support can identify developing entries before the static distance condition is fully reached.",
+    },
+    "relative_volume": {
+        "key": "relative_volume",
+        "label": "Relative volume",
+        "description": "Rewards current participation relative to the prior 20-session average; 0.5x scores 0 and 2.0x or higher scores 100.",
+        "raw_field": "relative_volume",
+        "higher_score_is_better": True,
+        "min_sessions": 21,
+        "coverage_class": "broad_cache_safe",
+        "hypothesis": "Elevated participation can strengthen the information content of an otherwise similar technical setup, but is treated only as optional confirmation.",
     },
 }
 
 FILTER_FIELDS = {
     "williams_r_14": {"key": "williams_r_14", "label": "Williams %R", "operators": ["<=", ">="], "default_operator": "<=", "default_value": -80.0},
+    "price_vs_ma50_percent": {"key": "price_vs_ma50_percent", "label": "Distance above 50MA (%)", "operators": ["<=", ">="], "default_operator": ">=", "default_value": 0.0},
     "price_vs_ma100_percent": {"key": "price_vs_ma100_percent", "label": "Distance above 100MA (%)", "operators": ["<=", ">="], "default_operator": ">=", "default_value": 0.0},
     "ma100_slope_20d_percent": {"key": "ma100_slope_20d_percent", "label": "100MA 20D slope (%)", "operators": ["<=", ">="], "default_operator": ">=", "default_value": 0.0},
     "approach_velocity_100_5d": {"key": "approach_velocity_100_5d", "label": "5D approach velocity", "operators": ["<=", ">="], "default_operator": ">=", "default_value": 0.0},
+    "relative_volume": {"key": "relative_volume", "label": "Relative volume (x)", "operators": ["<=", ">="], "default_operator": ">=", "default_value": 1.0},
+    "thirty_day_percent": {"key": "thirty_day_percent", "label": "30D return (%)", "operators": ["<=", ">="], "default_operator": ">=", "default_value": 0.0},
 }
 
 
@@ -73,6 +104,10 @@ def _f(value):
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _relative_volume_score(value: float) -> float:
+    return max(0.0, min(100.0, ((value - 0.5) / 1.5) * 100.0))
 
 
 def validate_formula(criteria: dict | None) -> dict[str, float]:
@@ -132,13 +167,17 @@ def normalized_weights(criteria: dict | None) -> dict[str, float]:
 
 def score_components(payload: dict) -> dict[str, float | None]:
     williams = _f(payload.get("williams_r_14"))
+    ma50_distance = _f(payload.get("price_vs_ma50_percent"))
     ma100_distance = _f(payload.get("price_vs_ma100_percent"))
+    relative_volume = _f(payload.get("relative_volume"))
     _, confirmation = _confirmation_score(payload)
     return {
         "williams": None if williams is None else round(_williams_score(williams), 4),
         "ma100_proximity": None if ma100_distance is None else round(_ma100_score(ma100_distance), 4),
+        "ma50_proximity": None if ma50_distance is None else round(_ma100_score(ma50_distance), 4),
         "ma100_slope": _f(confirmation.get("ma_slope_score")),
         "approach_velocity": _f(confirmation.get("approach_score")),
+        "relative_volume": None if relative_volume is None else round(_relative_volume_score(relative_volume), 4),
     }
 
 
@@ -169,11 +208,13 @@ def formula_metadata(criteria: dict | None, filters: list[dict] | None = None) -
     clean = validate_formula(criteria)
     clean_filters = validate_filters(filters)
     effective = normalized_weights(clean)
+    required_sessions = max(CRITERIA[key]["min_sessions"] for key in clean)
     return {
         "schema_version": SCHEMA_VERSION,
         "criteria": clean,
         "filters": clean_filters,
         "effective_weights_percent": effective,
+        "required_sessions": required_sessions,
         "label": " + ".join(f"{effective[key]:.1f}% {CRITERIA[key]['label']}" for key in clean),
         "score_semantics": "Relative Opportunity Index (0–100). It is a ranking score, not an expected-return or probability estimate.",
         "filter_semantics": "Hard screens determine universe membership before ranking and never contribute points to the Opportunity Index.",
@@ -251,9 +292,11 @@ def build_opportunity_index(
         formula_complete += 1
         raw = {
             "williams": round(williams, 2),
+            "ma50_proximity": _f(payload.get("price_vs_ma50_percent")),
             "ma100_proximity": round(ma100_distance, 3),
             "ma100_slope": _f(payload.get("ma100_slope_20d_percent")),
             "approach_velocity": _f(payload.get("approach_velocity_100_5d")),
+            "relative_volume": _f(payload.get("relative_volume")),
         }
         rows.append({
             "symbol": row.symbol.upper(),
@@ -265,6 +308,7 @@ def build_opportunity_index(
             "criterion_scores": components,
             "raw_criteria": raw,
             "price": round(price, 4),
+            "ma50": _f(payload.get("ma50")),
             "ma100": _f(payload.get("ma100")),
             "ma200": _f(payload.get("ma200")),
             "change_percent": _f(payload.get("change_percent")),
