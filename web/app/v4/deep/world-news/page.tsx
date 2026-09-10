@@ -1,11 +1,12 @@
 "use client";
 import {useEffect,useMemo,useState} from "react";
 import DeepShell from "../deep-shell";
+import {V4_TIMEOUT_HEAVY_MS} from "../../request-policy";
 
 const API="/backend";
 const TOPICS=["All","AI & Semiconductors","Rates & Central Banks","Energy & Commodities","Trade & Geopolitics","Economy & Inflation"];
 const CATEGORY_LABELS:any={monetary_policy:"Monetary policy",inflation_growth:"Inflation / growth",geopolitics_security:"Geopolitics / security",energy_commodities:"Energy / commodities",trade_supply_chain:"Trade / supply chain",fiscal_regulatory:"Fiscal / regulatory",technology_industrial_policy:"Technology / industrial policy",fx_rates_credit:"FX / rates / credit",general:"General"};
-async function getNews(topic:string,hours:number){const c=new AbortController(),t=setTimeout(()=>c.abort(),12000);try{const q=new URLSearchParams({limit:"40",hours:String(hours)});if(topic!=="All")q.set("topic",topic);const r=await fetch(`${API}/api/v1/news/world?${q}`,{cache:"no-store",credentials:"include",signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d?.detail||`HTTP ${r.status}`);return d}catch(e:any){if(e?.name==="AbortError")throw new Error("World News request timed out.");throw e}finally{clearTimeout(t)}}
+async function getNews(topic:string,hours:number){const c=new AbortController(),t=setTimeout(()=>c.abort(),V4_TIMEOUT_HEAVY_MS);try{const q=new URLSearchParams({limit:"40",hours:String(hours)});if(topic!=="All")q.set("topic",topic);const r=await fetch(`${API}/api/v1/news/world?${q}`,{cache:"no-store",credentials:"include",signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d?.detail||`HTTP ${r.status}`);return d}catch(e:any){if(e?.name==="AbortError")throw new Error("World News request timed out.");throw e}finally{clearTimeout(t)}}
 function dateText(v:any){if(!v)return "Time unavailable";const d=new Date(v);return Number.isNaN(d.getTime())?String(v):d.toLocaleString()}
 function label(v:string){return CATEGORY_LABELS[v]||String(v||"General").replaceAll("_"," ")}
 export default function Page(){return <DeepShell title="World News" layer="Research → Macro" description="Ranked global stories with source-linked timelines, market exposure associations and explicit first-/second-order transmission hypotheses.">{()=> <News/>}</DeepShell>}

@@ -1,8 +1,9 @@
 "use client";
 import {useEffect,useMemo,useState} from "react";
+import {V4_TIMEOUT_HEAVY_MS} from "./v4/request-policy";
 
 const API="/backend";
-async function api(path:string,timeout=12000){const c=new AbortController(),t=setTimeout(()=>c.abort(),timeout);try{const r=await fetch(`${API}${path}`,{cache:"no-store",credentials:"include",signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d?.detail||`HTTP ${r.status}`);return d}catch(e:any){if(e?.name==="AbortError")throw new Error("Large Flow request timed out. Retry when ready.");throw e}finally{clearTimeout(t)}}
+async function api(path:string,timeout=V4_TIMEOUT_HEAVY_MS){const c=new AbortController(),t=setTimeout(()=>c.abort(),timeout);try{const r=await fetch(`${API}${path}`,{cache:"no-store",credentials:"include",signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d?.detail||`HTTP ${r.status}`);return d}catch(e:any){if(e?.name==="AbortError")throw new Error("Large Flow request timed out. Retry when ready.");throw e}finally{clearTimeout(t)}}
 const money=(v:any)=>v==null?"—":Math.abs(Number(v))>=1e9?`$${(Number(v)/1e9).toFixed(2)}B`:Math.abs(Number(v))>=1e6?`$${(Number(v)/1e6).toFixed(2)}M`:Math.abs(Number(v))>=1e3?`$${(Number(v)/1e3).toFixed(0)}K`:`$${Number(v).toFixed(0)}`;
 function execution(v:any){const s=String(v||"").toLowerCase();if(/buy|ask|lift/.test(s))return"buy";if(/sell|bid|hit/.test(s))return"sell";return"unknown"}
 function side(d:any){return String(d?.side||d?.option_type||d?.put_call||"option").toLowerCase()}

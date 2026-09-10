@@ -3,9 +3,10 @@
 import {useEffect,useState} from "react";
 import {useParams} from "next/navigation";
 import DeepShell from "../../deep-shell";
+import {fetchJsonV4,V4_TIMEOUT_HEAVY_MS} from "../../../request-policy";
 
 const API="/backend";
-async function getResearch(symbol:string){const c=new AbortController(),t=setTimeout(()=>c.abort(),12000);try{const r=await fetch(`${API}/api/v1/stack/research/${encodeURIComponent(symbol)}`,{cache:"no-store",credentials:"include",signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d?.detail||`HTTP ${r.status}`);return d}catch(e:any){if(e?.name==="AbortError")throw new Error("Ticker research request timed out.");throw e}finally{clearTimeout(t)}}
+async function getResearch(symbol:string){try{return await fetchJsonV4(`${API}/api/v1/stack/research/${encodeURIComponent(symbol)}`,{},V4_TIMEOUT_HEAVY_MS)}catch(e:any){if(e?.message==="Request timed out. Retry this view.")throw new Error("Ticker research request timed out.");throw e}}
 const n=(v:any,d=2)=>v==null?"—":Number(v).toFixed(d);
 const pct=(v:any)=>v==null?"—":`${Number(v)>=0?"+":""}${Number(v).toFixed(2)}%`;
 const money=(v:any)=>v==null?"—":`$${Number(v).toLocaleString(undefined,{maximumFractionDigits:2})}`;
