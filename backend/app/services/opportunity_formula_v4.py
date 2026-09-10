@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from ..models import MarketSnapshot, SymbolRegistry
 from .opportunity_scanner import (
     MIN_AVG_DOLLAR_VOLUME_20D,
     MIN_PRICE,
@@ -59,6 +58,37 @@ CRITERIA = {
     },
 }
 
+FILTER_FIELDS = {
+    "williams_r_14": {
+        "key": "williams_r_14",
+        "label": "Williams %R",
+        "operators": ["<=", ">="],
+        "default_operator": "<=",
+        "default_value": -80.0,
+    },
+    "price_vs_ma100_percent": {
+        "key": "price_vs_ma100_percent",
+        "label": "Distance above 100MA (%)",
+        "operators": ["<=", ">="],
+        "default_operator": ">=",
+        "default_value": 0.0,
+    },
+    "ma100_slope_20d_percent": {
+        "key": "ma100_slope_20d_percent",
+        "label": "100MA 20D slope (%)",
+        "operators": ["<=", ">="],
+        "default_operator": ">=",
+        "default_value": 0.0,
+    },
+    "approach_velocity_100_5d": {
+        "key": "approach_velocity_100_5d",
+        "label": "5D approach velocity",
+        "operators": ["<=", ">="],
+        "default_operator": ">=",
+        "default_value": 0.0,
+    },
+}
+
 
 def _f(value):
     try:
@@ -82,6 +112,27 @@ def validate_formula(criteria: dict | None) -> dict[str, float]:
         if number <= 0 or number > 1000:
             raise ValueError(f"Weight for {key} must be greater than 0 and no more than 1000")
         clean[key] = round(number, 4)
+    return clean
+
+
+def validate_filters(filters: list[dict] | None) -> list[dict]:
+    clean: list[dict] = []
+    for item in filters or []:
+        if not isinstance(item, dict):
+            raise ValueError("Opportunity filters must be objects")
+        field = str(item.get("field") or "").strip()
+        operator = str(item.get("operator") or "").strip()
+        if field not in FILTER_FIELDS:
+            raise ValueError(f"Unknown Opportunity filter field: {field}")
+        if operator not in FILTER_FIELDS[field]["operators"]:
+            raise ValueError(f"Unsupported operator for {field}: {operator}")
+        try:
+            value = float(item.get("value"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid filter value for {field}") from exc
+        clean.append({"field": field, "operator": operator, "value": round(value, 6)})
+    if len(clean) > 12:
+        raise ValueError("Opportunity formulas support at most 12 hard filters")
     return clean
 
 
@@ -114,15 +165,30 @@ def formula_score(components: dict[str, float | None], criteria: dict | None) ->
     return round(value, 2)
 
 
-def formula_metadata(criteria: dict | None) -> dict:
+def passes_filters(payload: dict, filters: list[dict] | None) -> bool:
+    for item in validate_filters(filters):
+        observed = _f(payload.get(item["field"]))
+        if observed is None:
+            return False
+        if item["operator"] == "<=" and not observed <= item["value"]:
+            return False
+        if item["operator"] == ">=" and not observed >= item["value"]:
+            return False
+    return True
+
+
+def formula_metadata(criteria: dict | None, filters: list[dict] | None = None) -> dict:
     clean = validate_formula(criteria)
+    clean_filters = validate_filters(filters)
     effective = normalized_weights(clean)
     return {
         "schema_version": SCHEMA_VERSION,
         "criteria": clean,
+        "filters": clean_filters,
         "effective_weights_percent": effective,
         "label": " + ".join(f"{effective[key]:.1f}% {CRITERIA[key]['label']}" for key in clean),
         "score_semantics": "Relative Opportunity Index (0–100). It is a ranking score, not an expected-return or probability estimate.",
+        "filter_semantics": "Hard screens determine universe membership before ranking and never contribute points to the Opportunity Index.",
     }
 
 
@@ -130,14 +196,16 @@ def build_opportunity_index(
     db: Session,
     *,
     criteria: dict | None = None,
+    filters: list[dict] | None = None,
     include_etfs: bool = False,
     limit: int = 300,
 ) -> dict:
     weights = validate_formula(criteria)
+    clean_filters = validate_filters(filters)
     registry = _registry_map(db)
     latest_rows = _latest_snapshot_rows(db)
     rows: list[dict] = []
-    scannable = technical_complete = liquidity_eligible = formula_complete = 0
+    scannable = technical_complete = liquidity_eligible = formula_complete = filtered_out = 0
     newest = None
 
     for row in latest_rows:
@@ -157,6 +225,9 @@ def build_opportunity_index(
         if price < MIN_PRICE or avg_dollar_volume is None or avg_dollar_volume < MIN_AVG_DOLLAR_VOLUME_20D:
             continue
         liquidity_eligible += 1
+        if not passes_filters(payload, clean_filters):
+            filtered_out += 1
+            continue
         components = score_components(payload)
         score = formula_score(components, weights)
         if score is None:
@@ -199,13 +270,15 @@ def build_opportunity_index(
     result_limit = max(1, min(int(limit), 1000))
     return {
         "rows": rows[:result_limit],
-        "formula": formula_metadata(weights),
+        "formula": formula_metadata(weights, clean_filters),
         "criteria_catalog": list(CRITERIA.values()),
+        "filter_catalog": list(FILTER_FIELDS.values()),
         "counts": {
             "latest_snapshot_symbols": len(latest_rows),
             "scannable": scannable,
             "technical_complete": technical_complete,
             "liquidity_eligible": liquidity_eligible,
+            "filtered_out": filtered_out,
             "formula_complete": formula_complete,
             "returned": min(len(rows), result_limit),
         },
@@ -216,5 +289,5 @@ def build_opportunity_index(
         "include_etfs": include_etfs,
         "last_cache_update": newest.isoformat() if newest else None,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "data_strategy": "Ranks the full cached, technically complete and liquid universe before truncating results. The index performs zero provider calls.",
+        "data_strategy": "Ranks the full cached, technically complete and liquid universe after optional hard screens, before truncating results. The index performs zero provider calls.",
     }
