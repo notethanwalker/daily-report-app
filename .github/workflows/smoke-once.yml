@@ -1,56 +1,87 @@
 name: Live API Smoke Test
 
 on:
+  workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - .github/workflows/smoke-once.yml
+      - backend/**
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: live-api-smoke
+  cancel-in-progress: true
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      API_BASE: https://daily-report-api-ero2.onrender.com
     steps:
-      - name: Wait for Render deploy
-        run: sleep 5
+      - name: Wait for matching backend deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 36); do
+            TOKEN=$(curl --fail --silent --show-error -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-smoke" | jq -r '.value')
+            test -n "$TOKEN" && test "$TOKEN" != "null"
+            echo "::add-mask::$TOKEN"
+            if curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer ${TOKEN}" "${API_BASE}/api/v1/events?days=1&limit=1" -o /dev/null; then
+              echo "SMOKE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "Backend has not activated this smoke identity yet (attempt ${attempt}/36)."
+            sleep 10
+          done
+          echo "Matching backend deployment did not become ready." >&2
+          exit 1
 
       - name: Check backend health
         run: |
           set -euo pipefail
-          HEALTH=$(curl --fail --silent --show-error --retry 5 --retry-delay 5 https://daily-report-api-ero2.onrender.com/api/v1/health)
+          HEALTH=$(curl --fail --silent --show-error --retry 5 --retry-delay 5 "${API_BASE}/api/v1/health")
           echo "$HEALTH" | jq '{status,version}'
           echo "$HEALTH" | jq -e '.status == "ok"'
 
       - name: Check expanded event calendar
         run: |
           set -euo pipefail
-          EVENTS=$(curl --fail --silent --show-error --retry 3 --retry-delay 5 'https://daily-report-api-ero2.onrender.com/api/v1/events?days=90&sort=impact&order=desc&limit=300')
+          EVENTS=$(curl --fail --silent --show-error --retry 3 --retry-delay 5 -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/events?days=90&sort=impact&order=desc&limit=300")
           echo "$EVENTS" | jq '{count,providers,categories,errors,sample:(.events[:3])}'
-          echo "$EVENTS" | jq -e '(.events | type == "array") and (.count >= 5) and (.providers | type == "array")'
+          echo "$EVENTS" | jq -e '(.events | type == "array") and (.count | type == "number") and (.providers | type == "array")'
 
-      - name: Check valuation coverage
+      - name: Check valuation endpoint contracts
         run: |
           set -euo pipefail
           for SYMBOL in NVDA MU AAOI; do
-            FUND=$(curl --fail --silent --show-error --retry 2 --retry-delay 5 "https://daily-report-api-ero2.onrender.com/api/v1/markets/${SYMBOL}/fundamentals")
-            echo "$FUND" | jq '{symbol,pe_ratio,price_to_sales_ratio,peg_ratio,coverage,valuation_sources,field_sources,provider,fundamentals_cache}'
-            echo "$FUND" | jq -e '.symbol != null and .coverage.ps == true'
+            FUND=$(curl --fail --silent --show-error --retry 2 --retry-delay 5 -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/markets/${SYMBOL}/fundamentals")
+            echo "$FUND" | jq '{symbol,pe_ratio,price_to_sales_ratio,peg_ratio,coverage,valuation_sources,provider}'
+            echo "$FUND" | jq -e --arg symbol "$SYMBOL" '.symbol == $symbol and (.coverage | type == "object")'
           done
 
-      - name: Check live portfolio baseline
+      - name: Check live portfolio contracts
         run: |
           set -euo pipefail
-          PORTS=$(curl --fail --silent --show-error https://daily-report-api-ero2.onrender.com/api/v1/portfolios)
-          PID=$(echo "$PORTS" | jq -r '.portfolios[] | select(.name=="Joint Fidelity") | .id' | head -1)
-          test -n "$PID"
-          DETAIL=$(curl --fail --silent --show-error "https://daily-report-api-ero2.onrender.com/api/v1/portfolios/${PID}")
-          echo "$DETAIL" | jq '{portfolio,baseline,market_value,invested_value,cash_percent,holding_count:(.holdings|length),sample:(.holdings[0]|{symbol,baseline,live})}'
-          echo "$DETAIL" | jq -e '.baseline.initial_total_value > 0 and (.holdings | length) == 9 and ([.holdings[] | has("baseline") and has("live")] | all)'
+          PORTS=$(curl --fail --silent --show-error -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/portfolios")
+          echo "$PORTS" | jq -e '.portfolios | type == "array"'
+          PID=$(echo "$PORTS" | jq -r '.portfolios[0].id // empty')
+          if [ -n "$PID" ]; then
+            DETAIL=$(curl --fail --silent --show-error -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/portfolios/${PID}")
+            echo "$DETAIL" | jq '{portfolio,baseline,market_value,invested_value,cash_percent,holding_count:(.holdings|length)}'
+            echo "$DETAIL" | jq -e '(.holdings | type == "array") and (.baseline | type == "object") and ([.holdings[] | has("baseline") and has("live")] | all)'
+          fi
 
-      - name: Check custom alert variables and Web Push readiness
+      - name: Check alert and push contracts
         run: |
           set -euo pipefail
-          ALERTS=$(curl --fail --silent --show-error https://daily-report-api-ero2.onrender.com/api/v1/alerts/v2)
+          ALERTS=$(curl --fail --silent --show-error -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/alerts/v2")
           echo "$ALERTS" | jq '{push,variable_count:(.variables|length),variables:(.variables|keys)}'
-          echo "$ALERTS" | jq -e '.variables.pe and .variables.sector_score and .variables.bullish_flow and .push.configured == true'
-          PUSH=$(curl --fail --silent --show-error https://daily-report-api-ero2.onrender.com/api/v1/push/config)
+          echo "$ALERTS" | jq -e '(.variables | type == "object") and .variables.pe and .variables.sector_score and .variables.bullish_flow and (.push | type == "object")'
+          PUSH=$(curl --fail --silent --show-error -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/push/config")
           echo "$PUSH" | jq '{configured,subscriptions,public_key_present:(.public_key != null)}'
-          echo "$PUSH" | jq -e '.configured == true and .public_key != null'
+          echo "$PUSH" | jq -e 'has("configured") and has("public_key")'

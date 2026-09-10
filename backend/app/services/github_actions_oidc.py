@@ -14,6 +14,10 @@ JWKS_URL = f"{ISSUER}/.well-known/jwks"
 AUDIENCE = "daily-report-opportunity-ingest"
 REPOSITORY = "notethanwalker/daily-report-app"
 WORKFLOW_PATH = ".github/workflows/opportunity-coverage.yml"
+MAINTENANCE_AUDIENCE = "daily-report-maintenance"
+MAINTENANCE_WORKFLOW_PATH = ".github/workflows/daily-report-refresh.yml"
+SMOKE_AUDIENCE = "daily-report-smoke"
+SMOKE_WORKFLOW_PATH = ".github/workflows/smoke-once.yml"
 _ALLOWED_EVENTS = {"schedule", "workflow_dispatch", "push"}
 
 _jwks_cache: tuple[float, dict] | None = None
@@ -38,7 +42,13 @@ def _jwks() -> dict:
         return payload
 
 
-def verify_github_actions_token(token: str) -> dict:
+def _verify_github_actions_token(
+    token: str,
+    *,
+    audience: str,
+    workflow_path: str,
+    allowed_events: set[str] | None = None,
+) -> dict:
     parts = token.split(".")
     if len(parts) != 3:
         raise ValueError("Malformed GitHub Actions identity token")
@@ -72,9 +82,9 @@ def verify_github_actions_token(token: str) -> dict:
     now = int(time.time())
     if claims.get("iss") != ISSUER:
         raise ValueError("Unexpected GitHub Actions token issuer")
-    audience = claims.get("aud")
-    audiences = audience if isinstance(audience, list) else [audience]
-    if AUDIENCE not in audiences:
+    token_audience = claims.get("aud")
+    audiences = token_audience if isinstance(token_audience, list) else [token_audience]
+    if audience not in audiences:
         raise ValueError("Unexpected GitHub Actions token audience")
     if int(claims.get("exp") or 0) <= now:
         raise ValueError("Expired GitHub Actions identity token")
@@ -84,10 +94,25 @@ def verify_github_actions_token(token: str) -> dict:
         raise ValueError("GitHub Actions token repository is not authorized")
     if claims.get("ref") != "refs/heads/main":
         raise ValueError("GitHub Actions token branch is not authorized")
-    if claims.get("event_name") not in _ALLOWED_EVENTS:
+    if claims.get("event_name") not in (allowed_events or _ALLOWED_EVENTS):
         raise ValueError("GitHub Actions token event is not authorized")
     workflow_ref = str(claims.get("workflow_ref") or "")
-    expected_prefix = f"{REPOSITORY}/{WORKFLOW_PATH}@"
+    expected_prefix = f"{REPOSITORY}/{workflow_path}@"
     if not workflow_ref.startswith(expected_prefix):
         raise ValueError("GitHub Actions token workflow is not authorized")
     return claims
+
+
+def verify_github_actions_token(token: str) -> dict:
+    """Verify the Opportunity coverage worker identity token."""
+    return _verify_github_actions_token(token,audience=AUDIENCE,workflow_path=WORKFLOW_PATH)
+
+
+def verify_daily_report_maintenance_token(token: str) -> dict:
+    """Verify the scheduled Daily Report refresh identity token."""
+    return _verify_github_actions_token(token,audience=MAINTENANCE_AUDIENCE,workflow_path=MAINTENANCE_WORKFLOW_PATH,allowed_events={"schedule", "workflow_dispatch"})
+
+
+def verify_live_smoke_token(token: str) -> dict:
+    """Verify the live API smoke-test identity token."""
+    return _verify_github_actions_token(token,audience=SMOKE_AUDIENCE,workflow_path=SMOKE_WORKFLOW_PATH,allowed_events={"push", "workflow_dispatch"})
