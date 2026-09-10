@@ -65,10 +65,6 @@ def api_json(
     auth_refreshed = False
     attempt = 1
 
-    # GitHub's identity tokens are intentionally short-lived. Heavy ingest requests
-    # can run long enough that carrying one token into the next API call creates an
-    # avoidable 403/retry cycle. Mint a fresh identity before each API request while
-    # retaining the existing one-time 403 recovery below as a safety net.
     if not os.getenv("STOOQ_IMPORT_TOKEN") and oidc_refresh_available():
         acquire_github_oidc_token()
 
@@ -261,8 +257,16 @@ def main() -> int:
             "accepted", "rejected", "bootstrap_updates", "refresh_updates", "coverage"
         )}}, indent=2))
 
-    chunk_size = max(1, args.download_chunk)
-    upload_size = max(1, args.upload_batch)
+    if mode == "refresh":
+        # Incremental maintenance should surface progress quickly and keep each
+        # correctness-first merged-history transaction small. Bootstrap retains the
+        # larger throughput-oriented values supplied by the workflow.
+        chunk_size = max(1, min(args.download_chunk, 40))
+        upload_size = max(1, min(args.upload_batch, 50))
+    else:
+        chunk_size = max(1, args.download_chunk)
+        upload_size = max(1, args.upload_batch)
+
     for offset in range(0, len(symbols), chunk_size):
         chunk = symbols[offset:offset + chunk_size]
         records, failed = fetch_chunk(chunk, period=period, min_bars=min_bars)
