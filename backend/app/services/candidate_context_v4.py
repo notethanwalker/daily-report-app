@@ -8,7 +8,7 @@ from ..intelligence_cache_models import SecurityIntelligenceCache
 from ..models import FundamentalCache, RefreshQueueItem
 from .provider_orchestrator import FRESHNESS_POLICIES, is_stale
 
-CONTEXT_MODEL_VERSION = "candidate-context-v4.1"
+CONTEXT_MODEL_VERSION = "candidate-context-v4.2"
 NEWS_TTL = timedelta(minutes=30)
 FLOW_TTL = timedelta(minutes=30)
 CATALYST_TTL = timedelta(hours=12)
@@ -102,17 +102,25 @@ def _context_priority(candidate: dict) -> tuple:
     return (order.get(stage, 0), float(candidate.get("contextual_priority_score") or 0), float(candidate.get("formula_score") or 0))
 
 
-def enqueue_candidate_fundamentals(db: Session, candidates: list[dict], limit: int = FUNDAMENTAL_TARGET_LIMIT) -> list[str]:
-    now = _now()
-    selected = sorted(candidates, key=_context_priority, reverse=True)[: max(0, min(limit, FUNDAMENTAL_TARGET_LIMIT))]
-    queued: list[str] = []
+def candidate_fundamental_targets(candidates: list[dict], limit: int = FUNDAMENTAL_TARGET_LIMIT) -> list[str]:
+    selected = sorted(candidates, key=_context_priority, reverse=True)
+    targets: list[str] = []
     for candidate in selected:
+        state = ((candidate.get("candidate_context") or {}).get("sections") or {}).get("fundamentals") or {}
+        if state.get("fresh"):
+            continue
         symbol = str(candidate.get("symbol") or "").upper()
-        if not symbol:
-            continue
-        existing = db.get(FundamentalCache, symbol)
-        if existing and not is_stale(existing.retrieved_at, "fundamentals", now):
-            continue
+        if symbol and symbol not in targets:
+            targets.append(symbol)
+        if len(targets) >= max(0, min(limit, FUNDAMENTAL_TARGET_LIMIT)):
+            break
+    return targets
+
+
+def enqueue_candidate_fundamentals(db: Session, candidates: list[dict], limit: int = FUNDAMENTAL_TARGET_LIMIT) -> list[str]:
+    targets = candidate_fundamental_targets(candidates, limit)
+    queued: list[str] = []
+    for symbol in targets:
         active = db.query(RefreshQueueItem).filter(
             RefreshQueueItem.symbol == symbol,
             RefreshQueueItem.data_class == "fundamentals",
