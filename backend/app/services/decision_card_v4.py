@@ -116,6 +116,20 @@ def build_decision_card(candidate: dict) -> dict[str, Any]:
         _add_unique(blockers, f"Convergence state is {state}; the setup is not currently trigger-ready.")
         _add_unique(upgrades, "Convergence advances to Approaching or Triggered with aligned data.")
 
+    # Persistent flow is decision-relevant confirming/contradicting evidence. Evaluate it
+    # before lower-priority regime/context prose so it cannot be silently dropped by the
+    # bounded bull/bear lists on evidence-rich candidates.
+    flow_verdict = str(flow.get("verdict") or "insufficient")
+    flow_conf = str(flow.get("confidence") or "none")
+    if flow_verdict == "confirmation":
+        _add_unique(bull, f"Persistent options flow is bullish confirmation at {flow_conf} confidence.")
+    elif flow_verdict == "contradiction":
+        _add_unique(bear, f"Persistent options flow contradicts the long setup at {flow_conf} confidence.")
+        if flow_conf == "medium":
+            _add_unique(blockers, "Medium-confidence bearish persistent flow blocks High Conviction status.")
+    elif flow_verdict == "mixed":
+        _add_unique(blockers, "Persistent flow is mixed and should not be used as confirmation.")
+
     rotation = str(candidate.get("rotation_state") or "unknown")
     if rotation in {"leading_accelerating", "leading_stable", "recovering"}:
         _add_unique(bull, f"Rotation backdrop is {rotation.replace('_', ' ')}, providing supportive regime context.")
@@ -134,17 +148,6 @@ def build_decision_card(candidate: dict) -> dict[str, Any]:
 
     if verdict.get("event_risk"):
         _add_unique(bear, "A near-term catalyst or recent filing creates elevated event risk; this is not directional confirmation.")
-
-    flow_verdict = str(flow.get("verdict") or "insufficient")
-    flow_conf = str(flow.get("confidence") or "none")
-    if flow_verdict == "confirmation":
-        _add_unique(bull, f"Persistent options flow is bullish confirmation at {flow_conf} confidence.")
-    elif flow_verdict == "contradiction":
-        _add_unique(bear, f"Persistent options flow contradicts the long setup at {flow_conf} confidence.")
-        if flow_conf == "medium":
-            _add_unique(blockers, "Medium-confidence bearish persistent flow blocks High Conviction status.")
-    elif flow_verdict == "mixed":
-        _add_unique(blockers, "Persistent flow is mixed and should not be used as confirmation.")
 
     if fit.get("available"):
         fit_score = _num(fit.get("score"))
