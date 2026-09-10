@@ -7,7 +7,8 @@ from ..v2_models import AlertDeliveryPreference, PushSubscription
 from ..v4_models import AlertEvaluationStateV4
 from .typed_alerts import evaluate_typed_value, typed_trigger
 
-TYPED_KINDS={"ma100_proximity","ma200_proximity","catalyst_days","persistent_flow","portfolio_position_weight","regime_transition","opportunity_convergence"}
+TRANSITION_KINDS={"opportunity_convergence","williams_oversold_entry","williams_oversold_recovery","ma100_approach_from_above","williams_ma100_trigger","opportunity_invalidated"}
+TYPED_KINDS={"ma100_proximity","ma200_proximity","catalyst_days","persistent_flow","portfolio_position_weight","regime_transition",*TRANSITION_KINDS}
 
 
 def _latest_market(db,symbol):
@@ -25,15 +26,27 @@ def _legacy_triggered(value,operator,threshold):
     if value is None or threshold is None:return False
     return {">=":value>=threshold,"<=":value<=threshold,">":value>threshold,"<":value<threshold,"==":value==threshold}.get(operator,False)
 
+
+def transition_entered(kind:str,previous:str|None,current:str,meta:dict|None=None)->bool:
+    meta=meta or {}
+    if kind=="opportunity_convergence":return current=="triggered" and previous!="triggered" and bool(meta.get("alert_ready"))
+    if kind=="williams_oversold_entry":return current=="oversold" and previous is not None and previous!="oversold"
+    if kind=="williams_oversold_recovery":return current=="recovered" and previous=="oversold"
+    if kind=="ma100_approach_from_above":return current=="approaching" and previous=="extended"
+    if kind=="williams_ma100_trigger":return current=="triggered" and previous is not None and previous!="triggered"
+    if kind=="opportunity_invalidated":return current=="invalidated" and previous is not None and previous!="invalidated"
+    return False
+
+
 def _transition_trigger(db,rule,meta,default_triggered):
-    if rule.kind!="opportunity_convergence":return default_triggered,False
-    current=str((meta or {}).get("state") or "extended");row=db.get(AlertEvaluationStateV4,rule.id);previous=row.state if row else None;entered=current=="triggered" and previous!="triggered" and bool((meta or {}).get("alert_ready"))
-    payload={"previous_state":previous,"current_state":current,"model_version":(meta or {}).get("model_version"),"model_config_hash":(meta or {}).get("model_config_hash")}
+    if rule.kind not in TRANSITION_KINDS:return default_triggered,False
+    meta=meta or {};current=str(meta.get("state") or "unavailable");row=db.get(AlertEvaluationStateV4,rule.id);previous=row.state if row else None;entered=transition_entered(rule.kind,previous,current,meta)
+    payload={"previous_state":previous,"current_state":current,"model_version":meta.get("model_version"),"model_config_hash":meta.get("model_config_hash")}
     if row:
-        row.kind=rule.kind;row.symbol=rule.symbol;row.state=current;row.state_as_of=(meta or {}).get("as_of");row.payload=payload
+        row.kind=rule.kind;row.symbol=rule.symbol;row.state=current;row.state_as_of=meta.get("as_of");row.payload=payload
     else:
-        db.add(AlertEvaluationStateV4(alert_id=rule.id,kind=rule.kind,symbol=rule.symbol,state=current,state_as_of=(meta or {}).get("as_of"),payload=payload))
-    meta["previous_state"]=previous;meta["entered_triggered"]=entered;meta["event_key"]=f"opportunity-convergence:{rule.id}:{(meta or {}).get('as_of')}:entered" if entered else None
+        db.add(AlertEvaluationStateV4(alert_id=rule.id,kind=rule.kind,symbol=rule.symbol,state=current,state_as_of=meta.get("as_of"),payload=payload))
+    meta["previous_state"]=previous;meta["transition_entered"]=entered;meta["event_key"]=f"{rule.kind}:{rule.id}:{meta.get('as_of')}:{previous}->{current}" if entered else None
     return entered,True
 
 def _send_pushes(db,event:AlertEvent,rule:AlertRule,pref:AlertDeliveryPreference|None):
@@ -44,9 +57,15 @@ def _send_pushes(db,event:AlertEvent,rule:AlertRule,pref:AlertDeliveryPreference
     try:from pywebpush import webpush
     except Exception:return
     meta=(event.payload or {}).get("meta") or {}
-    if rule.kind=="opportunity_convergence":
-        score=meta.get("convergence_score");body=f"{rule.symbol} entered Triggered · convergence {score if score is not None else '—'}"
-    else:body=f"{rule.label}: {event.value if event.value is not None else 'condition met'}"
+    transition_bodies={
+        "opportunity_convergence":f"{rule.symbol} entered Triggered · convergence {meta.get('convergence_score') if meta.get('convergence_score') is not None else '—'}",
+        "williams_oversold_entry":f"{rule.symbol} Williams %R entered oversold · {meta.get('williams_r','—')}",
+        "williams_oversold_recovery":f"{rule.symbol} Williams %R recovered above -80 · {meta.get('williams_r','—')}",
+        "ma100_approach_from_above":f"{rule.symbol} approached the 100MA from above · {meta.get('signed_distance','—')}%",
+        "williams_ma100_trigger":f"{rule.symbol} hit the combined Williams + 100MA trigger",
+        "opportunity_invalidated":f"{rule.symbol} Opportunity convergence became Invalidated",
+    }
+    body=transition_bodies.get(rule.kind) or f"{rule.label}: {event.value if event.value is not None else 'condition met'}"
     payload=json.dumps({"title":f"{rule.symbol or 'Market'} alert","body":body,"url":"/?tab=Alerts","tag":f"daily-report-alert-{rule.id}","alert_id":rule.id});stale=[]
     for sub in db.query(PushSubscription).filter(PushSubscription.user_email==rule.user_email,PushSubscription.enabled.is_(True)).all():
         try:webpush(subscription_info=sub.subscription,data=payload,vapid_private_key=private,vapid_claims={"sub":subject},ttl=300)
