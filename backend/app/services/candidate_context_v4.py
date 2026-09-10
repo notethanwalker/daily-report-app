@@ -9,10 +9,11 @@ from ..models import FundamentalCache, RefreshQueueItem
 from .candidate_evidence_v4 import classify_candidate_evidence
 from .provider_orchestrator import FRESHNESS_POLICIES, is_stale
 
-CONTEXT_MODEL_VERSION = "candidate-context-v4.4"
+CONTEXT_MODEL_VERSION = "candidate-context-v4.5"
 NEWS_TTL = timedelta(minutes=30)
 FLOW_TTL = timedelta(minutes=30)
 CATALYST_TTL = timedelta(hours=12)
+FILINGS_TTL = timedelta(hours=6)
 FUNDAMENTAL_TARGET_LIMIT = 12
 INTELLIGENCE_REFRESH_LIMIT = 5
 
@@ -65,21 +66,25 @@ def candidate_context_map(db: Session, symbols: list[str]) -> dict[str, dict]:
         news = dict(payload.get("news") or {})
         flow = dict(payload.get("flow") or {})
         catalysts = dict(payload.get("catalysts") or {})
+        filings = dict(payload.get("filings") or {})
         sections = {
             "news": _section_state(payload, "news", NEWS_TTL, now),
             "flow": _section_state(payload, "flow", FLOW_TTL, now),
             "catalysts": _section_state(payload, "catalysts", CATALYST_TTL, now),
+            "filings": _section_state(payload, "filings", FILINGS_TTL, now),
             "fundamentals": _fundamental_state(funds.get(symbol), now),
         }
         articles = list(news.get("articles") or [])
         events = list(flow.get("events") or [])
         upcoming = list(catalysts.get("upcoming") or [])
+        recent_filings = list(filings.get("filings") or [])
         bundle = {
             "model_version": CONTEXT_MODEL_VERSION,
             "sections": sections,
             "news": {"count": len(articles), "top": articles[:3], "provider": news.get("provider")},
             "flow": {"kind": flow.get("kind") or "none", "count": len(events), "top": events[:3], "provider": flow.get("provider"), "note": flow.get("note")},
             "catalysts": {"count": len(upcoming), "upcoming": upcoming[:4]},
+            "filings": {"count": len(recent_filings), "top": recent_filings[:4], "provider": filings.get("provider"), "source_url": filings.get("source_url"), "error": filings.get("error")},
             "cache_only": True,
         }
         bundle["evidence"] = classify_candidate_evidence(bundle)
@@ -113,7 +118,7 @@ def candidate_intelligence_targets(candidates: list[dict], limit: int = INTELLIG
     targets: list[str] = []
     for candidate in selected:
         sections = (candidate.get("candidate_context") or {}).get("sections") or {}
-        stale = any(not (sections.get(name) or {}).get("fresh") for name in ("news", "flow", "catalysts"))
+        stale = any(not (sections.get(name) or {}).get("fresh") for name in ("news", "flow", "catalysts", "filings"))
         if not stale:
             continue
         symbol = str(candidate.get("symbol") or "").upper()
@@ -160,14 +165,14 @@ def refresh_candidate_intelligence(db: Session, candidates: list[dict], limit: i
         "refreshed": refreshed,
         "errors": errors,
         "limit": INTELLIGENCE_REFRESH_LIMIT,
-        "policy": "Explicit bounded refresh only; automatic shortlist refresh never calls news/flow/catalyst providers.",
+        "policy": "Explicit bounded refresh only; automatic shortlist refresh never calls news/flow/catalyst/SEC filing providers.",
     }
 
 
 def attach_candidate_context(db: Session, candidates: list[dict]) -> dict:
     context = candidate_context_map(db, [x.get("symbol") for x in candidates])
-    coverage = {"fundamentals": 0, "news": 0, "flow": 0, "catalysts": 0}
-    fresh = {"fundamentals": 0, "news": 0, "flow": 0, "catalysts": 0}
+    coverage = {"fundamentals": 0, "news": 0, "flow": 0, "catalysts": 0, "filings": 0}
+    fresh = {"fundamentals": 0, "news": 0, "flow": 0, "catalysts": 0, "filings": 0}
     for candidate in candidates:
         bundle = context.get(str(candidate.get("symbol") or "").upper(), {})
         candidate["candidate_context"] = bundle
@@ -183,5 +188,5 @@ def attach_candidate_context(db: Session, candidates: list[dict]) -> dict:
         "candidate_count": len(candidates),
         "available": coverage,
         "fresh": fresh,
-        "policy": "Cache-first context only. Evidence labels are descriptive and do not alter Opportunity scores. Ranking and automatic shortlist refresh perform zero news/flow/event provider calls.",
+        "policy": "Cache-first context only. Evidence labels are descriptive and do not alter Opportunity scores. Ranking and automatic shortlist refresh perform zero news/flow/event/filing provider calls.",
     }
