@@ -86,3 +86,17 @@ class OpportunityFormulaAlertBindingV4(Base):
     mode: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
     config: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class FundamentalAssessmentSnapshotV4(Base):
+    __tablename__ = "fundamental_assessment_snapshots_v4"
+    __table_args__ = (UniqueConstraint("symbol", "observation_date", "model_version", name="uq_fundamental_assessment_v4_symbol_date_model"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+    observation_date: Mapped[str] = mapped_column(String(16), index=True, nullable=False)
+    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    valuation_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    anomaly: Mapped[str] = mapped_column(String(64), index=True, nullable=False, default="neutral")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    model_version: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True, nullable=False)
