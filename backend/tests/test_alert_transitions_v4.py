@@ -1,7 +1,6 @@
 import unittest
 
-from app.services.alert_engine import transition_entered
-from app.services.typed_alerts import _combined_technical_state, _ma100_approach_state, _williams_state
+from app.services.alert_transition_logic_v4 import combined_technical_state, ma100_approach_state, transition_entered, williams_state
 
 
 class AlertTransitionsV4Test(unittest.TestCase):
@@ -33,17 +32,17 @@ class AlertTransitionsV4Test(unittest.TestCase):
         self.assertTrue(transition_entered("opportunity_convergence", "approaching", "triggered", {"alert_ready": True}))
 
     def test_market_state_classifiers(self):
-        _, oversold = _williams_state({"williams_r_14": -82, "as_of": "2026-09-10"})
-        _, recovered = _williams_state({"williams_r_14": -79, "as_of": "2026-09-10"})
+        _, oversold = williams_state({"williams_r_14": -82, "as_of": "2026-09-10"})
+        _, recovered = williams_state({"williams_r_14": -79, "as_of": "2026-09-10"})
         self.assertEqual(oversold["state"], "oversold")
         self.assertEqual(recovered["state"], "recovered")
 
-        _, approaching = _ma100_approach_state({"price_vs_ma100_percent": 3.0, "as_of": "2026-09-10"})
-        _, below = _ma100_approach_state({"price_vs_ma100_percent": -1.0, "as_of": "2026-09-10"})
+        _, approaching = ma100_approach_state({"price_vs_ma100_percent": 3.0, "as_of": "2026-09-10"})
+        _, below = ma100_approach_state({"price_vs_ma100_percent": -1.0, "as_of": "2026-09-10"})
         self.assertEqual(approaching["state"], "approaching")
         self.assertEqual(below["state"], "below")
 
-        value, combined = _combined_technical_state({"williams_r_14": -85, "price_vs_ma100_percent": 2.0, "as_of": "2026-09-10"})
+        value, combined = combined_technical_state({"williams_r_14": -85, "price_vs_ma100_percent": 2.0, "as_of": "2026-09-10"})
         self.assertEqual(value, 1.0)
         self.assertEqual(combined["state"], "triggered")
 
