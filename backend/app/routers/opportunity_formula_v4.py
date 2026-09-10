@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..services.opportunity_criterion_governance import governed_catalog
 from ..services.opportunity_formula_v4 import (
     CRITERIA,
     DEFAULT_FORMULA,
@@ -88,11 +89,17 @@ def opportunity_criteria(user: str = Depends(current_user)):
     _ = user
     return {
         "schema_version": SCHEMA_VERSION,
-        "criteria": list(CRITERIA.values()),
+        "criteria": governed_catalog(CRITERIA),
         "filters": list(FILTER_FIELDS.values()),
         "sort_fields": sorted(SORT_FIELDS),
         "sort_directions": sorted(SORT_DIRECTIONS),
         "default_formula": formula_metadata(DEFAULT_FORMULA, []),
+        "validation_policy": {
+            "baseline": "Part of the built-in model but not yet promoted to empirically validated status.",
+            "experimental": "Available for hypothesis testing; should not be treated as established predictive signal.",
+            "validated": "Promoted only after independent-sample evidence clears the V4 quant research gates.",
+            "rejected": "Retained for auditability but should not be used in new formulas.",
+        },
     }
 
 
