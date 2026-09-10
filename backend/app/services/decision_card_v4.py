@@ -28,9 +28,10 @@ def _data_quality(candidate: dict) -> dict[str, Any]:
         verification_status=candidate.get("verification_status"),
         feature_status=candidate.get("feature_context_status"),
     )
+    legacy_label = "strong" if quality["state"] in {"verified", "fresh"} else "moderate" if quality["state"] == "degraded" else "limited"
     return {
         **quality,
-        "label": quality["state"],
+        "label": legacy_label,
         "context_completeness": quality["completeness"],
         "context_freshness": quality["freshness"],
         "context_confidence": quality["confidence"],
