@@ -31,6 +31,16 @@ class AlertTransitionsV4Test(unittest.TestCase):
         self.assertFalse(transition_entered("opportunity_convergence", "approaching", "triggered", {"alert_ready": False}))
         self.assertTrue(transition_entered("opportunity_convergence", "approaching", "triggered", {"alert_ready": True}))
 
+    def test_saved_formula_score_alert_is_crossing_only(self):
+        self.assertFalse(transition_entered("opportunity_formula_score", None, "at_or_above", {}))
+        self.assertTrue(transition_entered("opportunity_formula_score", "below", "at_or_above", {}))
+        self.assertFalse(transition_entered("opportunity_formula_score", "at_or_above", "at_or_above", {}))
+
+    def test_saved_formula_rank_alert_is_top_n_entry_only(self):
+        self.assertFalse(transition_entered("opportunity_formula_rank", None, "inside", {}))
+        self.assertTrue(transition_entered("opportunity_formula_rank", "outside", "inside", {}))
+        self.assertFalse(transition_entered("opportunity_formula_rank", "inside", "inside", {}))
+
     def test_market_state_classifiers(self):
         _, oversold = williams_state({"williams_r_14": -82, "as_of": "2026-09-10"})
         _, recovered = williams_state({"williams_r_14": -79, "as_of": "2026-09-10"})
