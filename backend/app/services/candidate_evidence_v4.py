@@ -121,10 +121,54 @@ def classify_flow(bundle: dict) -> dict:
     return {"label": "ambiguous", "direction": "unknown", "confidence": "low", "reason": "Observed options activity is not directionally interpretable from the cached execution fields."}
 
 
-def classify_candidate_evidence(bundle: dict) -> dict:
+def synthesize_context_verdict(news: dict, catalysts: dict) -> dict:
+    """Summarize news/catalyst context without translating it into alpha points."""
+    news_label = str(news.get("label") or "missing")
+    catalyst_label = str(catalysts.get("label") or "missing")
+    urgency = str(catalysts.get("urgency") or "unknown")
+
+    if news_label == "potentially_positive":
+        label = "supportive"
+        reason = "Fresh linked news contains explicit positive event language."
+    elif news_label == "potentially_negative":
+        label = "contradictory"
+        reason = "Fresh linked news contains explicit negative event language."
+    elif news_label == "mixed":
+        label = "mixed"
+        reason = "Fresh linked news contains conflicting directional event language."
+    elif news_label == "stale" and catalyst_label == "stale":
+        label = "stale"
+        reason = "Both linked-news and catalyst evidence are outside their freshness windows."
+    elif news_label == "missing" and catalyst_label == "missing":
+        label = "insufficient"
+        reason = "Neither linked-news nor catalyst evidence is currently available."
+    else:
+        label = "neutral"
+        reason = "No fresh directional company-news signal is established."
+
+    event_risk = urgency in {"high", "medium"}
+    if event_risk:
+        reason += f" A {urgency}-urgency catalyst is approaching and is treated as event risk, not directional confirmation."
+
     return {
-        "news": classify_news(bundle),
-        "catalysts": classify_catalysts(bundle),
-        "flow": classify_flow(bundle),
+        "label": label,
+        "event_risk": event_risk,
+        "catalyst_urgency": urgency,
+        "confidence": "low" if label in {"supportive", "contradictory", "mixed"} else "none",
+        "reason": reason,
+        "score_effect": 0,
+        "policy": "Context verdict is descriptive only and contributes zero Opportunity-score points until independently validated.",
+    }
+
+
+def classify_candidate_evidence(bundle: dict) -> dict:
+    news = classify_news(bundle)
+    catalysts = classify_catalysts(bundle)
+    flow = classify_flow(bundle)
+    return {
+        "news": news,
+        "catalysts": catalysts,
+        "flow": flow,
+        "context_verdict": synthesize_context_verdict(news, catalysts),
         "policy": "Evidence labels are descriptive context only. They do not alter Opportunity formula scores or imply calibrated return probabilities.",
     }
