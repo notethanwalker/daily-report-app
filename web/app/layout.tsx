@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import "./auth.css";
+import "./v4/global-ticker-search-host.css";
 import PwaRegister from "./pwa-register";
 import DestructiveActionGuard from "./destructive-action-guard";
 import AccessibilityRuntime from "./accessibility-runtime";
