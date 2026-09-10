@@ -44,6 +44,7 @@ from .routers.macro_v3 import router as macro_v3_router
 from .routers.reconciliation import router as reconciliation_router
 from .routers.future_release import router as future_release_router
 from .routers.next_intelligence import router as next_intelligence_router
+from .routers.world_news_v4 import router as world_news_v4_router
 from .routers.auth import router as auth_router
 from .routers import portfolio_access as access_policy
 from .routers.portfolio_access import _permissions, router as portfolio_access_router
@@ -67,7 +68,7 @@ for symbol in EXPANDED_MACRO:
 if "Command Center" not in access_policy.ALL_TABS:access_policy.ALL_TABS.insert(0,"Command Center")
 access_policy.DEFAULT_PERMISSIONS["can_view_command_center"]=True;access_policy.OWNER_PERMISSIONS["can_view_command_center"]=True;access_policy.TAB_PERMISSION["Command Center"]="can_view_command_center"
 def _is_get_route(route,*paths):return getattr(route,"path",None) in paths and "GET" in (getattr(route,"methods",set()) or set())
-app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/markets/{symbol}/fundamentals")]
+app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/markets/{symbol}/fundamentals","/api/v1/news/world")]
 intelligence_router.routes=[r for r in intelligence_router.routes if not _is_get_route(r,"/events","/api/v1/events","/security/{symbol}/workspace","/api/v1/security/{symbol}/workspace")]
 Base.metadata.create_all(bind=engine)
 _bootstrap_db=SessionLocal()
@@ -77,7 +78,7 @@ try:
     if _owner:os.environ["OWNER_EMAIL"]=_owner.id
 finally:_bootstrap_db.close()
 os.environ["ALLOWED_USER_EMAILS"]="";os.environ["USER_ACCESS_TOKENS"]="";os.environ["USER_AUTH_ENABLED"]=""
-app.include_router(auth_router);app.include_router(override_router);app.include_router(health_router);app.include_router(data_quality_v4_router);app.include_router(fundamentals_v2_router);app.include_router(alerts_consistency_v4_router);app.include_router(alerts_context_v4_router);app.include_router(alerts_v2_router);app.include_router(alerts_formula_v4_router);app.include_router(portfolio_live_router);app.include_router(portfolio_access_router);app.include_router(intelligence_router);app.include_router(user_state_router);app.include_router(lifecycle_router);app.include_router(research_router);app.include_router(research_v4_router);app.include_router(security_intelligence_v5_router);app.include_router(decision_support_router);app.include_router(opportunity_scanner_router);app.include_router(opportunity_formula_v4_router);app.include_router(stack_v4_router);app.include_router(calibration_v4_router);app.include_router(stooq_internal_router);app.include_router(analytics_v3_router);app.include_router(macro_v3_router);app.include_router(events_v3_router);app.include_router(events_v4_router);app.include_router(future_release_router);app.include_router(next_intelligence_router)
+app.include_router(auth_router);app.include_router(override_router);app.include_router(health_router);app.include_router(data_quality_v4_router);app.include_router(fundamentals_v2_router);app.include_router(alerts_consistency_v4_router);app.include_router(alerts_context_v4_router);app.include_router(alerts_v2_router);app.include_router(alerts_formula_v4_router);app.include_router(portfolio_live_router);app.include_router(portfolio_access_router);app.include_router(intelligence_router);app.include_router(user_state_router);app.include_router(lifecycle_router);app.include_router(research_router);app.include_router(research_v4_router);app.include_router(security_intelligence_v5_router);app.include_router(decision_support_router);app.include_router(opportunity_scanner_router);app.include_router(opportunity_formula_v4_router);app.include_router(stack_v4_router);app.include_router(calibration_v4_router);app.include_router(stooq_internal_router);app.include_router(analytics_v3_router);app.include_router(macro_v3_router);app.include_router(events_v3_router);app.include_router(events_v4_router);app.include_router(future_release_router);app.include_router(next_intelligence_router);app.include_router(world_news_v4_router)
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/security/{symbol}/workspace")]
 app.add_api_route("/api/v1/security/{symbol}/workspace",security_workspace_v4,methods=["GET"],tags=["research-v4"],name="security_workspace_v4_authoritative");app.router.routes.insert(0,app.router.routes.pop())
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/events")]
