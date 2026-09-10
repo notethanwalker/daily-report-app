@@ -11,10 +11,13 @@ from ..services.opportunity_formula_v4 import (
     DEFAULT_FORMULA,
     FILTER_FIELDS,
     SCHEMA_VERSION,
+    SORT_DIRECTIONS,
+    SORT_FIELDS,
     build_opportunity_index,
     formula_metadata,
     validate_filters,
     validate_formula,
+    validate_sort,
 )
 from ..v4_models import OpportunityFormulaPresetV4
 from .intelligence import current_user
@@ -87,6 +90,8 @@ def opportunity_criteria(user: str = Depends(current_user)):
         "schema_version": SCHEMA_VERSION,
         "criteria": list(CRITERIA.values()),
         "filters": list(FILTER_FIELDS.values()),
+        "sort_fields": sorted(SORT_FIELDS),
+        "sort_directions": sorted(SORT_DIRECTIONS),
         "default_formula": formula_metadata(DEFAULT_FORMULA, []),
     }
 
@@ -96,15 +101,26 @@ def opportunity_index(
     payload: FormulaDefinition,
     include_etfs: bool = Query(default=False),
     limit: int = Query(default=300, ge=1, le=1000),
+    sort_by: str = Query(default="score"),
+    sort_dir: str = Query(default="desc"),
     db: Session = Depends(get_db),
     user: str = Depends(current_user),
 ):
     _ = user
     try:
         criteria, filters = _clean_definition(payload)
+        sort_by, sort_dir = validate_sort(sort_by, sort_dir)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return build_opportunity_index(db, criteria=criteria, filters=filters, include_etfs=include_etfs, limit=limit)
+    return build_opportunity_index(
+        db,
+        criteria=criteria,
+        filters=filters,
+        include_etfs=include_etfs,
+        limit=limit,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
 
 
 @router.get("/formulas")
