@@ -25,6 +25,7 @@ class DecisionCardV4Test(unittest.TestCase):
                     "filings": {"available": True, "fresh": True},
                     "flow": {"available": True, "fresh": True},
                 },
+                "fundamentals": {"assessment": None},
                 "evidence": {"context_verdict": {"label": "supportive", "event_risk": False, "score_effect": 0}},
                 "persistent_flow": {"verdict": "confirmation", "direction": "bullish", "confidence": "medium"},
             },
@@ -55,6 +56,36 @@ class DecisionCardV4Test(unittest.TestCase):
         card = build_decision_card(candidate)
         self.assertEqual(card["asset_opportunity"]["score"], 86.0)
         self.assertTrue(any("bearish" in x.lower() for x in card["blockers"]))
+
+    def test_value_trap_is_blocker_without_rewriting_formula_score(self):
+        candidate = self.base_candidate()
+        candidate["candidate_context"]["fundamentals"]["assessment"] = {
+            "quality_score": 31.0,
+            "valuation_score": 82.0,
+            "anomaly": "value_trap_risk",
+            "confidence": "high",
+            "coverage": .8,
+            "flags": [{"code":"revenue_contraction","severity":"warning","detail":"Revenue is contracting."}],
+        }
+        card = build_decision_card(candidate)
+        self.assertEqual(card["asset_opportunity"]["score"], 86.0)
+        self.assertEqual(card["fundamentals"]["anomaly"], "value_trap_risk")
+        self.assertTrue(any("value-trap" in x.lower() for x in card["blockers"]))
+        self.assertTrue(any("valuation appears attractive" in x.lower() for x in card["bear_case"]))
+
+    def test_quality_at_reasonable_value_is_supportive_not_master_score(self):
+        candidate = self.base_candidate()
+        candidate["candidate_context"]["fundamentals"]["assessment"] = {
+            "quality_score": 78.0,
+            "valuation_score": 68.0,
+            "anomaly": "quality_at_reasonable_value",
+            "confidence": "high",
+            "coverage": 1.0,
+            "flags": [],
+        }
+        card = build_decision_card(candidate)
+        self.assertTrue(any("quality at reasonable value" in x.lower() for x in card["bull_case"]))
+        self.assertNotIn("score", card)
 
     def test_event_risk_is_not_bullish_confirmation(self):
         candidate = self.base_candidate()
