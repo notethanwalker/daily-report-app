@@ -6,7 +6,7 @@ import GlobalTickerSearchV4 from "./global-ticker-search-v4";
 export default function GlobalTickerSearchHost(){
  const[visible,setVisible]=useState(false);
  useEffect(()=>{
-  const sync=()=>setVisible(!!document.querySelector(".v4-shell"));
+  const sync=()=>setVisible(!!document.querySelector(".v4-pipeline"));
   sync();
   const observer=new MutationObserver(sync);
   observer.observe(document.body,{childList:true,subtree:true});
