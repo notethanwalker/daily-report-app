@@ -80,6 +80,43 @@ def classify_catalysts(bundle: dict, today: date | None = None) -> dict:
     return {"label": "upcoming", "urgency": urgency, "days_until": days, "next": event, "reason": f"Nearest cached catalyst is {days} day(s) away with {impact} stated impact."}
 
 
+def classify_filings(bundle: dict, today: date | None = None) -> dict:
+    state = ((bundle.get("sections") or {}).get("filings") or {})
+    if not state.get("available"):
+        return {"label": "missing", "urgency": "unknown", "direction": "unknown", "reason": "No SEC filing cache is available."}
+    if not state.get("fresh"):
+        return {"label": "stale", "urgency": "unknown", "direction": "unknown", "reason": "SEC filing cache is outside its freshness window."}
+    filings = list((bundle.get("filings") or {}).get("top") or [])
+    if not filings:
+        return {"label": "none_recent", "urgency": "low", "direction": "neutral", "reason": "No tracked recent SEC filing is present in the fresh cache."}
+    today = today or datetime.now(timezone.utc).date()
+    ranked = []
+    for filing in filings:
+        filed = _parse_date(filing.get("filed_at"))
+        if not filed:
+            continue
+        age = (today - filed).days
+        ranked.append((age, str(filing.get("form") or ""), filing))
+    if not ranked:
+        return {"label": "unresolved", "urgency": "unknown", "direction": "unknown", "reason": "SEC filings are present but filing dates could not be normalized."}
+    ranked.sort(key=lambda x: x[0])
+    age, form, filing = ranked[0]
+    if form in {"8-K", "8-K/A", "6-K"} and age <= 7:
+        label, urgency = "recent_event_disclosure", "medium"
+    elif form in {"10-Q", "10-Q/A", "10-K", "10-K/A", "20-F", "20-F/A"} and age <= 14:
+        label, urgency = "recent_periodic_report", "medium"
+    else:
+        label, urgency = "recent_filing", "low"
+    return {
+        "label": label,
+        "urgency": urgency,
+        "direction": "unknown",
+        "days_since": age,
+        "latest": filing,
+        "reason": f"Most recent tracked SEC filing is {form or 'unknown form'}, filed {age} day(s) ago. Form type alone is not directional.",
+    }
+
+
 def _flow_direction(event: dict) -> str:
     data = dict(event.get("data") or {})
     explicit = str(data.get("direction") or "").lower()
@@ -121,11 +158,13 @@ def classify_flow(bundle: dict) -> dict:
     return {"label": "ambiguous", "direction": "unknown", "confidence": "low", "reason": "Observed options activity is not directionally interpretable from the cached execution fields."}
 
 
-def synthesize_context_verdict(news: dict, catalysts: dict) -> dict:
-    """Summarize news/catalyst context without translating it into alpha points."""
+def synthesize_context_verdict(news: dict, catalysts: dict, filings: dict | None = None) -> dict:
+    """Summarize company context without translating it into alpha points."""
+    filings = filings or {"label": "missing", "urgency": "unknown"}
     news_label = str(news.get("label") or "missing")
     catalyst_label = str(catalysts.get("label") or "missing")
     urgency = str(catalysts.get("urgency") or "unknown")
+    filing_urgency = str(filings.get("urgency") or "unknown")
 
     if news_label == "potentially_positive":
         label = "supportive"
@@ -136,24 +175,27 @@ def synthesize_context_verdict(news: dict, catalysts: dict) -> dict:
     elif news_label == "mixed":
         label = "mixed"
         reason = "Fresh linked news contains conflicting directional event language."
-    elif news_label == "stale" and catalyst_label == "stale":
+    elif news_label == "stale" and catalyst_label == "stale" and str(filings.get("label")) == "stale":
         label = "stale"
-        reason = "Both linked-news and catalyst evidence are outside their freshness windows."
-    elif news_label == "missing" and catalyst_label == "missing":
+        reason = "News, catalyst, and filing evidence are outside their freshness windows."
+    elif news_label == "missing" and catalyst_label == "missing" and str(filings.get("label")) == "missing":
         label = "insufficient"
-        reason = "Neither linked-news nor catalyst evidence is currently available."
+        reason = "News, catalyst, and filing evidence are all unavailable."
     else:
         label = "neutral"
         reason = "No fresh directional company-news signal is established."
 
-    event_risk = urgency in {"high", "medium"}
-    if event_risk:
+    event_risk = urgency in {"high", "medium"} or filing_urgency == "medium"
+    if urgency in {"high", "medium"}:
         reason += f" A {urgency}-urgency catalyst is approaching and is treated as event risk, not directional confirmation."
+    if filing_urgency == "medium":
+        reason += " A recent SEC event/periodic filing is present and is treated as event information, not directional confirmation."
 
     return {
         "label": label,
         "event_risk": event_risk,
         "catalyst_urgency": urgency,
+        "filing_urgency": filing_urgency,
         "confidence": "low" if label in {"supportive", "contradictory", "mixed"} else "none",
         "reason": reason,
         "score_effect": 0,
@@ -164,11 +206,13 @@ def synthesize_context_verdict(news: dict, catalysts: dict) -> dict:
 def classify_candidate_evidence(bundle: dict) -> dict:
     news = classify_news(bundle)
     catalysts = classify_catalysts(bundle)
+    filings = classify_filings(bundle)
     flow = classify_flow(bundle)
     return {
         "news": news,
         "catalysts": catalysts,
+        "filings": filings,
         "flow": flow,
-        "context_verdict": synthesize_context_verdict(news, catalysts),
+        "context_verdict": synthesize_context_verdict(news, catalysts, filings),
         "policy": "Evidence labels are descriptive context only. They do not alter Opportunity formula scores or imply calibrated return probabilities.",
     }
