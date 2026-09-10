@@ -1,3 +1,4 @@
+import os
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
@@ -43,6 +44,18 @@ def _flow_health(db:Session,now:datetime)->dict:
         "cache_seconds":30,
         "analysis":"flow-v2 local significance/direction model",
         "policy":"Health reflects persisted evidence. Provider reachability is not inferred from a hardcoded configured flag and is not actively probed on this endpoint."
+    }
+
+
+@router.get("/markets/__deployment__/fundamentals")
+def deployment_revision_for_smoke():
+    """Machine-smoke deployment identity on an already-authorized read-only route shape."""
+    return {
+        "symbol":"__DEPLOYMENT__",
+        "render_git_commit":os.getenv("RENDER_GIT_COMMIT"),
+        "render_git_branch":os.getenv("RENDER_GIT_BRANCH"),
+        "render_service_id":os.getenv("RENDER_SERVICE_ID"),
+        "render_instance_id":os.getenv("RENDER_INSTANCE_ID"),
     }
 
 
