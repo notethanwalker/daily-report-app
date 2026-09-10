@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..models import FlowEvent
 from .flow_pipeline import NormalizedFlowEvent, score_flow_event
 
-FLOW_CONFIRMATION_MODEL_VERSION = "flow-confirmation-v4.1"
+FLOW_CONFIRMATION_MODEL_VERSION = "flow-confirmation-v4.2"
 DEFAULT_LOOKBACK_HOURS = 72
 MAX_EVENTS_PER_SYMBOL = 250
 BURST_GAP_MINUTES = 120
@@ -51,18 +51,10 @@ def _to_normalized(row: FlowEvent) -> NormalizedFlowEvent:
         provider=str(row.provider or "unknown"),
         occurred_at=_utc(row.occurred_at),
         source_url=str(row.source_url or ""),
-        contract={
-            "side": payload.get("side"),
-            "strike": payload.get("strike"),
-            "expiration": payload.get("expiration"),
-        },
+        contract={"side": payload.get("side"), "strike": payload.get("strike"), "expiration": payload.get("expiration")},
         execution={
-            "premium": payload.get("premium"),
-            "contracts": payload.get("contracts"),
-            "volume": payload.get("volume"),
-            "open_interest": payload.get("open_interest"),
-            "aggression": payload.get("aggression"),
-            "trade_type": payload.get("trade_type"),
+            "premium": payload.get("premium"), "contracts": payload.get("contracts"), "volume": payload.get("volume"),
+            "open_interest": payload.get("open_interest"), "aggression": payload.get("aggression"), "trade_type": payload.get("trade_type"),
         },
         provider_score=row.outlier_score,
         raw=payload.get("raw") or {},
@@ -74,8 +66,7 @@ def _burst_count(times: list[datetime]) -> tuple[int, int]:
         return 0, 0
     ordered = sorted(_utc(x) for x in times)
     bursts = 1
-    largest = 1
-    current = 1
+    largest = current = 1
     for previous, current_time in zip(ordered, ordered[1:]):
         if current_time - previous <= timedelta(minutes=BURST_GAP_MINUTES):
             current += 1
@@ -105,8 +96,7 @@ def analyze_flow_rows(rows: list[FlowEvent], *, now: datetime | None = None) -> 
     for row in active:
         payload = dict(row.payload or {})
         clusters[_contract_key(payload)].append(row)
-        expiry = str(payload.get("expiration") or "unknown")[:10]
-        expiration_counts[expiry] += 1
+        expiration_counts[str(payload.get("expiration") or "unknown")[:10]] += 1
 
     for key, members in clusters.items():
         corroboration = max(0, len({str(x.provider or "unknown") for x in members}) - 1)
@@ -122,7 +112,6 @@ def analyze_flow_rows(rows: list[FlowEvent], *, now: datetime | None = None) -> 
     majority = max(bull, bear)
     consistency = (majority / directional) if directional else 0.0
     dominant = "bullish" if bull > bear else "bearish" if bear > bull else "mixed" if bull and bear else "unknown"
-
     repeated_contracts = sum(len(items) >= 2 for items in clusters.values())
     repeated_expirations = sum(count >= 2 for expiry, count in expiration_counts.items() if expiry != "unknown")
     bursts, largest_burst = _burst_count([row.occurred_at for row in active])
@@ -136,8 +125,6 @@ def analyze_flow_rows(rows: list[FlowEvent], *, now: datetime | None = None) -> 
     else:
         verdict = "insufficient"
 
-    # Confidence is intentionally capped at medium until provider-side opening/closing
-    # and spread/hedge classification is available.
     if verdict in {"confirmation", "contradiction"} and directional >= 3 and consistency >= 0.75 and (repeated_contracts or largest_burst >= 2):
         confidence = "medium"
     elif verdict in {"confirmation", "contradiction", "mixed", "weak_directional"}:
@@ -148,8 +135,7 @@ def analyze_flow_rows(rows: list[FlowEvent], *, now: datetime | None = None) -> 
     cluster_rows = []
     for key, members in clusters.items():
         side, strike, expiration = key
-        member_analyses = [a for row, a, k in analyses if k == key]
-        cluster_directions = Counter(a.direction for a in member_analyses)
+        member_analyses = [a for _row, a, k in analyses if k == key]
         times = sorted(_utc(x.occurred_at) for x in members)
         cluster_rows.append({
             "side": side,
@@ -157,7 +143,7 @@ def analyze_flow_rows(rows: list[FlowEvent], *, now: datetime | None = None) -> 
             "expiration": expiration,
             "observations": len(members),
             "providers": sorted({str(x.provider or "unknown") for x in members}),
-            "direction_counts": dict(cluster_directions),
+            "direction_counts": dict(Counter(a.direction for a in member_analyses)),
             "first_seen": times[0].isoformat() if times else None,
             "last_seen": times[-1].isoformat() if times else None,
             "max_significance": round(max((a.significance_score for a in member_analyses), default=0.0), 1),
@@ -184,17 +170,34 @@ def analyze_flow_rows(rows: list[FlowEvent], *, now: datetime | None = None) -> 
     }
 
 
-def build_flow_confirmation(db: Session, symbol: str, *, lookback_hours: int = DEFAULT_LOOKBACK_HOURS, now: datetime | None = None) -> dict[str, Any]:
+def build_flow_confirmation_map(db: Session, symbols: list[str], *, lookback_hours: int = DEFAULT_LOOKBACK_HOURS, now: datetime | None = None) -> dict[str, dict[str, Any]]:
     now = _utc(now)
-    cutoff = now - timedelta(hours=max(1, min(int(lookback_hours), 30 * 24)))
+    symbols = sorted({str(x).upper() for x in symbols if x})
+    if not symbols:
+        return {}
+    hours = max(1, min(int(lookback_hours), 30 * 24))
+    cutoff = now - timedelta(hours=hours)
     rows = (
         db.query(FlowEvent)
-        .filter(FlowEvent.symbol == str(symbol).upper(), FlowEvent.occurred_at >= cutoff)
+        .filter(FlowEvent.symbol.in_(symbols), FlowEvent.occurred_at >= cutoff)
         .order_by(FlowEvent.occurred_at.desc())
-        .limit(MAX_EVENTS_PER_SYMBOL)
+        .limit(MAX_EVENTS_PER_SYMBOL * len(symbols))
         .all()
     )
-    result = analyze_flow_rows(rows, now=now)
-    result["symbol"] = str(symbol).upper()
-    result["lookback_hours"] = int((now - cutoff).total_seconds() // 3600)
-    return result
+    grouped: dict[str, list[FlowEvent]] = defaultdict(list)
+    for row in rows:
+        symbol = str(row.symbol or "").upper()
+        if len(grouped[symbol]) < MAX_EVENTS_PER_SYMBOL:
+            grouped[symbol].append(row)
+    out = {}
+    for symbol in symbols:
+        result = analyze_flow_rows(grouped.get(symbol, []), now=now)
+        result["symbol"] = symbol
+        result["lookback_hours"] = hours
+        out[symbol] = result
+    return out
+
+
+def build_flow_confirmation(db: Session, symbol: str, *, lookback_hours: int = DEFAULT_LOOKBACK_HOURS, now: datetime | None = None) -> dict[str, Any]:
+    s = str(symbol).upper()
+    return build_flow_confirmation_map(db, [s], lookback_hours=lookback_hours, now=now)[s]
