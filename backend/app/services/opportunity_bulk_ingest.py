@@ -7,15 +7,13 @@ from sqlalchemy.orm import Session
 
 from ..models import MarketSnapshot, SymbolRegistry
 from ..normalized_market_models import MarketPipelineState, NormalizedDailyBar
-from ..providers.stooq import symbol_key
 from .market_data_pipeline import (
     BROAD_OPPORTUNITY_HISTORY_DAYS,
     BROAD_OPPORTUNITY_MIN_BARS,
-    _alias_maps,
     _nasdaq_registry,
     _snapshot_from_normalized,
     _snapshot_from_rows,
-    persist_normalized_history,
+    _upsert_bar_payloads,
 )
 
 STATE_KEY = "opportunity_external_ingest"
@@ -24,6 +22,7 @@ MIN_BARS = BROAD_OPPORTUNITY_MIN_BARS
 RETAIN_DAYS = BROAD_OPPORTUNITY_HISTORY_DAYS
 MAX_RECORDS_PER_BATCH = 200
 READY_COVERAGE_PERCENT = 95.0
+BAR_UPSERT_CHUNK = 3000
 
 
 def _now() -> str:
@@ -44,12 +43,7 @@ def _save_state(db: Session, payload: dict) -> None:
 
 
 def _eligible_stock(row: SymbolRegistry) -> bool:
-    """Return True only for common/ordinary equity suitable for the broad scanner.
-
-    Nasdaq Trader classifies several preferred/debt/unit instruments as ``Stock``.
-    Keep ADR/common/ordinary/Class A/B equity, but remove instruments whose price
-    history and technical behavior should not be mixed with the common-equity scan.
-    """
+    """Return True only for common/ordinary equity suitable for the broad scanner."""
     if str(row.asset_type or "").lower() not in {"stock", "equity"}:
         return False
     symbol = str(row.symbol or "").upper()
@@ -72,15 +66,21 @@ def _eligible_symbols(db: Session) -> list[str]:
     return sorted(r.symbol.upper() for r in _nasdaq_registry(db) if _eligible_stock(r))
 
 
-def _coverage_rows(db: Session) -> dict[str, dict]:
-    rows = db.query(
+def _coverage_rows(db: Session, symbols: list[str] | set[str] | None = None) -> dict[str, dict]:
+    query = db.query(
         NormalizedDailyBar.symbol,
         func.count(NormalizedDailyBar.id).label("bars"),
         func.max(NormalizedDailyBar.bar_date).label("latest_bar_date"),
     ).filter(
         NormalizedDailyBar.high.is_not(None),
         NormalizedDailyBar.low.is_not(None),
-    ).group_by(NormalizedDailyBar.symbol).all()
+    )
+    if symbols is not None:
+        wanted = list(symbols)
+        if not wanted:
+            return {}
+        query = query.filter(NormalizedDailyBar.symbol.in_(wanted))
+    rows = query.group_by(NormalizedDailyBar.symbol).all()
     return {
         str(symbol).upper(): {"bars": int(bars or 0), "latest_bar_date": str(latest or "")[:10]}
         for symbol, bars, latest in rows
@@ -117,6 +117,28 @@ def _coverage(db: Session) -> dict:
         "eligible_stocks": len(eligible),
         "covered_stocks": covered_count,
         "coverage_percent": round(covered_count / len(eligible) * 100.0, 2) if eligible else 0.0,
+        "minimum_bars": MIN_BARS,
+        "retained_sessions": RETAIN_DAYS,
+    }
+
+
+def _coverage_from_state(db: Session) -> dict | None:
+    row = db.get(MarketPipelineState, STATE_KEY)
+    payload = dict(row.payload or {}) if row else {}
+    coverage = payload.get("coverage")
+    if not isinstance(coverage, dict):
+        return None
+    try:
+        eligible = int(coverage.get("eligible_stocks") or 0)
+        covered = int(coverage.get("covered_stocks") or 0)
+    except (TypeError, ValueError):
+        return None
+    if eligible <= 0 or covered < 0 or covered > eligible:
+        return None
+    return {
+        "eligible_stocks": eligible,
+        "covered_stocks": covered,
+        "coverage_percent": round(covered / eligible * 100.0, 2),
         "minimum_bars": MIN_BARS,
         "retained_sessions": RETAIN_DAYS,
     }
@@ -196,6 +218,27 @@ def missing_opportunity_symbols(db: Session, *, limit: int = 500, cursor: str = 
     }
 
 
+def _bar_payloads(symbol: str, rows: list[dict], source: str, source_url: str) -> list[dict]:
+    payloads = []
+    for item in rows[-RETAIN_DAYS:]:
+        dt = str(item.get("date") or "")[:10]
+        close = item.get("close")
+        if not dt or close is None:
+            continue
+        payloads.append({
+            "symbol": symbol,
+            "bar_date": dt,
+            "open": item.get("open"),
+            "high": item.get("high"),
+            "low": item.get("low"),
+            "close": close,
+            "volume": item.get("volume") or 0.0,
+            "provider": source,
+            "source_url": source_url,
+        })
+    return payloads
+
+
 def ingest_opportunity_batch(
     db: Session,
     records: list[dict],
@@ -209,114 +252,140 @@ def ingest_opportunity_batch(
     if len(records) > MAX_RECORDS_PER_BATCH:
         raise ValueError(f"Bulk Opportunity ingest is limited to {MAX_RECORDS_PER_BATCH} symbols per request")
 
-    registry_rows = _nasdaq_registry(db)
-    exact, aliases = _alias_maps(registry_rows)
-    registry_by_symbol: dict[str, SymbolRegistry] = {r.symbol.upper(): r for r in registry_rows}
-    coverage_before = _coverage_rows(db)
+    source_symbols = sorted({str(r.get("symbol") or "").strip().upper() for r in records if r.get("symbol")})
+    registry_rows = db.query(SymbolRegistry).filter(SymbolRegistry.symbol.in_(source_symbols)).all()
+    registry_by_symbol = {r.symbol.upper(): r for r in registry_rows}
+    coverage_before = _coverage_rows(db, source_symbols)
+    prior_coverage = _coverage_from_state(db)
 
     accepted = rejected = bars_touched = snapshots_written = 0
     refresh_updates = bootstrap_updates = 0
     rejected_examples: list[dict] = []
     accepted_symbols: list[str] = []
     newest_bar = None
+    all_bar_payloads: list[dict] = []
+    snapshot_rows: list[MarketSnapshot] = []
+    refresh_records: list[tuple[str, list[dict], dict]] = []
 
     for raw in records:
         source_symbol = str(raw.get("symbol") or "").strip().upper()
-        rows = list(raw.get("rows") or [])
-        canonical = source_symbol if source_symbol in exact else aliases.get(symbol_key(source_symbol))
-        if not canonical:
+        registry = registry_by_symbol.get(source_symbol)
+        if not registry:
             rejected += 1
             if len(rejected_examples) < 12:
                 rejected_examples.append({"symbol": source_symbol or None, "reason": "symbol_not_in_current_nasdaq_universe"})
             continue
-
-        registry = registry_by_symbol.get(canonical)
-        if not registry or not _eligible_stock(registry):
+        if not _eligible_stock(registry):
             rejected += 1
             if len(rejected_examples) < 12:
                 rejected_examples.append({"symbol": source_symbol, "reason": "not_common_equity"})
             continue
 
         usable = [
-            r for r in rows
-            if r.get("close") is not None
-            and r.get("high") is not None
-            and r.get("low") is not None
+            r for r in list(raw.get("rows") or [])
+            if r.get("close") is not None and r.get("high") is not None and r.get("low") is not None
             and str(r.get("date") or "")[:10]
         ]
-        existing_bars = int(coverage_before.get(canonical, {}).get("bars") or 0)
+        existing_bars = int(coverage_before.get(source_symbol, {}).get("bars") or 0)
         is_refresh = existing_bars >= MIN_BARS
         if not usable or (not is_refresh and len(usable) < MIN_BARS):
             rejected += 1
             if len(rejected_examples) < 12:
-                rejected_examples.append({
-                    "symbol": source_symbol,
-                    "reason": f"insufficient_ohlcv:{len(usable)}" if usable else "no_usable_ohlcv",
-                })
+                rejected_examples.append({"symbol": source_symbol, "reason": f"insufficient_ohlcv:{len(usable)}" if usable else "no_usable_ohlcv"})
             continue
 
         data = {
-            "symbol": canonical,
+            "symbol": source_symbol,
             "rows": usable[-RETAIN_DAYS:],
             "provider": source,
             "source_url": source_url,
             "retrieved_at": _now(),
         }
-        try:
-            with db.begin_nested():
-                touched = persist_normalized_history(db, data, commit=False, keep_days=RETAIN_DAYS)
-                if is_refresh and len(usable) < MIN_BARS:
-                    db.flush()
-                    snapshot = _snapshot_from_normalized(
-                        db,
-                        canonical,
-                        min_bars=MIN_BARS,
-                        tail_days=RETAIN_DAYS,
-                    )
-                else:
-                    snapshot = _snapshot_from_rows(data, min_bars=MIN_BARS, tail_days=RETAIN_DAYS)
-                if not snapshot:
-                    raise RuntimeError("technical snapshot could not be calculated")
-                snapshot["canonical_history_source"] = source if not is_refresh else (
-                    snapshot.get("canonical_history_source") or "normalized_daily_bars"
-                )
-                snapshot["latest_bar_source"] = source
-                snapshot["technical_source"] = "normalized_daily_bars"
-                snapshot["is_materialized_cache"] = True
-                snapshot["opportunity_bulk_ingest"] = True
-                snapshot["opportunity_refresh_mode"] = "incremental" if is_refresh else "bootstrap"
-                if raw.get("all_time_high") is not None:
-                    try:
-                        ath = float(raw["all_time_high"])
-                        snapshot["all_time_high"] = ath
-                        price = snapshot.get("price")
-                        snapshot["price_vs_ath_percent"] = None if not price or ath == 0 else ((float(price) / ath) - 1.0) * 100.0
-                    except (TypeError, ValueError):
-                        pass
-                db.add(MarketSnapshot(
-                    symbol=canonical,
-                    as_of=str(snapshot.get("as_of") or ""),
-                    provider=source,
-                    payload=snapshot,
-                ))
-                db.flush()
+        if is_refresh and len(usable) < MIN_BARS:
+            refresh_records.append((source_symbol, usable, raw))
+            continue
 
-            bars_touched += touched
+        snapshot = _snapshot_from_rows(data, min_bars=MIN_BARS, tail_days=RETAIN_DAYS)
+        if not snapshot:
+            rejected += 1
+            if len(rejected_examples) < 12:
+                rejected_examples.append({"symbol": source_symbol, "reason": "technical snapshot could not be calculated"})
+            continue
+        snapshot["canonical_history_source"] = source
+        snapshot["latest_bar_source"] = source
+        snapshot["technical_source"] = "normalized_daily_bars"
+        snapshot["is_materialized_cache"] = True
+        snapshot["opportunity_bulk_ingest"] = True
+        snapshot["opportunity_refresh_mode"] = "incremental" if is_refresh else "bootstrap"
+        if raw.get("all_time_high") is not None:
+            try:
+                ath = float(raw["all_time_high"])
+                snapshot["all_time_high"] = ath
+                price = snapshot.get("price")
+                snapshot["price_vs_ath_percent"] = None if not price or ath == 0 else ((float(price) / ath) - 1.0) * 100.0
+            except (TypeError, ValueError):
+                pass
+        payloads = _bar_payloads(source_symbol, usable, source, source_url)
+        all_bar_payloads.extend(payloads)
+        snapshot_rows.append(MarketSnapshot(symbol=source_symbol, as_of=str(snapshot.get("as_of") or ""), provider=source, payload=snapshot))
+        bars_touched += len(payloads)
+        accepted += 1
+        snapshots_written += 1
+        refresh_updates += int(is_refresh)
+        bootstrap_updates += int(not is_refresh)
+        accepted_symbols.append(source_symbol)
+        last_date = str(usable[-1].get("date") or "")[:10]
+        if last_date:
+            newest_bar = max(newest_bar or last_date, last_date)
+
+    try:
+        for offset in range(0, len(all_bar_payloads), BAR_UPSERT_CHUNK):
+            _upsert_bar_payloads(db, all_bar_payloads[offset:offset + BAR_UPSERT_CHUNK])
+        if snapshot_rows:
+            db.add_all(snapshot_rows)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    # Short incremental refreshes need cached history merged before technical calculation;
+    # keep that uncommon steady-state path explicit and correctness-first.
+    for source_symbol, usable, raw in refresh_records:
+        try:
+            payloads = _bar_payloads(source_symbol, usable, source, source_url)
+            _upsert_bar_payloads(db, payloads)
+            db.flush()
+            snapshot = _snapshot_from_normalized(db, source_symbol, min_bars=MIN_BARS, tail_days=RETAIN_DAYS)
+            if not snapshot:
+                raise RuntimeError("technical snapshot could not be calculated")
+            snapshot["latest_bar_source"] = source
+            snapshot["technical_source"] = "normalized_daily_bars"
+            snapshot["is_materialized_cache"] = True
+            snapshot["opportunity_bulk_ingest"] = True
+            snapshot["opportunity_refresh_mode"] = "incremental"
+            db.add(MarketSnapshot(symbol=source_symbol, as_of=str(snapshot.get("as_of") or ""), provider=source, payload=snapshot))
+            db.commit()
+            bars_touched += len(payloads)
             accepted += 1
             snapshots_written += 1
-            refresh_updates += int(is_refresh)
-            bootstrap_updates += int(not is_refresh)
-            accepted_symbols.append(canonical)
-            last_date = str(usable[-1].get("date") or "")[:10]
-            if last_date:
-                newest_bar = max(newest_bar or last_date, last_date)
+            refresh_updates += 1
+            accepted_symbols.append(source_symbol)
         except Exception as exc:
+            db.rollback()
             rejected += 1
             if len(rejected_examples) < 12:
                 rejected_examples.append({"symbol": source_symbol, "reason": str(exc)[:180]})
 
-    db.commit()
-    coverage = _coverage(db)
+    if prior_coverage and prior_coverage["eligible_stocks"] > 0:
+        covered_count = min(prior_coverage["eligible_stocks"], prior_coverage["covered_stocks"] + bootstrap_updates)
+        coverage = {
+            **prior_coverage,
+            "covered_stocks": covered_count,
+            "coverage_percent": round(covered_count / prior_coverage["eligible_stocks"] * 100.0, 2),
+        }
+    else:
+        coverage = _coverage(db)
+
     state = {
         "status": "running",
         "source": source,
