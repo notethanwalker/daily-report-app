@@ -21,6 +21,7 @@ from ..services.opportunity_formula_v4 import (
     validate_formula,
     validate_sort,
 )
+from ..services.opportunity_funnel_state_v4 import record_funnel_state
 from ..services.rotation_model_v4 import build_rotation_model
 from ..v4_models import OpportunityFormulaPresetV4
 from .intelligence import current_user
@@ -140,18 +141,24 @@ def opportunity_formula_funnel(
     db: Session = Depends(get_db),
     user: str = Depends(current_user),
 ):
-    _ = user
     try:
         criteria, filters = _clean_definition(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return build_formula_candidate_funnel(
+    result = build_formula_candidate_funnel(
         db,
         build_rotation_model(db),
         criteria=criteria,
         filters=filters,
         limit=limit,
         enqueue_enrichment=enrich,
+    )
+    return record_funnel_state(
+        db,
+        user=user,
+        criteria=criteria,
+        filters=filters,
+        payload=result,
     )
 
 
