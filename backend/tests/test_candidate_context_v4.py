@@ -21,8 +21,8 @@ class CandidateContextV4Test(unittest.TestCase):
         self.assertEqual(len(candidate_fundamental_targets(rows, limit=100)), 12)
 
     def test_intelligence_targets_only_stale_context_and_prioritizes_stage(self):
-        fresh_sections = {"news": {"fresh": True}, "flow": {"fresh": True}, "catalysts": {"fresh": True}}
-        stale_sections = {"news": {"fresh": False}, "flow": {"fresh": True}, "catalysts": {"fresh": True}}
+        fresh_sections = {"news": {"fresh": True}, "flow": {"fresh": True}, "catalysts": {"fresh": True}, "filings": {"fresh": True}}
+        stale_sections = {"news": {"fresh": False}, "flow": {"fresh": True}, "catalysts": {"fresh": True}, "filings": {"fresh": True}}
         rows = [
             {"symbol": "WATCH", "attention_stage": "watch", "contextual_priority_score": 99, "formula_score": 99, "candidate_context": {"sections": stale_sections}},
             {"symbol": "ACTION", "attention_stage": "actionable", "contextual_priority_score": 70, "formula_score": 70, "candidate_context": {"sections": stale_sections}},
@@ -31,8 +31,23 @@ class CandidateContextV4Test(unittest.TestCase):
         ]
         self.assertEqual(candidate_intelligence_targets(rows, limit=3), ["HIGH", "ACTION", "WATCH"])
 
+    def test_stale_filing_alone_targets_candidate_for_context_refresh(self):
+        rows = [{
+            "symbol": "FILING",
+            "attention_stage": "actionable",
+            "contextual_priority_score": 82,
+            "formula_score": 79,
+            "candidate_context": {"sections": {
+                "news": {"fresh": True},
+                "flow": {"fresh": True},
+                "catalysts": {"fresh": True},
+                "filings": {"fresh": False},
+            }},
+        }]
+        self.assertEqual(candidate_intelligence_targets(rows, limit=5), ["FILING"])
+
     def test_intelligence_refresh_limit_is_hard_capped(self):
-        stale = {"news": {"fresh": False}, "flow": {"fresh": False}, "catalysts": {"fresh": False}}
+        stale = {"news": {"fresh": False}, "flow": {"fresh": False}, "catalysts": {"fresh": False}, "filings": {"fresh": False}}
         rows = [
             {"symbol": f"S{i}", "attention_stage": "developing", "contextual_priority_score": 100-i, "formula_score": 80, "candidate_context": {"sections": stale}}
             for i in range(20)
