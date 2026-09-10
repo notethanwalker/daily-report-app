@@ -51,6 +51,7 @@ from .routers.portfolio_access import _permissions, router as portfolio_access_r
 from .services.auth_security import SESSION_COOKIE, account_from_session, bootstrap_admin
 from .services.calibration_v4 import calibration_loop
 from .services.feature_model_v4 import feature_version_loop
+from .services.github_actions_oidc import verify_daily_report_maintenance_token
 from .services import refresh_scheduler as _refresh_scheduler
 from .services.refresh_scheduler import bulk_market_loop, scheduler_loop, yahoo_bootstrap_loop
 from .services.tracked_market_fallback import refresh_tracked_market_snapshot_with_fallback
@@ -102,13 +103,33 @@ def _inject_subject(scope,user_id):
         if key.lower() in {b"x-user-email",b"x-user-token",b"x-auth-user-id"}:continue
         clean.append((key,value))
     clean.append((b"x-user-email",user_id.encode("utf-8")));clean.append((b"x-auth-user-id",user_id.encode("utf-8")));scope["headers"]=clean
+
+def _maintenance_request_authorized(request):
+    path=request.url.path;method=request.method.upper()
+    allowed=(
+        method=="GET" and path=="/api/v1/watchlist",
+        method=="GET" and path.startswith("/api/v1/markets/"),
+        method=="GET" and path=="/api/v1/flow/recent",
+        method=="POST" and path=="/api/v1/report/generate",
+    )
+    if not any(allowed):return False
+    auth=request.headers.get("authorization") or ""
+    if not auth.lower().startswith("bearer "):return False
+    try:verify_daily_report_maintenance_token(auth.split(" ",1)[1].strip());return True
+    except Exception:return False
+
 @app.middleware("http")
 async def authenticated_session_gate(request,call_next):
     path=request.url.path
     if path=="/" or path in PUBLIC_API_PATHS or path.startswith("/api/v1/auth/") or not path.startswith("/api/v1"):return await call_next(request)
     token=_cookie_from_scope(request.scope,SESSION_COOKIE);db=SessionLocal()
     try:
-        account=account_from_session(db,token)
+        account=None
+        if _maintenance_request_authorized(request):
+            account=db.query(AuthAccount).filter(AuthAccount.role=="owner",AuthAccount.status=="approved",AuthAccount.enabled.is_(True)).order_by(AuthAccount.created_at.asc()).first()
+            if not account:return JSONResponse({"detail":"Maintenance owner account unavailable"},status_code=503)
+        else:
+            account=account_from_session(db,token)
         if not account:return JSONResponse({"detail":"Authentication required"},status_code=401)
         _inject_subject(request.scope,account.id)
         for prefix,permission in PERMISSION_PATHS:
