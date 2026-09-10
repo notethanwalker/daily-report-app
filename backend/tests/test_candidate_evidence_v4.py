@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from app.services.candidate_evidence_v4 import classify_catalysts, classify_flow, classify_news, synthesize_context_verdict
+from app.services.candidate_evidence_v4 import classify_catalysts, classify_filings, classify_flow, classify_news, synthesize_context_verdict
 
 
 class CandidateEvidenceV4Test(unittest.TestCase):
@@ -22,6 +22,13 @@ class CandidateEvidenceV4Test(unittest.TestCase):
         result = classify_catalysts(bundle, today=date(2026, 9, 10))
         self.assertEqual(result["urgency"], "high")
         self.assertEqual(result["days_until"], 5)
+
+    def test_recent_8k_is_event_information_not_directional(self):
+        bundle = {"sections": {"filings": {"available": True, "fresh": True}}, "filings": {"top": [{"form": "8-K", "filed_at": "2026-09-08"}]}}
+        result = classify_filings(bundle, today=date(2026, 9, 10))
+        self.assertEqual(result["label"], "recent_event_disclosure")
+        self.assertEqual(result["direction"], "unknown")
+        self.assertEqual(result["urgency"], "medium")
 
     def test_flow_requires_consistent_corroboration(self):
         event = {"data": {"side": "call", "aggression": "buy"}}
@@ -53,9 +60,20 @@ class CandidateEvidenceV4Test(unittest.TestCase):
         self.assertTrue(result["event_risk"])
         self.assertEqual(result["score_effect"], 0)
 
-    def test_missing_news_and_catalyst_are_insufficient(self):
+    def test_recent_filing_can_raise_event_risk_without_direction(self):
+        result = synthesize_context_verdict(
+            {"label": "neutral"},
+            {"label": "none_known", "urgency": "low"},
+            {"label": "recent_event_disclosure", "urgency": "medium"},
+        )
+        self.assertEqual(result["label"], "neutral")
+        self.assertTrue(result["event_risk"])
+        self.assertEqual(result["score_effect"], 0)
+
+    def test_missing_news_catalyst_and_filings_are_insufficient(self):
         result = synthesize_context_verdict(
             {"label": "missing"},
+            {"label": "missing", "urgency": "unknown"},
             {"label": "missing", "urgency": "unknown"},
         )
         self.assertEqual(result["label"], "insufficient")
