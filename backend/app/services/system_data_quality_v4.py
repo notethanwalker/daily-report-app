@@ -5,7 +5,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy.orm import Session
 
 from ..models import FeatureSnapshot, FundamentalCache, HistoricalDailyBar, MarketSnapshot, RefreshQueueItem, UserWatchlistItem, WatchlistItem
-from ..multiuser_models import PortfolioPosition
+from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from .data_quality_v4 import build_quality_summary
 from .provider_orchestrator import is_stale
 
@@ -21,19 +21,17 @@ def _history_quality(db:Session,symbol:str,now:datetime):
 def relevant_symbols(db:Session,user:str)->list[str]:
     symbols={r.symbol for r in db.query(WatchlistItem).all()}
     symbols|={r.symbol for r in db.query(UserWatchlistItem).filter(UserWatchlistItem.user_email==user).all() if r.symbol!="__INITIALIZED__"}
-    symbols|={r.symbol for r in db.query(PortfolioPosition).join(PortfolioPosition.portfolio).filter_by(user_email=user).all()} if hasattr(PortfolioPosition,"portfolio") else set()
-    if not hasattr(PortfolioPosition,"portfolio"):
-        from ..multiuser_models import PortfolioDefinition
-        portfolio_ids=[r.id for r in db.query(PortfolioDefinition).filter(PortfolioDefinition.user_email==user).all()]
-        if portfolio_ids:symbols|={r.symbol for r in db.query(PortfolioPosition).filter(PortfolioPosition.portfolio_id.in_(portfolio_ids)).all()}
+    portfolio_ids=[r.id for r in db.query(PortfolioDefinition).filter(PortfolioDefinition.user_email==user).all()]
+    if portfolio_ids:symbols|={r.symbol for r in db.query(PortfolioPosition).filter(PortfolioPosition.portfolio_id.in_(portfolio_ids)).all()}
     return sorted(str(s).upper() for s in symbols if s)
 
 
 def symbol_quality(db:Session,symbol:str,now:datetime|None=None)->dict:
     now=now or datetime.now(timezone.utc);symbol=symbol.upper()
     market=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol).order_by(MarketSnapshot.retrieved_at.desc()).first();fund=db.get(FundamentalCache,symbol);feature=db.query(FeatureSnapshot).filter(FeatureSnapshot.symbol==symbol).order_by(FeatureSnapshot.created_at.desc()).first();history_state,history=_history_quality(db,symbol,now)
-    market_state={"available":bool(market),"fresh":bool(market and not is_stale(market.retrieved_at,"market",now)),"degrade_reason":None if market and not is_stale(market.retrieved_at,"market",now) else "market snapshot is missing or stale"}
-    fund_state={"available":bool(fund),"fresh":bool(fund and not is_stale(fund.retrieved_at,"fundamentals",now)),"degrade_reason":None if fund and not is_stale(fund.retrieved_at,"fundamentals",now) else "fundamentals are missing or stale"}
+    market_fresh=bool(market and not is_stale(market.retrieved_at,"market",now));fund_fresh=bool(fund and not is_stale(fund.retrieved_at,"fundamentals",now))
+    market_state={"available":bool(market),"fresh":market_fresh,"degrade_reason":None if market_fresh else "market snapshot is missing or stale"}
+    fund_state={"available":bool(fund),"fresh":fund_fresh,"degrade_reason":None if fund_fresh else "fundamentals are missing or stale"}
     failures=[]
     failed=db.query(RefreshQueueItem).filter(RefreshQueueItem.symbol==symbol,RefreshQueueItem.status=="failed").order_by(RefreshQueueItem.updated_at.desc()).limit(5).all()
     for row in failed:failures.append({"code":"refresh_failed","severity":"error","data_class":row.data_class,"detail":row.error or "refresh failed"})
