@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..services.candidate_funnel_formula_v4 import build_formula_candidate_funnel
 from ..services.opportunity_criterion_governance import governed_catalog
 from ..services.opportunity_formula_v4 import (
     CRITERIA,
@@ -20,6 +21,7 @@ from ..services.opportunity_formula_v4 import (
     validate_formula,
     validate_sort,
 )
+from ..services.rotation_model_v4 import build_rotation_model
 from ..v4_models import OpportunityFormulaPresetV4
 from .intelligence import current_user
 
@@ -127,6 +129,29 @@ def opportunity_index(
         limit=limit,
         sort_by=sort_by,
         sort_dir=sort_dir,
+    )
+
+
+@router.post("/funnel")
+def opportunity_formula_funnel(
+    payload: FormulaDefinition,
+    limit: int = Query(default=50, ge=1, le=200),
+    enrich: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    user: str = Depends(current_user),
+):
+    _ = user
+    try:
+        criteria, filters = _clean_definition(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return build_formula_candidate_funnel(
+        db,
+        build_rotation_model(db),
+        criteria=criteria,
+        filters=filters,
+        limit=limit,
+        enqueue_enrichment=enrich,
     )
 
 
