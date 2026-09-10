@@ -23,6 +23,19 @@ jobs:
     env:
       API_BASE: https://daily-report-api-ero2.onrender.com
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve expected backend revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_BACKEND_SHA=$(git log -1 --format=%H -- backend)
+          test -n "$EXPECTED_BACKEND_SHA"
+          echo "EXPECTED_BACKEND_SHA=$EXPECTED_BACKEND_SHA" >> "$GITHUB_ENV"
+          echo "Expecting Render backend revision ${EXPECTED_BACKEND_SHA}."
+
       - name: Wait for exact backend revision
         shell: bash
         run: |
@@ -33,15 +46,15 @@ jobs:
             echo "::add-mask::$TOKEN"
             META=$(curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer ${TOKEN}" "${API_BASE}/api/v1/markets/__deployment__/fundamentals" || true)
             DEPLOYED_SHA=$(printf '%s' "$META" | jq -r '.render_git_commit // empty' 2>/dev/null || true)
-            if [ "$DEPLOYED_SHA" = "$GITHUB_SHA" ]; then
-              echo "Verified Render revision ${DEPLOYED_SHA}."
+            if [ "$DEPLOYED_SHA" = "$EXPECTED_BACKEND_SHA" ]; then
+              echo "Verified Render backend revision ${DEPLOYED_SHA}."
               echo "SMOKE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
               exit 0
             fi
-            echo "Render revision '${DEPLOYED_SHA:-unknown}' does not yet match workflow SHA '${GITHUB_SHA}' (attempt ${attempt}/36)."
+            echo "Render revision '${DEPLOYED_SHA:-unknown}' does not yet match expected backend SHA '${EXPECTED_BACKEND_SHA}' (attempt ${attempt}/36)."
             sleep 10
           done
-          echo "Exact Render revision did not become ready." >&2
+          echo "Exact Render backend revision did not become ready." >&2
           exit 1
 
       - name: Check backend health
