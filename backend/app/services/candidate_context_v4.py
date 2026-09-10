@@ -6,9 +6,10 @@ from sqlalchemy.orm import Session
 
 from ..intelligence_cache_models import SecurityIntelligenceCache
 from ..models import FundamentalCache, RefreshQueueItem
+from .candidate_evidence_v4 import classify_candidate_evidence
 from .provider_orchestrator import FRESHNESS_POLICIES, is_stale
 
-CONTEXT_MODEL_VERSION = "candidate-context-v4.3"
+CONTEXT_MODEL_VERSION = "candidate-context-v4.4"
 NEWS_TTL = timedelta(minutes=30)
 FLOW_TTL = timedelta(minutes=30)
 CATALYST_TTL = timedelta(hours=12)
@@ -73,7 +74,7 @@ def candidate_context_map(db: Session, symbols: list[str]) -> dict[str, dict]:
         articles = list(news.get("articles") or [])
         events = list(flow.get("events") or [])
         upcoming = list(catalysts.get("upcoming") or [])
-        out[symbol] = {
+        bundle = {
             "model_version": CONTEXT_MODEL_VERSION,
             "sections": sections,
             "news": {"count": len(articles), "top": articles[:3], "provider": news.get("provider")},
@@ -81,6 +82,8 @@ def candidate_context_map(db: Session, symbols: list[str]) -> dict[str, dict]:
             "catalysts": {"count": len(upcoming), "upcoming": upcoming[:4]},
             "cache_only": True,
         }
+        bundle["evidence"] = classify_candidate_evidence(bundle)
+        out[symbol] = bundle
     return out
 
 
@@ -180,5 +183,5 @@ def attach_candidate_context(db: Session, candidates: list[dict]) -> dict:
         "candidate_count": len(candidates),
         "available": coverage,
         "fresh": fresh,
-        "policy": "Cache-first context only. Ranking and automatic shortlist refresh perform zero news/flow/event provider calls.",
+        "policy": "Cache-first context only. Evidence labels are descriptive and do not alter Opportunity scores. Ranking and automatic shortlist refresh perform zero news/flow/event provider calls.",
     }
