@@ -46,6 +46,7 @@ def _flow_health(db:Session,now:datetime)->dict:
     }
 
 
+@router.get("/system/data-health")
 def data_health_override(db:Session=Depends(get_db)):
     symbols={r.symbol for r in db.query(WatchlistItem).all()};symbols|={r.symbol for r in db.query(UserWatchlistItem).all() if r.symbol!="__INITIALIZED__"};now=datetime.now(timezone.utc);market_fresh=0;fund_fresh=0;history_fresh=0;verified=0;discrepancies=0;primary_only=0;stale=[];coverage=[]
     for s in sorted(symbols):
