@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-DECISION_CARD_MODEL_VERSION = "decision-card-v4.1"
+from .data_quality_v4 import build_quality_summary
+
+DECISION_CARD_MODEL_VERSION = "decision-card-v4.2"
 
 
 def _num(value, default=None):
@@ -20,33 +22,18 @@ def _add_unique(items: list[str], value: str | None) -> None:
 def _data_quality(candidate: dict) -> dict[str, Any]:
     context = candidate.get("candidate_context") or {}
     sections = context.get("sections") or {}
-    states = {}
-    available = fresh = 0
-    tracked = ("fundamentals", "news", "catalysts", "filings", "flow")
-    for key in tracked:
-        state = sections.get(key) or {}
-        if state.get("available"):
-            available += 1
-        if state.get("fresh"):
-            fresh += 1
-        states[key] = "fresh" if state.get("fresh") else "stale" if state.get("available") else "missing"
-    verification = str(candidate.get("verification_status") or "unknown")
-    feature = str(candidate.get("feature_context_status") or "missing")
-    completeness = available / len(tracked)
-    freshness = fresh / len(tracked)
-    if verification in {"verified", "cross_checked", "matched"} and feature == "available" and freshness >= .8:
-        label = "strong"
-    elif feature == "available" and completeness >= .6:
-        label = "moderate"
-    else:
-        label = "limited"
+    quality = build_quality_summary(
+        sections=sections,
+        required_sections=("fundamentals", "news", "catalysts", "filings", "flow"),
+        verification_status=candidate.get("verification_status"),
+        feature_status=candidate.get("feature_context_status"),
+    )
     return {
-        "label": label,
-        "verification": verification,
-        "feature_context": feature,
-        "section_states": states,
-        "context_completeness": round(completeness, 2),
-        "context_freshness": round(freshness, 2),
+        **quality,
+        "label": quality["state"],
+        "context_completeness": quality["completeness"],
+        "context_freshness": quality["freshness"],
+        "context_confidence": quality["confidence"],
     }
 
 
@@ -116,9 +103,6 @@ def build_decision_card(candidate: dict) -> dict[str, Any]:
         _add_unique(blockers, f"Convergence state is {state}; the setup is not currently trigger-ready.")
         _add_unique(upgrades, "Convergence advances to Approaching or Triggered with aligned data.")
 
-    # Persistent flow is decision-relevant confirming/contradicting evidence. Evaluate it
-    # before lower-priority regime/context prose so it cannot be silently dropped by the
-    # bounded bull/bear lists on evidence-rich candidates.
     flow_verdict = str(flow.get("verdict") or "insufficient")
     flow_conf = str(flow.get("confidence") or "none")
     if flow_verdict == "confirmation":
@@ -166,8 +150,10 @@ def build_decision_card(candidate: dict) -> dict[str, Any]:
     _add_unique(invalidation, "Any user-selected hard filter ceases to be satisfied.")
 
     quality = _data_quality(candidate)
-    if quality["label"] == "limited":
+    if quality["state"] in {"incomplete", "failed"}:
         _add_unique(blockers, "Data quality/context coverage is limited; confidence should remain constrained until missing inputs are refreshed.")
+    elif quality["state"] == "degraded":
+        _add_unique(blockers, "Some evidence is stale, unverified, or incomplete; raw setup score is preserved but decision confidence is reduced.")
 
     return {
         "model_version": DECISION_CARD_MODEL_VERSION,
