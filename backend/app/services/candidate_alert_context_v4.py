@@ -3,6 +3,12 @@ from __future__ import annotations
 from .candidate_context_v4 import candidate_context_map
 
 CONTEXT_ALERT_KINDS={"candidate_context_changed","candidate_flow_changed"}
+PORTFOLIO_BREACH_KIND="portfolio_concentration_breach"
+V4_ALERT_DEFINITIONS={
+    "candidate_context_changed":{"label":"Candidate context changed","scope":"ticker","unit":"state change","description":"Fires when fresh company news/catalyst/filing context changes to a materially different semantic state. Missing/stale-only transitions do not alert."},
+    "candidate_flow_changed":{"label":"Flow confirmation changed","scope":"ticker","unit":"state change","description":"Fires when cached candidate flow changes between confirmation, contradiction, and mixed states after a baseline has been established."},
+    "portfolio_concentration_breach":{"label":"Portfolio concentration breached","scope":"portfolio","unit":"% portfolio","description":"Fires once when the largest position crosses from below to at/above the selected portfolio-weight threshold."},
+}
 
 
 def candidate_context_alert_state(db,symbol:str):
