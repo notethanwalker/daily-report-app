@@ -1,11 +1,13 @@
 import unittest
 
 from app.services.opportunity_formula_v4 import (
+    CRITERIA,
     DEFAULT_FORMULA,
     formula_metadata,
     formula_score,
     normalized_weights,
     passes_filters,
+    score_components,
     sort_index_rows,
     validate_filters,
     validate_formula,
@@ -49,6 +51,27 @@ class OpportunityFormulaV4Test(unittest.TestCase):
             validate_formula({"made_up_factor": 1})
         with self.assertRaises(ValueError):
             validate_formula({"williams": 0})
+
+    def test_cache_safe_optional_criteria_score(self):
+        payload = {
+            "williams_r_14": -85,
+            "price_vs_ma50_percent": 2,
+            "price_vs_ma100_percent": 4,
+            "ma100_slope_20d_percent": 1,
+            "approach_velocity_100_5d": 1,
+            "relative_volume": 2,
+        }
+        components = score_components(payload)
+        self.assertIn("ma50_proximity", components)
+        self.assertIn("relative_volume", components)
+        self.assertEqual(components["relative_volume"], 100.0)
+        self.assertGreater(components["ma50_proximity"], 0)
+        self.assertEqual(CRITERIA["ma50_proximity"]["coverage_class"], "broad_cache_safe")
+        self.assertEqual(CRITERIA["relative_volume"]["min_sessions"], 21)
+
+    def test_formula_metadata_exposes_history_requirement(self):
+        self.assertEqual(formula_metadata({"relative_volume": 1})["required_sessions"], 21)
+        self.assertEqual(formula_metadata(DEFAULT_FORMULA)["required_sessions"], 120)
 
     def test_hard_filters_screen_before_ranking(self):
         filters = validate_filters([
