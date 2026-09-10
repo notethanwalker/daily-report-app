@@ -6,7 +6,7 @@ export default defineConfig({
   expect:{timeout:5_000},
   fullyParallel:false,
   retries:1,
-  use:{baseURL:"http://127.0.0.1:3000",trace:"retain-on-failure"},
+  use:{baseURL:"http://127.0.0.1:3000",trace:"retain-on-failure",serviceWorkers:"block"},
   webServer:{
     command:"npm run dev -- --hostname 127.0.0.1",
     url:"http://127.0.0.1:3000",
