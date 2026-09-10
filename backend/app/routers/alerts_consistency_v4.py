@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import AlertRule
+from ..services.candidate_alert_context_v4 import CONTEXT_ALERT_KINDS, PORTFOLIO_BREACH_KIND, V4_ALERT_DEFINITIONS, evaluate_candidate_context_alert
 from ..services.opportunity_formula_alerts_v4 import FORMULA_ALERT_KINDS, evaluate_formula_alert_values
 from ..services.typed_alerts import evaluate_typed_value, typed_trigger
 from ..v2_models import AlertDeliveryPreference, PushSubscription
@@ -28,13 +29,18 @@ def alerts_v2_consistent(user:str=Depends(current_user),db:Session=Depends(get_d
         pref=db.query(AlertDeliveryPreference).filter(AlertDeliveryPreference.alert_id==rule.id).first()
         if rule.kind in FORMULA_ALERT_KINDS:
             value,meta=formula_values.get(rule.id,(None,{"state":"unavailable","reason":"formula_value_missing"}));triggered=False;typed=True;transition_native=True
+        elif rule.kind in CONTEXT_ALERT_KINDS:
+            value,meta=evaluate_candidate_context_alert(db,rule.kind,rule.symbol or "");triggered=False;typed=True;transition_native=True
+        elif rule.kind==PORTFOLIO_BREACH_KIND:
+            value,base=evaluate_typed_value(db,rule.user_email,"portfolio_position_weight",rule.symbol);breached=bool(value is not None and rule.threshold is not None and value>=rule.threshold);meta={**(base or {}),"state":"breached" if breached else "within_limit"};triggered=False;typed=True;transition_native=True
         elif rule.kind in TYPED_VARIABLES:
             value,meta=evaluate_typed_value(db,rule.user_email,rule.kind,rule.symbol);triggered=typed_trigger(rule.kind,value,rule.operator,rule.threshold);typed=True;transition_native=rule.kind in TRANSITION_NATIVE_KINDS or rule.kind=="opportunity_convergence"
         else:
             value=_legacy_value(db,rule);meta={};triggered=value is not None and rule.threshold is not None and {">=":value>=rule.threshold,"<=":value<=rule.threshold,">":value>rule.threshold,"<":value<rule.threshold,"==":value==rule.threshold}.get(rule.operator,False);typed=False;transition_native=False
         state=db.get(AlertEvaluationStateV4,rule.id) if transition_native else None
-        out.append({"id":rule.id,"symbol":rule.symbol,"kind":rule.kind,"operator":rule.operator,"threshold":rule.threshold,"label":rule.label,"enabled":rule.enabled,"current_value":value,"current_meta":meta,"current_state":state.state if state else meta.get("state"),"triggered":triggered,"typed":typed,"transition_native":transition_native,"formula_alert":rule.kind in FORMULA_ALERT_KINDS,"delivery":{"channels":pref.channels if pref else {"in_app":True,"push":False},"cooldown_minutes":pref.cooldown_minutes if pref else 360}})
-    return {"alerts":out,"variables":SUPPORTED_VARIABLES,"typed_variables":TYPED_VARIABLES,"push":{"configured":bool(os.getenv("VAPID_PUBLIC_KEY") and os.getenv("VAPID_PRIVATE_KEY")),"subscriptions":db.query(PushSubscription).filter(PushSubscription.user_email==user,PushSubscription.enabled.is_(True)).count()},"consistency_version":"alerts-v4"}
+        out.append({"id":rule.id,"symbol":rule.symbol,"kind":rule.kind,"operator":rule.operator,"threshold":rule.threshold,"label":rule.label,"enabled":rule.enabled,"current_value":value,"current_meta":meta,"current_state":state.state if state else meta.get("state"),"triggered":triggered,"typed":typed,"transition_native":transition_native,"formula_alert":rule.kind in FORMULA_ALERT_KINDS,"semantic_v4":rule.kind in CONTEXT_ALERT_KINDS or rule.kind==PORTFOLIO_BREACH_KIND,"delivery":{"channels":pref.channels if pref else {"in_app":True,"push":False},"cooldown_minutes":pref.cooldown_minutes if pref else 360}})
+    typed_catalog={**TYPED_VARIABLES,**V4_ALERT_DEFINITIONS}
+    return {"alerts":out,"variables":SUPPORTED_VARIABLES,"typed_variables":typed_catalog,"push":{"configured":bool(os.getenv("VAPID_PUBLIC_KEY") and os.getenv("VAPID_PRIVATE_KEY")),"subscriptions":db.query(PushSubscription).filter(PushSubscription.user_email==user,PushSubscription.enabled.is_(True)).count()},"consistency_version":"alerts-v4.1"}
 
 
 @router.delete("/alerts/v2/{alert_id}")
