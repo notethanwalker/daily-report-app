@@ -31,6 +31,7 @@ from .routers.research_v4 import security_workspace_v4, router as research_v4_ro
 from .routers.security_intelligence_v5 import router as security_intelligence_v5_router
 from .routers.decision_support import router as decision_support_router
 from .routers.opportunity_scanner import router as opportunity_scanner_router
+from .routers.opportunity_formula_v4 import router as opportunity_formula_v4_router
 from .routers.stack_v4 import router as stack_v4_router
 from .routers.calibration_v4 import router as calibration_v4_router
 from .routers.stooq_internal import router as stooq_internal_router
@@ -72,7 +73,7 @@ try:
     if _owner:os.environ["OWNER_EMAIL"]=_owner.id
 finally:_bootstrap_db.close()
 os.environ["ALLOWED_USER_EMAILS"]="";os.environ["USER_ACCESS_TOKENS"]="";os.environ["USER_AUTH_ENABLED"]=""
-app.include_router(auth_router);app.include_router(override_router);app.include_router(health_router);app.include_router(fundamentals_v2_router);app.include_router(alerts_v2_router);app.include_router(portfolio_live_router);app.include_router(portfolio_access_router);app.include_router(intelligence_router);app.include_router(user_state_router);app.include_router(lifecycle_router);app.include_router(research_router);app.include_router(research_v4_router);app.include_router(security_intelligence_v5_router);app.include_router(decision_support_router);app.include_router(opportunity_scanner_router);app.include_router(stack_v4_router);app.include_router(calibration_v4_router);app.include_router(stooq_internal_router);app.include_router(analytics_v3_router);app.include_router(macro_v3_router);app.include_router(events_v3_router);app.include_router(events_v4_router);app.include_router(future_release_router);app.include_router(next_intelligence_router)
+app.include_router(auth_router);app.include_router(override_router);app.include_router(health_router);app.include_router(fundamentals_v2_router);app.include_router(alerts_v2_router);app.include_router(portfolio_live_router);app.include_router(portfolio_access_router);app.include_router(intelligence_router);app.include_router(user_state_router);app.include_router(lifecycle_router);app.include_router(research_router);app.include_router(research_v4_router);app.include_router(security_intelligence_v5_router);app.include_router(decision_support_router);app.include_router(opportunity_scanner_router);app.include_router(opportunity_formula_v4_router);app.include_router(stack_v4_router);app.include_router(calibration_v4_router);app.include_router(stooq_internal_router);app.include_router(analytics_v3_router);app.include_router(macro_v3_router);app.include_router(events_v3_router);app.include_router(events_v4_router);app.include_router(future_release_router);app.include_router(next_intelligence_router)
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/security/{symbol}/workspace")]
 app.add_api_route("/api/v1/security/{symbol}/workspace",security_workspace_v4,methods=["GET"],tags=["research-v4"],name="security_workspace_v4_authoritative");app.router.routes.insert(0,app.router.routes.pop())
 app.router.routes=[r for r in app.router.routes if not _is_get_route(r,"/api/v1/events")]
