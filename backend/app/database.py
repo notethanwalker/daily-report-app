@@ -40,9 +40,19 @@ elif DATABASE_URL.startswith("postgres://"):
         1,
     )
 
+# The backend runs several cache/refresh workers in the same process as interactive
+# requests. SQLAlchemy's default QueuePool (5 + 10 overflow) can be exhausted when a
+# maintenance cycle overlaps a burst of UI reads. Keep a bounded reserve for user
+# traffic, fail fast instead of blocking for 30 seconds, and recycle older idle
+# connections so provider/database hiccups do not strand the pool.
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
+    pool_size=int(os.getenv("DB_POOL_SIZE", "8")),
+    max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "12")),
+    pool_timeout=float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "8")),
+    pool_recycle=int(os.getenv("DB_POOL_RECYCLE_SECONDS", "300")),
+    pool_use_lifo=True,
 )
 
 SessionLocal = sessionmaker(
