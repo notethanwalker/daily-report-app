@@ -9,6 +9,7 @@ V4 = (ROOT / "web/app/v4/page.tsx").read_text(encoding="utf-8")
 V4_CSS = (ROOT / "web/app/v4/v4.css").read_text(encoding="utf-8")
 DEEP_CSS = (ROOT / "web/app/v4/deep-interaction.css").read_text(encoding="utf-8")
 OPPORTUNITY_TABLE = (ROOT / "web/app/v4/opportunity-table-v4.tsx").read_text(encoding="utf-8")
+OPPORTUNITY_BUILDER = (ROOT / "web/app/v4/opportunity-formula-builder-v4.tsx").read_text(encoding="utf-8")
 MACRO_TABLE = (ROOT / "web/app/v4/macro-rotation-table-v4.tsx").read_text(encoding="utf-8")
 RESEARCH_METRICS = (ROOT / "web/app/v4/research-metric-strip-v4.tsx").read_text(encoding="utf-8")
 PHILOSOPHY = (ROOT / "docs/DAILY_REPORT_APP_DESIGN_PHILOSOPHY.md").read_text(encoding="utf-8")
@@ -48,12 +49,12 @@ class DesignPhilosophyContract(unittest.TestCase):
         self.assertIn('Scanner coverage', V4)
 
     def test_cross_layer_rows_drill_into_research(self):
-        delegated = V4.count('openResearch(') + OPPORTUNITY_TABLE.count('onOpen(') + MACRO_TABLE.count('onOpen(')
+        delegated = V4.count('openResearch(') + OPPORTUNITY_BUILDER.count('onOpen(') + MACRO_TABLE.count('onOpen(')
         self.assertGreaterEqual(delegated, 6)
-        self.assertIn('table-row-button', OPPORTUNITY_TABLE)
+        self.assertIn('table-row-button', OPPORTUNITY_BUILDER)
         self.assertIn('table-row-button', MACRO_TABLE)
         self.assertIn('allocation-row-button', V4)
-        self.assertIn('title={`Open ${x.symbol} research`}', OPPORTUNITY_TABLE)
+        self.assertIn('title={`Open ${r.symbol} research`}', OPPORTUNITY_BUILDER)
         self.assertIn('title={`Open ${x.symbol} research`}', MACRO_TABLE)
 
     def test_broad_scanner_uses_tiered_history_retention(self):
@@ -72,16 +73,18 @@ class DesignPhilosophyContract(unittest.TestCase):
     def test_expandable_detail_controls_are_wired_into_v4(self):
         self.assertIn('DeepLinksV4', V4)
         self.assertIn('OpportunityTableV4', V4)
+        self.assertIn('OpportunityFormulaBuilderV4', OPPORTUNITY_TABLE)
+        self.assertIn('aria-expanded', OPPORTUNITY_BUILDER)
         self.assertIn('MacroRotationTableV4', V4)
         self.assertIn('ResearchMetricStripV4', V4)
         self.assertIn('Fundamental score details', V4)
 
-    def test_sorting_is_clickable_and_dropdown_accessible(self):
-        self.assertIn('metric-sort-bar', OPPORTUNITY_TABLE)
-        self.assertIn('aria-pressed', OPPORTUNITY_TABLE)
-        self.assertIn('<select', OPPORTUNITY_TABLE)
-        self.assertIn('function selectSort', OPPORTUNITY_TABLE)
-        self.assertIn('onChange={e=>selectSort(', OPPORTUNITY_TABLE)
+    def test_sorting_is_clickable_and_accessible(self):
+        self.assertIn('metric-sort-bar', OPPORTUNITY_BUILDER)
+        self.assertIn('aria-pressed', OPPORTUNITY_BUILDER)
+        self.assertIn('<select', OPPORTUNITY_BUILDER)
+        self.assertIn('function sort', OPPORTUNITY_BUILDER)
+        self.assertIn('Add Criteria', OPPORTUNITY_BUILDER)
         self.assertIn('metric-sort-bar', MACRO_TABLE)
         self.assertIn('aria-pressed', MACRO_TABLE)
         self.assertIn('Rank metric', MACRO_TABLE)
