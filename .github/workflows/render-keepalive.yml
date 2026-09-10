@@ -6,14 +6,16 @@ on:
     paths:
       - '.github/workflows/render-keepalive.yml'
   schedule:
-    - cron: '*/10 * * * *'
+    # Keep the service warm without using the heavily contended :00/:10 cron slots.
+    - cron: '3,13,23,33,43,53 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: render-keepalive
+  # v2 intentionally isolates new runs from a stale legacy concurrency record.
+  group: render-keepalive-v2
   cancel-in-progress: true
 
 jobs:
