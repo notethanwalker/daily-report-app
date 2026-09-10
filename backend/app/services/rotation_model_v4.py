@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ MIN_TRANSITION_OBSERVATIONS = 4
 MAX_ROTATION_HISTORY_DAYS = 400
 STALE_INPUT_HOURS = 72
 ROTATION_CAPTURE_SECONDS = 60 * 60
+ROTATION_QUERY_LOOKBACK_DAYS = 45
 
 
 def _f(value, default=None):
@@ -37,15 +38,27 @@ def _score(payload: dict) -> float:
     return score
 
 
-def _all_daily_snapshots(db: Session, limit_days: int = 8) -> dict[str, list[MarketSnapshot]]:
-    symbols=list(SECTORS)
-    rows=db.query(MarketSnapshot).filter(MarketSnapshot.symbol.in_(symbols)).order_by(MarketSnapshot.symbol.asc(),MarketSnapshot.retrieved_at.desc()).all()
+def _group_daily(rows:list[MarketSnapshot],symbols:list[str],limit_days:int)->dict[str,list[MarketSnapshot]]:
     grouped={symbol:{} for symbol in symbols}
     for row in rows:
         by_day=grouped.setdefault(row.symbol,{})
         key=str((row.payload or {}).get("as_of") or row.as_of or row.retrieved_at.date().isoformat())[:10]
         if key not in by_day and len(by_day)<limit_days:by_day[key]=row
     return {symbol:[days[k] for k in sorted(days)] for symbol,days in grouped.items()}
+
+
+def _all_daily_snapshots(db: Session, limit_days: int = 8) -> dict[str, list[MarketSnapshot]]:
+    symbols=list(SECTORS)
+    cutoff=datetime.now(timezone.utc)-timedelta(days=ROTATION_QUERY_LOOKBACK_DAYS)
+    rows=db.query(MarketSnapshot).filter(MarketSnapshot.symbol.in_(symbols),MarketSnapshot.retrieved_at>=cutoff).order_by(MarketSnapshot.symbol.asc(),MarketSnapshot.retrieved_at.desc()).all()
+    grouped=_group_daily(rows,symbols,limit_days)
+    # A stale/sparse symbol may legitimately have fewer observations inside the fast
+    # window. Fall back only for those symbols instead of scanning the entire table.
+    missing=[symbol for symbol in symbols if len(grouped.get(symbol,[]))<min(limit_days,MIN_TRANSITION_OBSERVATIONS)]
+    for symbol in missing:
+        fallback=db.query(MarketSnapshot).filter(MarketSnapshot.symbol==symbol).order_by(MarketSnapshot.retrieved_at.desc()).limit(limit_days*8).all()
+        grouped[symbol]=_group_daily(fallback,[symbol],limit_days).get(symbol,[])
+    return grouped
 
 
 def _state(level: float, delta: float, trend: float) -> tuple[str, str]:
@@ -110,7 +123,7 @@ def build_rotation_model(db: Session, persist: bool = False) -> dict:
     rows.sort(key=lambda x:(x["rotation_pressure"],x["conviction"]),reverse=True);states=defaultdict(int)
     for row in rows:states[row["state"]]+=1
     generated_at=now.isoformat();persisted=_persist_history(db,rows,generated_at) if persist and rows else False
-    return {"model_version":ROTATION_MODEL_VERSION,"rows":rows,"leaders":rows[:8],"outflow_risk":sorted([x for x in rows if x["forward_bias"] in {"rotation_out_risk","avoidance_bias"}],key=lambda x:x["rotation_pressure"])[:8],"early_rotation":sorted([x for x in rows if x["forward_bias"] in {"early_rotation_candidate","watch_for_rotation"}],key=lambda x:x["conviction"],reverse=True)[:8],"state_counts":dict(states),"history_persisted_this_call":persisted,"history_policy":{"minimum_transition_observations":MIN_TRANSITION_OBSERVATIONS,"canonical_daily_history_key":ROTATION_HISTORY_KEY,"max_days":MAX_ROTATION_HISTORY_DAYS,"stale_input_hours":STALE_INPUT_HOURS,"capture_seconds":ROTATION_CAPTURE_SECONDS,"write_policy":"background upsert only when today's computed record changes"},"methodology":"V4 rotation pressure extends the existing 1D/7D/30D + relative-volume score with stored-observation change and 100/200MA trend context. Sparse or stale histories are confidence-capped and cannot emit actionable transition labels. Freshness uses both provider observation time and retrieval time. Canonical daily state records are persisted by background maintenance rather than by UI reads.","generated_at":generated_at}
+    return {"model_version":ROTATION_MODEL_VERSION,"rows":rows,"leaders":rows[:8],"outflow_risk":sorted([x for x in rows if x["forward_bias"] in {"rotation_out_risk","avoidance_bias"}],key=lambda x:x["rotation_pressure"])[:8],"early_rotation":sorted([x for x in rows if x["forward_bias"] in {"early_rotation_candidate","watch_for_rotation"}],key=lambda x:x["conviction"],reverse=True)[:8],"state_counts":dict(states),"history_persisted_this_call":persisted,"history_policy":{"minimum_transition_observations":MIN_TRANSITION_OBSERVATIONS,"canonical_daily_history_key":ROTATION_HISTORY_KEY,"max_days":MAX_ROTATION_HISTORY_DAYS,"stale_input_hours":STALE_INPUT_HOURS,"capture_seconds":ROTATION_CAPTURE_SECONDS,"query_lookback_days":ROTATION_QUERY_LOOKBACK_DAYS,"write_policy":"background upsert only when today's computed record changes"},"methodology":"V4 rotation pressure extends the existing 1D/7D/30D + relative-volume score with stored-observation change and 100/200MA trend context. Sparse or stale histories are confidence-capped and cannot emit actionable transition labels. Freshness uses both provider observation time and retrieval time. Canonical daily state records are persisted by background maintenance rather than by UI reads.","generated_at":generated_at}
 
 
 async def rotation_snapshot_loop():
