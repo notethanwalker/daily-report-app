@@ -63,3 +63,15 @@ class AlertEvaluationStateV4(Base):
     state_as_of: Mapped[str | None] = mapped_column(String(16), nullable=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True, nullable=False)
+
+
+class OpportunityFormulaPresetV4(Base):
+    __tablename__ = "opportunity_formula_presets_v4"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_opportunity_formula_v4_user_name"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(320), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(32), nullable=False, default="opportunity-formula-v1")
+    criteria: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
