@@ -4,7 +4,7 @@ from typing import Any
 
 from .data_quality_v4 import build_quality_summary
 
-DECISION_CARD_MODEL_VERSION = "decision-card-v4.2"
+DECISION_CARD_MODEL_VERSION = "decision-card-v4.3"
 
 
 def _num(value, default=None):
@@ -43,6 +43,7 @@ def build_decision_card(candidate: dict) -> dict[str, Any]:
     evidence = context.get("evidence") or {}
     verdict = evidence.get("context_verdict") or {}
     flow = context.get("persistent_flow") or {}
+    fundamentals = ((context.get("fundamentals") or {}).get("assessment") or candidate.get("fundamental_assessment") or {})
     fit = candidate.get("portfolio_fit") or {}
     convergence = candidate.get("convergence") or {}
     raw = candidate.get("raw_criteria") or {}
@@ -115,6 +116,31 @@ def build_decision_card(candidate: dict) -> dict[str, Any]:
     elif flow_verdict == "mixed":
         _add_unique(blockers, "Persistent flow is mixed and should not be used as confirmation.")
 
+    fundamental_quality = _num(fundamentals.get("quality_score"))
+    valuation_quality = _num(fundamentals.get("valuation_score"))
+    fundamental_anomaly = str(fundamentals.get("anomaly") or "")
+    if fundamental_anomaly == "value_trap_risk":
+        _add_unique(bear, "Valuation appears attractive, but the fundamental assessment flags value-trap risk from weak or deteriorating business quality.")
+        _add_unique(blockers, "Value-trap risk prevents cheap valuation from being treated as confirming evidence.")
+        _add_unique(upgrades, "Revenue, earnings, margins, cash generation, or balance-sheet quality improve enough to clear value-trap risk.")
+        _add_unique(downgrades, "Fundamental deterioration persists while the market continues to price the stock at an apparently cheap multiple.")
+    elif fundamental_anomaly == "quality_at_reasonable_value":
+        _add_unique(bull, "Fundamental quality and valuation are both supportive: the cached assessment classifies the stock as quality at reasonable value.")
+    elif fundamental_anomaly == "expensive_quality":
+        _add_unique(bull, "Underlying business quality is strong, but valuation is demanding.")
+        _add_unique(bear, "Valuation is expensive enough that business quality should not be confused with entry attractiveness.")
+    elif fundamental_anomaly == "expensive_weak_quality":
+        _add_unique(bear, "Valuation is demanding while underlying business quality is not strong enough to offset it.")
+    else:
+        if fundamental_quality is not None and fundamental_quality >= 70:
+            _add_unique(bull, f"Fundamental business quality is strong ({fundamental_quality:.1f}/100) across available growth, profitability, cash-flow and balance-sheet inputs.")
+        elif fundamental_quality is not None and fundamental_quality < 40:
+            _add_unique(bear, f"Fundamental business quality is weak ({fundamental_quality:.1f}/100) across available inputs.")
+        if valuation_quality is not None and valuation_quality >= 70:
+            _add_unique(bull, f"Valuation context is favorable ({valuation_quality:.1f}/100), subject to business-quality and P/E-applicability checks.")
+        elif valuation_quality is not None and valuation_quality < 35:
+            _add_unique(bear, f"Valuation context is demanding ({valuation_quality:.1f}/100).")
+
     rotation = str(candidate.get("rotation_state") or "unknown")
     if rotation in {"leading_accelerating", "leading_stable", "recovering"}:
         _add_unique(bull, f"Rotation backdrop is {rotation.replace('_', ' ')}, providing supportive regime context.")
@@ -162,6 +188,14 @@ def build_decision_card(candidate: dict) -> dict[str, Any]:
         "attention_stage": candidate.get("attention_stage"),
         "asset_opportunity": {"score": candidate.get("formula_score"), "rank": candidate.get("formula_rank")},
         "portfolio_fit": {"score": fit.get("score"), "rank": candidate.get("portfolio_adjusted_rank"), "confidence": fit.get("confidence"), "status": fit.get("status")},
+        "fundamentals": {
+            "quality_score": fundamental_quality,
+            "valuation_score": valuation_quality,
+            "anomaly": fundamental_anomaly or None,
+            "confidence": fundamentals.get("confidence"),
+            "coverage": fundamentals.get("coverage"),
+            "flags": fundamentals.get("flags") or [],
+        },
         "context_verdict": verdict,
         "flow_confirmation": candidate.get("flow_confirmation") or {"verdict": flow_verdict, "direction": flow.get("direction"), "confidence": flow_conf, "score_effect": 0},
         "data_quality": quality,
@@ -171,7 +205,7 @@ def build_decision_card(candidate: dict) -> dict[str, Any]:
         "invalidation": invalidation[:6],
         "upgrade_triggers": upgrades[:6],
         "downgrade_triggers": downgrades[:6],
-        "policy": "Decision Card is a transparent synthesis layer. It creates no additional master score and does not convert contextual evidence into calibrated return probabilities.",
+        "policy": "Decision Card is a transparent synthesis layer. It creates no additional master score and does not convert contextual evidence into calibrated return probabilities. Fundamental quality and valuation remain separate explanatory inputs.",
     }
 
 
