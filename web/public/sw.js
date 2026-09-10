@@ -1,4 +1,4 @@
-const CACHE_NAME = "daily-report-shell-v2";
+const CACHE_NAME = "daily-report-shell-v3";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -13,11 +13,26 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
+
+  // Never cache authenticated/backend or server-generated API responses. These
+  // must preserve their own freshness, authorization, and error semantics.
+  if (url.pathname.startsWith("/backend/") || url.pathname.startsWith("/api/")) return;
+
   event.respondWith(fetch(event.request).then((response) => {
-    const copy = response.clone();
-    caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+    if (response.ok) {
+      const copy = response.clone();
+      caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+    }
     return response;
-  }).catch(() => caches.match(event.request).then((cached) => cached || caches.match("/"))));
+  }).catch(async () => {
+    const cached = await caches.match(event.request);
+    if (cached) return cached;
+    if (event.request.mode === "navigate") {
+      const shell = await caches.match("/");
+      if (shell) return shell;
+    }
+    return Response.error();
+  }));
 });
 
 self.addEventListener("push", (event) => {
