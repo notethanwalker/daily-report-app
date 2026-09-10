@@ -12,7 +12,7 @@ from ..models import FundamentalCache
 from ..providers.alpha_vantage import AlphaVantageProvider
 from ..providers.sec_companyfacts import SecCompanyFactsProvider
 from ..providers.yahoo_finance import YahooFinanceProvider
-from ..services.fundamental_assessment_v4 import assess_fundamentals
+from ..services.fundamental_context_v4 import build_fundamental_context, persist_assessment_snapshot
 
 router=APIRouter(prefix="/api/v1",tags=["fundamentals-v2"])
 
@@ -60,14 +60,18 @@ def _load_sources(symbol:str,db:Session,market:dict)->tuple[dict,list[str]]:
     return merged,errors
 
 
-def _response(p:dict,cache_state:str,errors:list[str]|None=None)->dict:
+def _response(db:Session,symbol:str,p:dict,cache_state:str,errors:list[str]|None=None)->dict:
+    persist_assessment_snapshot(db,symbol,p,commit=True)
+    context=build_fundamental_context(db,symbol,p)
     return {
         **p,
         "fundamentals_cache":cache_state,
         "fundamentals_errors":errors or [],
         "coverage":{"pe":p.get("pe_ratio") is not None,"ps":p.get("price_to_sales_ratio") is not None,"peg":p.get("peg_ratio") is not None},
         "quality":{"pe":"not_applicable" if p.get("pe_ratio") is None and isinstance(p.get("eps"),(int,float)) and p.get("eps")<=0 else ("available" if p.get("pe_ratio") is not None else "unavailable"),"ps":"available" if p.get("price_to_sales_ratio") is not None else "unavailable","peg":"available" if p.get("peg_ratio") is not None else "not_applicable_or_unavailable"},
-        "fundamental_assessment":assess_fundamentals(p),
+        "fundamental_assessment":context["assessment"],
+        "fundamental_peer_context":context["peer_context"],
+        "fundamental_history":context["history"],
     }
 
 
@@ -77,13 +81,13 @@ def fundamentals(symbol:str,db:Session=Depends(get_db)):
     if cached:
         age=(datetime.now(timezone.utc)-(cached.retrieved_at if cached.retrieved_at.tzinfo else cached.retrieved_at.replace(tzinfo=timezone.utc))).total_seconds();p=stable._enrich_fundamental_ratios(cached.payload,market)
         if age<stable.FUNDAMENTAL_CACHE_TTL_SECONDS and int((cached.payload or {}).get("valuation_refresh_version") or 0)>=REFRESH_VERSION and _complete(p):
-            return _response(p,"fresh")
+            return _response(db,s,p,"fresh")
     fresh,errors=_load_sources(s,db,market)
     if not any(fresh.get(k) is not None for k in ["eps","revenue_ttm","shares_outstanding","pe_ratio","price_to_sales_ratio","peg_ratio"]):
-        if cached:return _response(stable._enrich_fundamental_ratios(cached.payload,market),"stale",errors)
+        if cached:return _response(db,s,stable._enrich_fundamental_ratios(cached.payload,market),"stale",errors)
         raise HTTPException(502,"Fundamentals unavailable from Yahoo Finance, SEC EDGAR and Alpha Vantage")
     provider=str(fresh.get("provider") or "Composite fundamentals")
     if cached:cached.provider=provider;cached.payload=fresh;cached.retrieved_at=datetime.now(timezone.utc)
     else:db.add(FundamentalCache(symbol=s,provider=provider,payload=fresh,retrieved_at=datetime.now(timezone.utc)))
     db.commit()
-    return _response(fresh,"fresh",errors)
+    return _response(db,s,fresh,"fresh",errors)
