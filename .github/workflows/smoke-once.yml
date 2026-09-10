@@ -23,7 +23,7 @@ jobs:
     env:
       API_BASE: https://daily-report-api-ero2.onrender.com
     steps:
-      - name: Wait for matching backend deployment
+      - name: Wait for exact backend revision
         shell: bash
         run: |
           set -euo pipefail
@@ -31,14 +31,17 @@ jobs:
             TOKEN=$(curl --fail --silent --show-error -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=daily-report-smoke" | jq -r '.value')
             test -n "$TOKEN" && test "$TOKEN" != "null"
             echo "::add-mask::$TOKEN"
-            if curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer ${TOKEN}" "${API_BASE}/api/v1/events?days=7&limit=1" -o /dev/null; then
+            META=$(curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer ${TOKEN}" "${API_BASE}/api/v1/markets/__deployment__/fundamentals" || true)
+            DEPLOYED_SHA=$(printf '%s' "$META" | jq -r '.render_git_commit // empty' 2>/dev/null || true)
+            if [ "$DEPLOYED_SHA" = "$GITHUB_SHA" ]; then
+              echo "Verified Render revision ${DEPLOYED_SHA}."
               echo "SMOKE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
               exit 0
             fi
-            echo "Backend has not activated this smoke identity yet (attempt ${attempt}/36)."
+            echo "Render revision '${DEPLOYED_SHA:-unknown}' does not yet match workflow SHA '${GITHUB_SHA}' (attempt ${attempt}/36)."
             sleep 10
           done
-          echo "Matching backend deployment did not become ready." >&2
+          echo "Exact Render revision did not become ready." >&2
           exit 1
 
       - name: Check backend health
@@ -67,11 +70,11 @@ jobs:
       - name: Check live portfolio contracts
         run: |
           set -euo pipefail
-          PORTS=$(curl --fail --silent --show-error -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/portfolios")
+          PORTS=$(curl --fail --silent --show-error --retry 3 --retry-delay 3 -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/portfolios")
           echo "$PORTS" | jq -e '.portfolios | type == "array"'
           PID=$(echo "$PORTS" | jq -r '.portfolios[0].id // empty')
           if [ -n "$PID" ]; then
-            DETAIL=$(curl --fail --silent --show-error -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/portfolios/${PID}")
+            DETAIL=$(curl --fail --silent --show-error --retry 3 --retry-delay 3 -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/portfolios/${PID}")
             echo "$DETAIL" | jq '{portfolio,baseline,market_value,invested_value,cash_percent,holding_count:(.holdings|length)}'
             echo "$DETAIL" | jq -e '(.holdings | type == "array") and (.baseline | type == "object") and ([.holdings[] | has("baseline") and has("live")] | all)'
           fi
@@ -79,9 +82,9 @@ jobs:
       - name: Check alert and push contracts
         run: |
           set -euo pipefail
-          ALERTS=$(curl --fail --silent --show-error -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/alerts/v2")
+          ALERTS=$(curl --fail --silent --show-error --retry 3 --retry-delay 3 -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/alerts/v2")
           echo "$ALERTS" | jq '{push,variable_count:(.variables|length),variables:(.variables|keys)}'
           echo "$ALERTS" | jq -e '(.variables | type == "object") and .variables.pe and .variables.sector_score and .variables.bullish_flow and (.push | type == "object")'
-          PUSH=$(curl --fail --silent --show-error -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/push/config")
+          PUSH=$(curl --fail --silent --show-error --retry 3 --retry-delay 3 -H "Authorization: Bearer ${SMOKE_TOKEN}" "${API_BASE}/api/v1/push/config")
           echo "$PUSH" | jq '{configured,subscriptions,public_key_present:(.public_key != null)}'
           echo "$PUSH" | jq -e 'has("configured") and has("public_key")'
