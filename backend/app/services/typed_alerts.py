@@ -11,6 +11,8 @@ from ..v3_models import UserCustomEvent
 from .opportunity_convergence import STATE_ORDER, evaluate_convergence
 
 PORTFOLIO_PREFIX = "PORTFOLIO:"
+WILLIAMS_OVERSOLD_THRESHOLD = -80.0
+MA100_APPROACH_MAX_PCT = 5.0
 
 
 def _utc(dt):
@@ -85,8 +87,37 @@ def _regime_transition(db:Session):
 
 def _opportunity_convergence(db:Session,symbol:str):
     result=evaluate_convergence(db,symbol)
-    # Typed alert value is the staged state code. Triggered == 3. Metadata retains the full auditable model result.
     return float(result["state_code"]),result
+
+
+def _williams_state(market:dict):
+    raw=market.get("williams_r_14")
+    if raw is None:return None,{"state":"unavailable","as_of":market.get("as_of"),"williams_r":None}
+    value=float(raw);state="oversold" if value<=WILLIAMS_OVERSOLD_THRESHOLD else "recovered"
+    return value,{"state":state,"as_of":market.get("as_of"),"williams_r":value,"threshold":WILLIAMS_OVERSOLD_THRESHOLD}
+
+
+def _ma100_approach_state(market:dict):
+    raw=market.get("price_vs_ma100_percent")
+    if raw is None:return None,{"state":"unavailable","as_of":market.get("as_of"),"signed_distance":None}
+    value=float(raw)
+    if value<0:state="below"
+    elif value<=MA100_APPROACH_MAX_PCT:state="approaching"
+    else:state="extended"
+    return value,{"state":state,"as_of":market.get("as_of"),"signed_distance":value,"approach_max_pct":MA100_APPROACH_MAX_PCT}
+
+
+def _combined_technical_state(market:dict):
+    wr=market.get("williams_r_14");dist=market.get("price_vs_ma100_percent")
+    if wr is None or dist is None:return None,{"state":"unavailable","as_of":market.get("as_of"),"williams_r":wr,"ma100_distance":dist}
+    wr=float(wr);dist=float(dist);triggered=wr<=WILLIAMS_OVERSOLD_THRESHOLD and 0<=dist<=MA100_APPROACH_MAX_PCT
+    return (1.0 if triggered else 0.0),{"state":"triggered" if triggered else "watching","as_of":market.get("as_of"),"williams_r":wr,"ma100_distance":dist,"williams_threshold":WILLIAMS_OVERSOLD_THRESHOLD,"ma100_max_pct":MA100_APPROACH_MAX_PCT}
+
+
+def _convergence_invalidation(db:Session,symbol:str):
+    result=evaluate_convergence(db,symbol);invalidated=str(result.get("state"))=="invalidated"
+    meta={**result,"state":"invalidated" if invalidated else str(result.get("state") or "unavailable")}
+    return (1.0 if invalidated else 0.0),meta
 
 
 def evaluate_typed_value(db:Session,user:str,kind:str,symbol:str|None):
@@ -95,6 +126,10 @@ def evaluate_typed_value(db:Session,user:str,kind:str,symbol:str|None):
         raw=market.get("price_vs_ma100_percent");return (abs(float(raw)) if raw is not None else None),{"signed_distance":raw,"metric":"100MA"}
     if kind=="ma200_proximity":
         raw=market.get("price_vs_ma200_percent");return (abs(float(raw)) if raw is not None else None),{"signed_distance":raw,"metric":"200MA"}
+    if kind in {"williams_oversold_entry","williams_oversold_recovery"}:return _williams_state(market)
+    if kind=="ma100_approach_from_above":return _ma100_approach_state(market)
+    if kind=="williams_ma100_trigger":return _combined_technical_state(market)
+    if kind=="opportunity_invalidated" and symbol:return _convergence_invalidation(db,symbol)
     if kind=="catalyst_days" and symbol:return _catalyst_days(db,user,symbol)
     if kind=="persistent_flow" and symbol:return _flow_cluster_count(db,symbol)
     if kind=="portfolio_position_weight":return _portfolio_weight(db,user,symbol)
@@ -106,5 +141,7 @@ def evaluate_typed_value(db:Session,user:str,kind:str,symbol:str|None):
 def typed_trigger(kind:str,value,operator:str,threshold):
     if kind=="regime_transition":return bool(value==1.0)
     if kind=="opportunity_convergence":return bool(value is not None and value>=STATE_ORDER["triggered"])
+    if kind in {"williams_oversold_entry","williams_oversold_recovery","ma100_approach_from_above","williams_ma100_trigger","opportunity_invalidated"}:
+        return False  # Transition-native kinds are evaluated against prior state by alert_engine.
     if value is None or threshold is None:return False
     return {">=":value>=threshold,"<=":value<=threshold,">":value>threshold,"<":value<threshold,"==":value==threshold}.get(operator,False)
