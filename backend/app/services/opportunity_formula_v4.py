@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from .opportunity_quality_v4 import attach_opportunity_quality
 from .opportunity_scanner import (
     MIN_AVG_DOLLAR_VOLUME_20D,
     MIN_PRICE,
@@ -22,7 +23,7 @@ DEFAULT_FORMULA = {
     "ma100_slope": 5.0,
     "approach_velocity": 5.0,
 }
-SORT_FIELDS = {"score", "williams", "ma100_proximity", "ma50_proximity", "ma100_slope", "approach_velocity", "relative_volume", "liquidity", "symbol"}
+SORT_FIELDS = {"score", "quality_adjusted_score", "quality_confidence", "williams", "ma100_proximity", "ma50_proximity", "ma100_slope", "approach_velocity", "relative_volume", "liquidity", "symbol"}
 SORT_DIRECTIONS = {"asc", "desc"}
 
 CRITERIA = {
@@ -106,10 +107,12 @@ def passes_filters(payload:dict,filters:list[dict]|None)->bool:
 
 def formula_metadata(criteria:dict|None,filters:list[dict]|None=None)->dict:
     clean=validate_formula(criteria);clean_filters=validate_filters(filters);effective=normalized_weights(clean);required_sessions=max(CRITERIA[key]["min_sessions"] for key in clean)
-    return {"schema_version":SCHEMA_VERSION,"criteria":clean,"filters":clean_filters,"effective_weights_percent":effective,"required_sessions":required_sessions,"label":" + ".join(f"{effective[key]:.1f}% {CRITERIA[key]['label']}" for key in clean),"score_semantics":"Relative Opportunity Index (0–100). It is a ranking score, not an expected-return or probability estimate.","filter_semantics":"Hard screens determine universe membership before ranking and never contribute points to the Opportunity Index."}
+    return {"schema_version":SCHEMA_VERSION,"criteria":clean,"filters":clean_filters,"effective_weights_percent":effective,"required_sessions":required_sessions,"label":" + ".join(f"{effective[key]:.1f}% {CRITERIA[key]['label']}" for key in clean),"score_semantics":"Relative Opportunity Index (0–100). It is a ranking score, not an expected-return or probability estimate.","filter_semantics":"Hard screens determine universe membership before ranking and never contribute points to the Opportunity Index.","quality_semantics":"Raw formula score/rank remain authoritative for the selected formula. Quality-adjusted score/rank are separate confidence-weighted decision aids and never rewrite the user formula."}
 
 def _sort_value(item:dict,sort_by:str):
     if sort_by=="score":return item.get("score")
+    if sort_by=="quality_adjusted_score":return item.get("quality_adjusted_score")
+    if sort_by=="quality_confidence":return item.get("quality_confidence")
     if sort_by=="symbol":return item.get("symbol")
     if sort_by=="liquidity":return item.get("average_dollar_volume_20d")
     return (item.get("raw_criteria") or {}).get(sort_by)
@@ -137,11 +140,13 @@ def build_opportunity_index(db:Session,*,criteria:dict|None=None,filters:list[di
         components=score_components(payload);score=formula_score(components,weights)
         if score is None:continue
         formula_complete+=1;raw={"williams":round(williams,2),"ma50_proximity":_f(payload.get("price_vs_ma50_percent")),"ma100_proximity":round(ma100_distance,3),"ma100_slope":_f(payload.get("ma100_slope_20d_percent")),"approach_velocity":_f(payload.get("approach_velocity_100_5d")),"relative_volume":_f(payload.get("relative_volume"))}
-        rows.append({"symbol":row.symbol.upper(),"name":(reg.name if reg else None) or payload.get("name"),"sector":(reg.sector if reg else None) or payload.get("sector"),"industry":(reg.industry if reg else None) or payload.get("industry"),"asset_type":(reg.asset_type if reg else None) or payload.get("asset_type"),"score":score,"criterion_scores":components,"raw_criteria":raw,"price":round(price,4),"ma50":_f(payload.get("ma50")),"ma100":_f(payload.get("ma100")),"ma200":_f(payload.get("ma200")),"change_percent":_f(payload.get("change_percent")),"seven_day_percent":_f(payload.get("seven_day_percent")),"thirty_day_percent":_f(payload.get("thirty_day_percent")),"average_dollar_volume_20d":round(avg_dollar_volume,2),"as_of":payload.get("as_of") or row.as_of,"retrieved_at":row.retrieved_at.isoformat(),"provider":payload.get("provider") or row.provider,"technical_source":payload.get("technical_source"),"source_url":payload.get("source_url")})
+        rows.append({"symbol":row.symbol.upper(),"name":(reg.name if reg else None) or payload.get("name"),"sector":(reg.sector if reg else None) or payload.get("sector"),"industry":(reg.industry if reg else None) or payload.get("industry"),"asset_type":(reg.asset_type if reg else None) or payload.get("asset_type"),"score":score,"criterion_scores":components,"raw_criteria":raw,"price":round(price,4),"ma50":_f(payload.get("ma50")),"ma100":_f(payload.get("ma100")),"ma200":_f(payload.get("ma200")),"change_percent":_f(payload.get("change_percent")),"seven_day_percent":_f(payload.get("seven_day_percent")),"thirty_day_percent":_f(payload.get("thirty_day_percent")),"average_dollar_volume_20d":round(avg_dollar_volume,2),"as_of":payload.get("as_of") or row.as_of,"retrieved_at":row.retrieved_at.isoformat(),"provider":payload.get("provider") or row.provider,"technical_source":payload.get("technical_source"),"source_url":payload.get("source_url"),"verification_status":payload.get("verification_status")})
     formula_ranked=sorted(rows,key=lambda item:(float(item["score"]),item["symbol"]),reverse=True)
     for rank,item in enumerate(formula_ranked,1):item["formula_rank"]=rank
+    attach_opportunity_quality(formula_ranked)
     target_set={str(x).strip().upper() for x in (target_symbols or []) if str(x).strip()};target_rows=[item for item in formula_ranked if item["symbol"] in target_set] if target_set else []
     ordered,requested_sort,requested_direction=sort_index_rows(formula_ranked,requested_sort,requested_direction);result_limit=max(1,min(int(limit),1000))
-    result={"rows":ordered[:result_limit],"formula":formula_metadata(weights,clean_filters),"sort":{"by":requested_sort,"direction":requested_direction},"criteria_catalog":list(CRITERIA.values()),"filter_catalog":list(FILTER_FIELDS.values()),"counts":{"latest_snapshot_symbols":len(latest_rows),"scannable":scannable,"technical_complete":technical_complete,"liquidity_eligible":liquidity_eligible,"filtered_out":filtered_out,"formula_complete":formula_complete,"returned":min(len(ordered),result_limit)},"liquidity_filter":{"min_price":MIN_PRICE,"min_average_dollar_volume_20d":MIN_AVG_DOLLAR_VOLUME_20D},"include_etfs":include_etfs,"last_cache_update":newest.isoformat() if newest else None,"generated_at":datetime.now(timezone.utc).isoformat(),"data_strategy":"Ranks the full cached, technically complete and liquid universe after optional hard screens, then applies the requested full-universe sort before truncating results. The index performs zero provider calls."}
+    quality_counts={state:sum(1 for x in formula_ranked if (x.get("data_quality") or {}).get("state")==state) for state in ("verified","fresh","degraded","incomplete","failed")}
+    result={"rows":ordered[:result_limit],"formula":formula_metadata(weights,clean_filters),"sort":{"by":requested_sort,"direction":requested_direction},"criteria_catalog":list(CRITERIA.values()),"filter_catalog":list(FILTER_FIELDS.values()),"counts":{"latest_snapshot_symbols":len(latest_rows),"scannable":scannable,"technical_complete":technical_complete,"liquidity_eligible":liquidity_eligible,"filtered_out":filtered_out,"formula_complete":formula_complete,"returned":min(len(ordered),result_limit)},"quality_counts":quality_counts,"liquidity_filter":{"min_price":MIN_PRICE,"min_average_dollar_volume_20d":MIN_AVG_DOLLAR_VOLUME_20D},"include_etfs":include_etfs,"last_cache_update":newest.isoformat() if newest else None,"generated_at":datetime.now(timezone.utc).isoformat(),"data_strategy":"Ranks the full cached, technically complete and liquid universe after optional hard screens, then applies the requested full-universe sort before truncating results. The index performs zero provider calls. Raw formula rank and confidence-adjusted rank are both preserved."}
     if target_set:result["target_rows"]=target_rows
     return result
