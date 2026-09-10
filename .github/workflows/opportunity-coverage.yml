@@ -5,11 +5,13 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: "Maximum missing symbols to attempt"
+        description: "Maximum missing or stale symbols to attempt"
         required: false
         default: "1000"
+  # GitHub Actions cron is UTC. 12:17 UTC Sunday is 7:17 AM CDT / 6:17 AM CST.
+  # Weekly maintenance is sufficient once broad coverage is ready; manual dispatch remains available.
   schedule:
-    - cron: "17 * * * *"
+    - cron: "17 12 * * 0"
   push:
     paths:
       - ".github/workflows/opportunity-coverage.yml"
