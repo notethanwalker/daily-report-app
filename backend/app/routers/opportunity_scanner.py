@@ -14,7 +14,12 @@ from ..multiuser_models import PortfolioDefinition, PortfolioPosition
 from ..normalized_market_models import MarketPipelineState
 from ..services.github_actions_oidc import verify_github_actions_token
 from ..services.market_data_pipeline import pipeline_status
-from ..services.opportunity_bulk_ingest import ingest_opportunity_batch, missing_opportunity_symbols
+from ..services.opportunity_bulk_ingest import (
+    DIAGNOSTICS_STATE_KEY,
+    ingest_opportunity_batch,
+    missing_opportunity_symbols,
+    save_coverage_diagnostics,
+)
 from ..services.opportunity_scanner import scan_cached_market
 from ..services.stooq_durable_import import (
     create_upload as create_durable_upload,
@@ -40,6 +45,19 @@ class OpportunityBulkBatch(BaseModel):
     source_url: str = ""
     batch_id: str | None = None
     records: list[dict]
+
+
+class OpportunityCoverageDiagnostics(BaseModel):
+    batch_id: str | None = None
+    mode: str = "bootstrap"
+    complete_residual_scan: bool
+    raw_universe_stocks: int
+    covered_stocks: int = 0
+    residual_classification: dict = {}
+    insufficient_history: list[dict] = []
+    provider_unavailable: list[dict] = []
+    provider_errors: list[dict] = []
+    observed_at: str = ""
 
 
 def _require_owner(db: Session, user: str) -> None:
@@ -163,11 +181,13 @@ def opportunity_data_pipeline(db: Session = Depends(get_db), user: str = Depends
     result["canonical_stooq_archive"] = canonical
     result["incremental_freshness"] = incremental
     result["external_bulk_ingest"] = _state(db, "opportunity_external_ingest")
+    result["coverage_diagnostics"] = _state(db, DIAGNOSTICS_STATE_KEY)
     result["canonical_history_ready"] = canonical.get("status") == "ready" and bool(canonical.get("canonical"))
     result["effective_history_policy"] = {
         "historical_authority": "Cached normalized OHLCV from bulk ingest; Stooq archive when available",
         "incremental_daily_freshness": "Yahoo Finance / Stooq repair layer",
         "tracked_symbol_freshness": "Twelve Data with Yahoo verification",
+        "coverage_denominator": "Exclude only confirmed too-young listings from scannable coverage; provider-unavailable symbols remain unresolved gaps.",
     }
     return result
 
@@ -273,6 +293,22 @@ def bulk_missing_opportunities(
 ):
     _require_import_token(request)
     return missing_opportunity_symbols(db, limit=limit, cursor=cursor.strip().upper())
+
+
+@router.post("/bulk-coverage-diagnostics")
+def bulk_coverage_diagnostics(
+    payload: OpportunityCoverageDiagnostics,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    _require_import_token(request)
+    try:
+        return save_coverage_diagnostics(db, payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(exc)[:1000]) from exc
 
 
 @router.post("/bulk-ingest")
