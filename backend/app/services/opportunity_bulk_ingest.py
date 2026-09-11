@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -18,11 +18,13 @@ from .market_data_pipeline import (
 
 STATE_KEY = "opportunity_external_ingest"
 CURSOR_STATE_KEY = "opportunity_external_cursor"
+DIAGNOSTICS_STATE_KEY = "opportunity_coverage_diagnostics"
 MIN_BARS = BROAD_OPPORTUNITY_MIN_BARS
 RETAIN_DAYS = BROAD_OPPORTUNITY_HISTORY_DAYS
 MAX_RECORDS_PER_BATCH = 200
 READY_COVERAGE_PERCENT = 95.0
 BAR_UPSERT_CHUNK = 3000
+DIAGNOSTICS_MAX_AGE_HOURS = 30
 
 
 def _now() -> str:
@@ -109,17 +111,90 @@ def _consensus_market_date(db: Session, eligible: set[str]) -> str | None:
     return str(rows[0][0])[:10] if rows else None
 
 
+def _fresh_coverage_diagnostics(db: Session, *, eligible_stocks: int) -> dict | None:
+    row = db.get(MarketPipelineState, DIAGNOSTICS_STATE_KEY)
+    payload = dict(row.payload or {}) if row else {}
+    if not payload or not payload.get("complete_residual_scan"):
+        return None
+    try:
+        raw_universe = int(payload.get("raw_universe_stocks") or 0)
+    except (TypeError, ValueError):
+        return None
+    if raw_universe != eligible_stocks:
+        return None
+    observed_at = str(payload.get("observed_at") or "")
+    try:
+        observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    if datetime.now(timezone.utc) - observed.astimezone(timezone.utc) > timedelta(hours=DIAGNOSTICS_MAX_AGE_HOURS):
+        return None
+    return payload
+
+
+def _coverage_payload(
+    *,
+    eligible_stocks: int,
+    covered_stocks: int,
+    diagnostics: dict | None = None,
+) -> dict:
+    eligible_stocks = max(0, int(eligible_stocks))
+    covered_stocks = max(0, min(int(covered_stocks), eligible_stocks))
+    raw_percent = round(covered_stocks / eligible_stocks * 100.0, 2) if eligible_stocks else 0.0
+    result = {
+        "eligible_stocks": eligible_stocks,
+        "scannable_stocks": eligible_stocks,
+        "covered_stocks": covered_stocks,
+        "coverage_percent": raw_percent,
+        "raw_coverage_percent": raw_percent,
+        "temporarily_ineligible_insufficient_history": 0,
+        "provider_unavailable_or_invalid": 0,
+        "unresolved_provider_errors": 0,
+        "minimum_bars": MIN_BARS,
+        "retained_sessions": RETAIN_DAYS,
+        "coverage_denominator": "all_eligible_common_equities",
+        "diagnostics_as_of": None,
+    }
+    if not diagnostics:
+        return result
+
+    counts = diagnostics.get("residual_classification") or {}
+    try:
+        insufficient = max(0, int(counts.get("insufficient_history") or 0))
+        unavailable = max(0, int(counts.get("provider_unavailable") or 0))
+        provider_errors = max(0, int(counts.get("provider_error") or 0))
+    except (TypeError, ValueError):
+        return result
+
+    # Only securities that physically cannot satisfy the 120-session requirement are
+    # removed from the effective denominator. Provider-unavailable symbols remain gaps
+    # until independently resolved; excluding them would overstate coverage.
+    scannable = max(covered_stocks, eligible_stocks - min(insufficient, eligible_stocks))
+    effective_percent = round(covered_stocks / scannable * 100.0, 2) if scannable else 0.0
+    result.update({
+        "scannable_stocks": scannable,
+        "coverage_percent": effective_percent,
+        "temporarily_ineligible_insufficient_history": insufficient,
+        "provider_unavailable_or_invalid": unavailable,
+        "unresolved_provider_errors": provider_errors,
+        "coverage_denominator": "currently_scannable_common_equities",
+        "diagnostics_as_of": diagnostics.get("observed_at"),
+    })
+    return result
+
+
 def _coverage(db: Session) -> dict:
     eligible = _eligible_symbols(db)
     covered = _covered_symbols(db)
     covered_count = len(set(eligible) & covered)
-    return {
-        "eligible_stocks": len(eligible),
-        "covered_stocks": covered_count,
-        "coverage_percent": round(covered_count / len(eligible) * 100.0, 2) if eligible else 0.0,
-        "minimum_bars": MIN_BARS,
-        "retained_sessions": RETAIN_DAYS,
-    }
+    diagnostics = _fresh_coverage_diagnostics(db, eligible_stocks=len(eligible))
+    return _coverage_payload(
+        eligible_stocks=len(eligible),
+        covered_stocks=covered_count,
+        diagnostics=diagnostics,
+    )
 
 
 def _coverage_from_state(db: Session) -> dict | None:
@@ -133,14 +208,96 @@ def _coverage_from_state(db: Session) -> dict | None:
         covered = int(coverage.get("covered_stocks") or 0)
     except (TypeError, ValueError):
         return None
-    if eligible <= 0 or covered < 0 or covered > eligible:
+    current_eligible = len(_eligible_symbols(db))
+    if eligible <= 0 or covered < 0 or covered > eligible or eligible != current_eligible:
         return None
-    return {
-        "eligible_stocks": eligible,
-        "covered_stocks": covered,
-        "coverage_percent": round(covered / eligible * 100.0, 2),
+    diagnostics = _fresh_coverage_diagnostics(db, eligible_stocks=eligible)
+    return _coverage_payload(
+        eligible_stocks=eligible,
+        covered_stocks=covered,
+        diagnostics=diagnostics,
+    )
+
+
+def save_coverage_diagnostics(db: Session, payload: dict) -> dict:
+    if not bool(payload.get("complete_residual_scan")):
+        raise ValueError("Coverage diagnostics require a complete residual scan")
+    eligible_now = len(_eligible_symbols(db))
+    try:
+        reported_universe = int(payload.get("raw_universe_stocks") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("raw_universe_stocks must be an integer") from exc
+    if reported_universe != eligible_now:
+        raise ValueError(
+            f"Coverage diagnostics universe mismatch: worker={reported_universe}, backend={eligible_now}"
+        )
+
+    counts = dict(payload.get("residual_classification") or {})
+    normalized_counts = {}
+    for key in ("insufficient_history", "provider_unavailable", "provider_error"):
+        try:
+            normalized_counts[key] = max(0, int(counts.get(key) or 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid residual classification count for {key}") from exc
+
+    def _clean_items(name: str, limit: int = 1000) -> list[dict]:
+        out: list[dict] = []
+        for item in list(payload.get(name) or [])[:limit]:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            cleaned = {"symbol": symbol}
+            if item.get("bars") is not None:
+                try:
+                    cleaned["bars"] = max(0, int(item.get("bars") or 0))
+                except (TypeError, ValueError):
+                    pass
+            if item.get("error"):
+                cleaned["error"] = str(item.get("error"))[:240]
+            out.append(cleaned)
+        return out
+
+    observed_at = str(payload.get("observed_at") or _now())
+    try:
+        observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        observed_at = observed.astimezone(timezone.utc).isoformat()
+    except ValueError:
+        observed_at = _now()
+
+    normalized = {
+        "status": "ready",
+        "complete_residual_scan": True,
+        "batch_id": str(payload.get("batch_id") or "")[:120] or None,
+        "mode": str(payload.get("mode") or "bootstrap")[:32],
+        "raw_universe_stocks": reported_universe,
+        "covered_stocks_reported": max(0, int(payload.get("covered_stocks") or 0)),
         "minimum_bars": MIN_BARS,
-        "retained_sessions": RETAIN_DAYS,
+        "residual_classification": normalized_counts,
+        "insufficient_history": _clean_items("insufficient_history"),
+        "provider_unavailable": _clean_items("provider_unavailable"),
+        "provider_errors": _clean_items("provider_errors"),
+        "observed_at": observed_at,
+        "saved_at": _now(),
+    }
+    _save_named_state(db, DIAGNOSTICS_STATE_KEY, normalized)
+
+    coverage = _coverage(db)
+    ingest_row = db.get(MarketPipelineState, STATE_KEY)
+    if ingest_row:
+        ingest_payload = dict(ingest_row.payload or {})
+        ingest_payload["coverage"] = coverage
+        ingest_payload["coverage_diagnostics_state"] = DIAGNOSTICS_STATE_KEY
+        ingest_row.payload = ingest_payload
+        db.commit()
+
+    return {
+        "status": "saved",
+        "coverage": coverage,
+        "diagnostics": normalized,
     }
 
 
@@ -378,11 +535,12 @@ def ingest_opportunity_batch(
 
     if prior_coverage and prior_coverage["eligible_stocks"] > 0:
         covered_count = min(prior_coverage["eligible_stocks"], prior_coverage["covered_stocks"] + bootstrap_updates)
-        coverage = {
-            **prior_coverage,
-            "covered_stocks": covered_count,
-            "coverage_percent": round(covered_count / prior_coverage["eligible_stocks"] * 100.0, 2),
-        }
+        diagnostics = _fresh_coverage_diagnostics(db, eligible_stocks=prior_coverage["eligible_stocks"])
+        coverage = _coverage_payload(
+            eligible_stocks=prior_coverage["eligible_stocks"],
+            covered_stocks=covered_count,
+            diagnostics=diagnostics,
+        )
     else:
         coverage = _coverage(db)
 
