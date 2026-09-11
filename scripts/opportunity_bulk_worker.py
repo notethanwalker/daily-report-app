@@ -299,35 +299,81 @@ def main() -> int:
 
     upload(pending)
 
+    insufficient_items = [item for item in failures if item.get("reason") == "insufficient_history"]
+    unavailable_items = [item for item in failures if item.get("reason") == "provider_unavailable"]
+    provider_error_items = [item for item in failures if item.get("reason") == "provider_error"]
     failure_counts = {
-        "insufficient_history": sum(1 for item in failures if item.get("reason") == "insufficient_history"),
-        "provider_unavailable": sum(1 for item in failures if item.get("reason") == "provider_unavailable"),
-        "provider_error": sum(1 for item in failures if item.get("reason") == "provider_error"),
+        "insufficient_history": len(insufficient_items),
+        "provider_unavailable": len(unavailable_items),
+        "provider_error": len(provider_error_items),
     }
     non_actionable = failure_counts["insufficient_history"] + failure_counts["provider_unavailable"]
     hard_failures = failure_counts["provider_error"] + rejected_total
 
-    effective_coverage = None
     raw_coverage = final_coverage or {}
     remaining_missing = targets.get("remaining_missing")
-    if (
+    complete_residual_scan = bool(
         mode == "bootstrap"
         and remaining_missing is not None
         and int(remaining_missing or 0) <= len(symbols)
-        and int(raw_coverage.get("eligible_stocks") or 0) > 0
-    ):
+    )
+
+    effective_coverage = None
+    if complete_residual_scan and int(raw_coverage.get("eligible_stocks") or 0) > 0:
         eligible = int(raw_coverage.get("eligible_stocks") or 0)
         covered = int(raw_coverage.get("covered_stocks") or 0)
-        scannable = max(covered, eligible - non_actionable)
+        # Only confirmed insufficient-history listings leave the denominator.
+        # Provider-unavailable symbols remain unresolved coverage gaps.
+        scannable = max(covered, eligible - failure_counts["insufficient_history"])
         effective_coverage = {
             "raw_universe_stocks": eligible,
             "currently_scannable_stocks": scannable,
             "covered_stocks": covered,
             "temporarily_ineligible_insufficient_history": failure_counts["insufficient_history"],
             "provider_unavailable_or_invalid": failure_counts["provider_unavailable"],
+            "unresolved_provider_errors": failure_counts["provider_error"],
             "coverage_percent_of_scannable": round(covered / scannable * 100.0, 2) if scannable else 0.0,
-            "raw_coverage_percent": raw_coverage.get("coverage_percent"),
+            "raw_coverage_percent": raw_coverage.get("raw_coverage_percent", raw_coverage.get("coverage_percent")),
         }
+
+    diagnostics_persist_status = "not_applicable"
+    if complete_residual_scan and not hard_failures and effective_coverage:
+        diagnostics_payload = {
+            "batch_id": f"gha-{run_id}-{mode}",
+            "mode": mode,
+            "complete_residual_scan": True,
+            "raw_universe_stocks": int(raw_coverage.get("eligible_stocks") or 0),
+            "covered_stocks": int(raw_coverage.get("covered_stocks") or 0),
+            "residual_classification": failure_counts,
+            "insufficient_history": insufficient_items,
+            "provider_unavailable": unavailable_items,
+            "provider_errors": provider_error_items,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            persisted = api_json(
+                f"{api_base}/api/v1/opportunities/bulk-coverage-diagnostics",
+                method="POST",
+                payload=diagnostics_payload,
+                timeout=120,
+                attempts=3,
+            )
+            diagnostics_persist_status = str(persisted.get("status") or "saved")
+            if persisted.get("coverage"):
+                final_coverage = persisted.get("coverage")
+                effective_coverage = {
+                    **effective_coverage,
+                    "coverage_percent_of_scannable": final_coverage.get("coverage_percent"),
+                    "raw_coverage_percent": final_coverage.get("raw_coverage_percent"),
+                }
+        except urllib.error.HTTPError as exc:
+            # Safe rollout behavior: an old backend may briefly coexist with the new
+            # worker. The next hourly run will retry after Render finishes deploying.
+            diagnostics_persist_status = f"deferred_http_{exc.code}"
+            print(f"Coverage diagnostics persistence deferred: HTTP {exc.code}")
+        except Exception as exc:
+            diagnostics_persist_status = "deferred_error"
+            print(f"Coverage diagnostics persistence deferred: {exc}")
 
     summary = {
         "mode": mode,
@@ -337,6 +383,8 @@ def main() -> int:
         "residual_classification": failure_counts,
         "non_actionable_residuals": non_actionable,
         "hard_failures": hard_failures,
+        "complete_residual_scan": complete_residual_scan,
+        "diagnostics_persist_status": diagnostics_persist_status,
         "failure_examples": failures[:20],
         "final_coverage": final_coverage,
         "effective_coverage": effective_coverage,
