@@ -184,13 +184,29 @@ def fetch_chunk(
             timeout=25,
         )
     except Exception as exc:
-        return [], [{"symbols": symbols[:10], "error": str(exc)[:200]}]
+        return [], [{
+            "symbols": symbols[:10],
+            "reason": "provider_error",
+            "error": str(exc)[:200],
+        }]
 
     for original in symbols:
         sub = frame_for_symbol(frame, normalize_yahoo_symbol(original), yahoo_symbols)
         rows = rows_from_frame(sub)
+        if not rows:
+            failures.append({
+                "symbol": original,
+                "bars": 0,
+                "reason": "provider_unavailable",
+            })
+            continue
         if len(rows) < min_bars:
-            failures.append({"symbol": original, "bars": len(rows)})
+            failures.append({
+                "symbol": original,
+                "bars": len(rows),
+                "reason": "insufficient_history",
+                "minimum_bars": min_bars,
+            })
             continue
         records.append({"symbol": original, "rows": rows[-UPLOAD_TAIL:]})
     return records, failures
@@ -282,17 +298,56 @@ def main() -> int:
             time.sleep(max(0.0, args.sleep))
 
     upload(pending)
+
+    failure_counts = {
+        "insufficient_history": sum(1 for item in failures if item.get("reason") == "insufficient_history"),
+        "provider_unavailable": sum(1 for item in failures if item.get("reason") == "provider_unavailable"),
+        "provider_error": sum(1 for item in failures if item.get("reason") == "provider_error"),
+    }
+    non_actionable = failure_counts["insufficient_history"] + failure_counts["provider_unavailable"]
+    hard_failures = failure_counts["provider_error"] + rejected_total
+
+    effective_coverage = None
+    raw_coverage = final_coverage or {}
+    remaining_missing = targets.get("remaining_missing")
+    if (
+        mode == "bootstrap"
+        and remaining_missing is not None
+        and int(remaining_missing or 0) <= len(symbols)
+        and int(raw_coverage.get("eligible_stocks") or 0) > 0
+    ):
+        eligible = int(raw_coverage.get("eligible_stocks") or 0)
+        covered = int(raw_coverage.get("covered_stocks") or 0)
+        scannable = max(covered, eligible - non_actionable)
+        effective_coverage = {
+            "raw_universe_stocks": eligible,
+            "currently_scannable_stocks": scannable,
+            "covered_stocks": covered,
+            "temporarily_ineligible_insufficient_history": failure_counts["insufficient_history"],
+            "provider_unavailable_or_invalid": failure_counts["provider_unavailable"],
+            "coverage_percent_of_scannable": round(covered / scannable * 100.0, 2) if scannable else 0.0,
+            "raw_coverage_percent": raw_coverage.get("coverage_percent"),
+        }
+
     summary = {
         "mode": mode,
         "attempted": len(symbols),
         "accepted": accepted_total,
         "ingest_rejected": rejected_total,
-        "provider_failures": len(failures),
+        "residual_classification": failure_counts,
+        "non_actionable_residuals": non_actionable,
+        "hard_failures": hard_failures,
         "failure_examples": failures[:20],
         "final_coverage": final_coverage,
+        "effective_coverage": effective_coverage,
+        "status": "healthy_noop" if not accepted_total and not hard_failures else ("healthy" if not hard_failures else "failed"),
     }
     print(json.dumps(summary, indent=2))
-    return 0 if accepted_total or not symbols else 2
+
+    # A scheduled run that finds only too-young or unavailable listings is healthy:
+    # there is nothing actionable to ingest yet. Only actual provider/API/ingest
+    # errors should turn the GitHub Action red.
+    return 0 if not hard_failures else 2
 
 
 if __name__ == "__main__":
