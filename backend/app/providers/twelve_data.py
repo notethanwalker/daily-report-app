@@ -44,6 +44,18 @@ class TwelveDataProvider:
         """Small tracked-symbol refresh; historical indicators come from normalized local bars."""
         return self.daily_history(symbol, outputsize=max(2, min(outputsize, 10)))
 
+    def intraday_history(self, symbol: str, interval: str = "1min", outputsize: int = 5000, start_date: str | None = None, end_date: str | None = None) -> dict:
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "outputsize": max(1, min(outputsize, 5000)),
+            "order": "asc",
+            "timezone": "UTC",
+        }
+        if start_date: params["start_date"] = start_date
+        if end_date: params["end_date"] = end_date
+        return self._get("/time_series", params)
+
     def symbol_search(self, query: str, outputsize: int = 8) -> dict:
         data = self._get("/symbol_search", {"symbol": query, "outputsize": outputsize})
         rows = data.get("data") or []
