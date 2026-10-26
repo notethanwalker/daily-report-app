@@ -172,4 +172,8 @@ async def self_keepalive_loop():
         except Exception:pass
 @app.on_event("startup")
 async def start_refresh_scheduler():
+    # One bounded, read-only audit from the running service; never blocks readiness.
+    if os.getenv("RENDER_SERVICE_ID"):
+        from .services.tls_audit import log_tls_audit
+        asyncio.create_task(asyncio.to_thread(log_tls_audit))
     asyncio.create_task(scheduler_loop());asyncio.create_task(bulk_market_loop());asyncio.create_task(yahoo_bootstrap_loop());asyncio.create_task(opportunity_incremental_loop());asyncio.create_task(candidate_snapshot_loop());asyncio.create_task(stooq_import_loop());asyncio.create_task(calibration_loop());asyncio.create_task(feature_version_loop());asyncio.create_task(self_keepalive_loop())
