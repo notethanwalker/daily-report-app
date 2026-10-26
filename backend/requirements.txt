@@ -3,6 +3,7 @@ uvicorn[standard]
 pydantic
 pydantic-settings
 httpx
+certifi>=2026.10.19
 sqlalchemy
 psycopg[binary]
 yfinance
